@@ -11,6 +11,7 @@ struct HarnessApp: App {
         WindowGroup {
             RootView().environmentObject(app)
                 .onAppear { UNUserNotificationCenter.current().setBadgeCount(0) }   // cold launch
+                .onOpenURL { app.handlePair($0) }   // harness://pair deep link (QR or tapped)
         }
         // SwiftUI apps use the scene lifecycle, so applicationDidBecomeActive never fires —
         // clear the red badge here whenever the app becomes active (you've seen what's there).

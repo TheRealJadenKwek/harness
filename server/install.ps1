@@ -92,4 +92,5 @@ if ($Ts) { $ip = (& $Ts.Source ip -4 2>$null | Select-Object -First 1); if ($ip)
 Write-Host "`n✅ Done. In the iOS app -> gear -> enter:" -ForegroundColor Green
 Write-Host "   URL    http://${TsIp}:$Port" -ForegroundColor White
 Write-Host "   Token  $Token" -ForegroundColor White
-Write-Host "`nMake sure your iPhone is logged into the SAME Tailscale account.`n"
+Write-Host "`nMake sure your iPhone is logged into the SAME Tailscale account."
+Write-Host "Prefer scanning? Open http://127.0.0.1:$Port/pair on this PC for a QR code.`n"

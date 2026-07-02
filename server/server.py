@@ -23,7 +23,7 @@ HTTP API (all except GET /health require  Authorization: Bearer <HARNESS_TOKEN>)
          {type:tool,name} {type:done,text,session_id} {type:error,message}
   POST /threads/{id}/stop           -> {ok}  (kills that thread's running job)
 """
-import os, sys, json, time, uuid, glob, shutil, tempfile, threading, subprocess, ipaddress, hmac, base64, signal, plistlib, queue, urllib.parse
+import os, sys, json, time, uuid, glob, shutil, tempfile, threading, subprocess, ipaddress, hmac, base64, signal, plistlib, queue, socket, urllib.parse
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
 # Only accept connections from loopback or the Tailscale CGNAT range (100.64.0.0/10).
@@ -126,6 +126,76 @@ def log(msg):
         open(LOG, 'a').write(line + '\n')
     except Exception:
         pass
+
+
+def rotate_logs():
+    """Keep log files bounded: past 5MB, keep only the last ~1MB.
+    harness.log is append-per-write (safe). stdout/stderr are held open by
+    launchd/Task Scheduler — tail-keep leaves the writer's offset alone, which
+    creates a sparse gap; disk usage stays small, which is all we need."""
+    for name in ('harness.log', 'stdout.log', 'stderr.log'):
+        p = os.path.join(BASE, name)
+        try:
+            if os.path.getsize(p) <= 5 * 1024 * 1024:
+                continue
+            with open(p, 'r+b') as f:
+                f.seek(-1024 * 1024, 2)
+                tail = f.read()
+                nl = tail.find(b'\n')
+                tail = tail[nl + 1:] if nl >= 0 else tail
+                f.seek(0)
+                f.write(b'[rotated]\n' + tail)
+                f.truncate()
+        except Exception:
+            pass
+
+
+def _rotate_loop():
+    while True:
+        time.sleep(6 * 3600)
+        rotate_logs()
+
+
+def tailnet_ip():
+    """This machine's Tailscale IPv4. Route-probe first (no subprocess, and the
+    macOS CLI can't run headless under launchd — it tries to start the GUI):
+    a connected UDP socket toward MagicDNS reveals which local IP routes there."""
+    try:
+        s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+        s.connect(('100.100.100.100', 53))          # no packets are sent
+        ip = s.getsockname()[0]
+        s.close()
+        if ipaddress.ip_address(ip) in TAILNET:
+            return ip
+    except Exception:
+        pass
+    for c in ('tailscale', r'C:\Program Files\Tailscale\tailscale.exe'):
+        try:
+            r = subprocess.run([c, 'ip', '-4'], capture_output=True, text=True, timeout=5)
+            ip = (r.stdout or '').strip().splitlines()[0].strip() if r.returncode == 0 else ''
+            if ip and ipaddress.ip_address(ip) in TAILNET:
+                return ip
+        except Exception:
+            continue
+    return None
+
+
+# Pairing page (loopback-only; contains the token). The QR encodes a harness://
+# deep link the iOS app scans. QR rendering uses a small MIT-licensed generator
+# from jsDelivr — if the CDN is unreachable the page still shows URL + token.
+PAIR_HTML = """<!DOCTYPE html>
+<html><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Pair Harness</title>
+<style>body{font:17px/1.6 -apple-system,system-ui,sans-serif;max-width:560px;margin:48px auto;padding:0 20px;color:#1d1d1f;text-align:center}
+#qr{margin:24px auto}code{background:#f5f5f7;padding:2px 8px;border-radius:6px;font-size:15px;word-break:break-all}</style></head>
+<body>
+<h1>Pair your phone</h1>
+<p>In the Harness app: <b>Settings &rarr; Add server &rarr; Scan QR</b></p>
+<div id="qr"><p style="color:#86868b">(QR needs internet to render &mdash; or enter manually below)</p></div>
+<p>URL <code>__URL__</code><br>Token <code>__TOKEN__</code></p>
+<script src="https://cdn.jsdelivr.net/npm/qrcode-generator@1.4.4/qrcode.min.js"
+        onload="var q=qrcode(0,'M');q.addData('__PAIR__');q.make();document.getElementById('qr').innerHTML=q.createSvgTag({cellSize:6,margin:4});"></script>
+</body></html>"""
 
 # --------------------------------------------------------------------------- providers
 DEFAULT_PROVIDERS = [
@@ -1306,6 +1376,25 @@ class Handler(BaseHTTPRequestHandler):
                                     'engines': ['claude', 'codex'],
                                     'push_configured': apns_configured(),
                                     'push_devices': len(load_push_tokens())})
+        if path == '/pair':
+            # Loopback ONLY — the page contains the bearer token.
+            try:
+                if not ipaddress.ip_address(self.client_address[0]).is_loopback:
+                    return self._json(403, {'error': 'forbidden'})
+            except Exception:
+                return self._json(403, {'error': 'forbidden'})
+            ip = tailnet_ip()
+            url = 'http://%s:%s' % (ip or '<your-tailscale-ip>', PORT)
+            name = urllib.parse.quote(socket.gethostname().split('.')[0])
+            pair = 'harness://pair?url=%s&token=%s&name=%s' % (
+                urllib.parse.quote(url, safe=''), urllib.parse.quote(TOKEN or '', safe=''), name)
+            body = (PAIR_HTML.replace('__URL__', url).replace('__TOKEN__', TOKEN or '(none)')
+                    .replace('__PAIR__', pair)).encode()
+            self.send_response(200)
+            self.send_header('Content-Type', 'text/html; charset=utf-8')
+            self.send_header('Content-Length', str(len(body)))
+            self.end_headers()
+            return self.wfile.write(body)
         if not self._authed():
             return self._json(401, {'error': 'unauthorized'})
         if path == '/providers':
@@ -1705,6 +1794,8 @@ def main():
             time.sleep(60)
     load_providers()   # materialize default file on first run
     purge_trash()      # drop soft-deleted threads older than the TTL
+    rotate_logs()      # keep log files bounded (repeats every 6h)
+    threading.Thread(target=_rotate_loop, daemon=True).start()
     def _cleanup(signum, frame):
         with _running_lock:
             for proc in list(running.values()):

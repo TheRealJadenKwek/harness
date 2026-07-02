@@ -71,6 +71,17 @@ struct ThreadListView: View {
         .toolbar {
             ToolbarItem(placement: .topBarLeading) {
                 Menu {
+                    if app.servers.count > 1 {
+                        Picker("Server", selection: Binding(
+                            get: { app.activeServerID },
+                            set: { if let id = $0 { app.switchTo(id) } }
+                        )) {
+                            ForEach(app.servers) { s in
+                                Label(s.name, systemImage: "desktopcomputer").tag(Optional(s.id))
+                            }
+                        }
+                        Divider()
+                    }
                     Button { showUsage = true } label: { Label("Usage limits", systemImage: "gauge.with.dots.needle.bottom.50percent") }
                     Button { showArchived = true } label: { Label("Archived", systemImage: "archivebox") }
                     Button { showTrash = true } label: { Label("Recently Deleted", systemImage: "trash") }

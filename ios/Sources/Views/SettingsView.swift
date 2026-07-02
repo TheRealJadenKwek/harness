@@ -8,11 +8,37 @@ struct SettingsView: View {
     @State private var token = ""
     @State private var testing = false
     @State private var result: String?
+    @State private var showAdd = false
 
     var body: some View {
         NavigationStack {
             Form {
-                Section("Mac harness") {
+                if app.servers.count > 1 {
+                    Section("Servers") {
+                        ForEach(app.servers) { s in
+                            HStack {
+                                VStack(alignment: .leading, spacing: 2) {
+                                    Text(s.name).fontWeight(.medium)
+                                    Text(s.url).font(.caption).foregroundStyle(.secondary)
+                                }
+                                Spacer()
+                                if s.id == app.activeServerID {
+                                    Image(systemName: "checkmark.circle.fill").foregroundStyle(.green)
+                                }
+                            }
+                            .contentShape(Rectangle())
+                            .onTapGesture {
+                                app.switchTo(s.id)
+                                url = s.url; token = s.token; result = nil
+                            }
+                        }
+                        .onDelete { idx in
+                            for i in idx { app.removeServer(app.servers[i].id) }
+                            url = app.baseURL; token = app.token
+                        }
+                    }
+                }
+                Section(app.servers.count > 1 ? "Active server" : "Harness server") {
                     TextField("http://100.x.x.x:8787", text: $url)
                         .autocorrectionDisabled()
                         .textInputAutocapitalization(.never)
@@ -26,11 +52,16 @@ struct SettingsView: View {
                         Text(testing ? "Testing…" : "Save & Test connection")
                     }
                     .disabled(testing)
+                    Button {
+                        showAdd = true
+                    } label: {
+                        Label("Add another server", systemImage: "plus.circle")
+                    }
                     if let result {
                         Text(result).font(.callout)
                     }
                 } footer: {
-                    Text("The harness runs on your Mac and is reachable over Tailscale. Find the token in ~/.claude-harness/config.env.")
+                    Text("The harness runs on your Mac or Windows PC, reachable over Tailscale. Open http://127.0.0.1:8787/pair on that computer for a scannable QR, or find the token in its config.env.")
                 }
                 Section {
                     Toggle("Push notifications", isOn: Binding(
@@ -73,12 +104,16 @@ struct SettingsView: View {
                 ToolbarItem(placement: .confirmationAction) { Button("Done") { dismiss() } }
             }
             .onAppear { url = app.baseURL; token = app.token }
+            .sheet(isPresented: $showAdd) {
+                AddServerSheet().environmentObject(app)
+                    .onDisappear { url = app.baseURL; token = app.token }
+            }
         }
     }
 
     func save() {
-        app.baseURL = url.trimmingCharacters(in: .whitespaces)
-        app.token = token.trimmingCharacters(in: .whitespaces)
+        app.updateActiveServer(url: url.trimmingCharacters(in: .whitespaces),
+                               token: token.trimmingCharacters(in: .whitespaces))
         testing = true
         result = nil
         Task {
@@ -86,6 +121,82 @@ struct SettingsView: View {
             result = ok ? "✅ Connected" : "❌ Could not reach the harness"
             testing = false
             if ok { await app.refresh() }
+        }
+    }
+}
+
+struct AddServerSheet: View {
+    @EnvironmentObject var app: AppState
+    @Environment(\.dismiss) var dismiss
+    @State private var name = ""
+    @State private var url = ""
+    @State private var token = ""
+    @State private var showScanner = false
+    @State private var testing = false
+    @State private var result: String?
+
+    var body: some View {
+        NavigationStack {
+            Form {
+                if PairScannerView.isSupported {
+                    Section {
+                        Button {
+                            showScanner = true
+                        } label: {
+                            Label("Scan pairing QR", systemImage: "qrcode.viewfinder")
+                        }
+                    } footer: {
+                        Text("On the computer running the harness, open http://127.0.0.1:8787/pair and scan the code.")
+                    }
+                }
+                Section("Or enter manually") {
+                    TextField("Name (e.g. Gaming PC)", text: $name)
+                    TextField("http://100.x.x.x:8787", text: $url)
+                        .autocorrectionDisabled()
+                        .textInputAutocapitalization(.never)
+                        .keyboardType(.URL)
+                    SecureField("Bearer token", text: $token)
+                }
+                Section {
+                    Button(testing ? "Testing…" : "Add & Connect") { add() }
+                        .disabled(testing || url.trimmingCharacters(in: .whitespaces).isEmpty)
+                    if let result { Text(result).font(.callout) }
+                }
+            }
+            .navigationTitle("Add server")
+            .toolbar {
+                ToolbarItem(placement: .cancellationAction) { Button("Cancel") { dismiss() } }
+            }
+            .sheet(isPresented: $showScanner) {
+                PairScannerView { payload in
+                    showScanner = false
+                    if let u = URL(string: payload), u.scheme == "harness" {
+                        app.handlePair(u)
+                        dismiss()
+                    } else {
+                        result = "❌ Not a Harness pairing code"
+                    }
+                }
+                .ignoresSafeArea()
+            }
+        }
+    }
+
+    func add() {
+        let id = app.addServer(name: name.trimmingCharacters(in: .whitespaces),
+                               url: url.trimmingCharacters(in: .whitespaces),
+                               token: token.trimmingCharacters(in: .whitespaces))
+        app.switchTo(id)
+        testing = true
+        result = nil
+        Task {
+            let ok = await app.testConnection()
+            testing = false
+            result = ok ? "✅ Connected" : "❌ Could not reach it — saved anyway"
+            if ok {
+                await app.refresh()
+                dismiss()
+            }
         }
     }
 }

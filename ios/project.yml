@@ -34,6 +34,9 @@ targets:
       properties:
         CFBundleDisplayName: Harness
         ITSAppUsesNonExemptEncryption: false
+        CFBundleURLTypes:
+          - CFBundleURLName: com.jadenkwek.harness
+            CFBundleURLSchemes: [harness]
         UILaunchScreen: {}
         UIApplicationSceneManifest:
           UIApplicationSupportsMultipleScenes: false

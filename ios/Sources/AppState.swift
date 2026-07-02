@@ -4,12 +4,10 @@ import UIKit
 
 @MainActor
 final class AppState: ObservableObject {
-    @Published var baseURL: String {
-        didSet { UserDefaults.standard.set(baseURL, forKey: "baseURL") }
-    }
-    @Published var token: String {
-        didSet { UserDefaults.standard.set(token, forKey: "token") }
-    }
+    @Published var baseURL: String = ""      // active server's URL (persisted via ServerStore)
+    @Published var token: String = ""        // active server's token (Keychain, never UserDefaults)
+    @Published var servers: [HarnessServer] = []
+    @Published var activeServerID: UUID?
     @Published var threads: [ThreadSummary] = []
     @Published var archivedThreads: [ThreadSummary] = []
     @Published var trashedThreads: [ThreadSummary] = []
@@ -29,9 +27,22 @@ final class AppState: ObservableObject {
     private var registeredToken: String?
 
     init() {
-        baseURL = UserDefaults.standard.string(forKey: "baseURL") ?? ""
-        token = UserDefaults.standard.string(forKey: "token") ?? ""
         pushEnabled = (UserDefaults.standard.object(forKey: "pushEnabled") as? Bool) ?? true
+        servers = ServerStore.load()
+        // Migrate the single-server era: URL + token used to live in UserDefaults.
+        if servers.isEmpty, let legacy = UserDefaults.standard.string(forKey: "baseURL"), !legacy.isEmpty {
+            servers = [HarnessServer(name: "My Mac", url: legacy,
+                                     token: UserDefaults.standard.string(forKey: "token") ?? "")]
+            ServerStore.save(servers)
+        }
+        UserDefaults.standard.removeObject(forKey: "baseURL")
+        UserDefaults.standard.removeObject(forKey: "token")
+        let savedID = UserDefaults.standard.string(forKey: "activeServerID")
+        if let active = servers.first(where: { $0.id.uuidString == savedID }) ?? servers.first {
+            baseURL = active.url
+            token = active.token
+            activeServerID = active.id
+        }
         // Device token arrives from the AppDelegate; a notification tap deep-links a thread.
         NotificationCenter.default.addObserver(forName: .harnessPushToken, object: nil, queue: .main) { [weak self] note in
             guard let tok = note.object as? String else { return }
@@ -79,6 +90,75 @@ final class AppState: ObservableObject {
 
     var isConfigured: Bool { !baseURL.isEmpty }
     var api: HarnessAPI { HarnessAPI(baseURL: baseURL, token: token) }
+    var activeServer: HarnessServer? { servers.first { $0.id == activeServerID } }
+
+    // ---- multi-server
+    func switchTo(_ id: UUID) {
+        guard let s = servers.first(where: { $0.id == id }) else { return }
+        activeServerID = s.id
+        UserDefaults.standard.set(s.id.uuidString, forKey: "activeServerID")
+        baseURL = s.url
+        token = s.token
+        threads = []
+        connected = false
+        Task { await refresh() }
+    }
+
+    @discardableResult
+    func addServer(name: String, url: String, token tok: String) -> UUID {
+        let s = HarnessServer(name: name.isEmpty ? url : name, url: url, token: tok)
+        servers.append(s)
+        ServerStore.save(servers)
+        return s.id
+    }
+
+    func removeServer(_ id: UUID) {
+        servers.removeAll { $0.id == id }
+        ServerStore.save(servers)
+        if activeServerID == id {
+            if let first = servers.first {
+                switchTo(first.id)
+            } else {
+                activeServerID = nil
+                baseURL = ""
+                token = ""
+                threads = []
+                connected = false
+            }
+        }
+    }
+
+    /// Settings' inline URL/token fields edit the ACTIVE server (creating one if none).
+    func updateActiveServer(url: String, token tok: String) {
+        baseURL = url
+        token = tok
+        if let idx = servers.firstIndex(where: { $0.id == activeServerID }) {
+            servers[idx].url = url
+            servers[idx].token = tok
+            ServerStore.save(servers)
+        } else {
+            let id = addServer(name: "My Mac", url: url, token: tok)
+            activeServerID = id
+            UserDefaults.standard.set(id.uuidString, forKey: "activeServerID")
+        }
+    }
+
+    /// harness://pair?url=…&token=…&name=… — from the server's /pair QR (scanned or tapped).
+    func handlePair(_ u: URL) {
+        guard u.scheme == "harness", u.host == "pair",
+              let comps = URLComponents(url: u, resolvingAgainstBaseURL: false) else { return }
+        func q(_ n: String) -> String? { comps.queryItems?.first(where: { $0.name == n })?.value }
+        guard let url = q("url"), !url.isEmpty else { return }
+        // Same URL again = re-pair: update the existing entry instead of duplicating.
+        if let idx = servers.firstIndex(where: { $0.url == url }) {
+            servers[idx].token = q("token") ?? servers[idx].token
+            ServerStore.save(servers)
+            switchTo(servers[idx].id)
+        } else {
+            let id = addServer(name: q("name") ?? url, url: url, token: q("token") ?? "")
+            switchTo(id)
+        }
+    }
     var enabledProviders: [Provider] { providers.filter { $0.enabled } }
 
     // Remembered defaults for new threads.
