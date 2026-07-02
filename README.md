@@ -2,9 +2,9 @@
 
 **Your Mac's AI coding CLIs, as a native iPhone app.**
 
-Harness turns Claude Code and Codex running on your own Mac into a phone-first experience: start threads, watch replies stream with full markdown, read reasoning summaries, review the diffs and files your agents produce, answer their questions with a tap, and get a push notification when a long task finishes — from anywhere, over your own private [Tailscale](https://tailscale.com) network.
+Harness turns Claude Code and Codex running on your own Mac or Windows PC into a phone-first experience: start threads, watch replies stream with full markdown, read reasoning summaries, review the diffs and files your agents produce, answer their questions with a tap, and get a push notification when a long task finishes — from anywhere, over your own private [Tailscale](https://tailscale.com) network.
 
-Your Mac does the work; your phone is the remote. No accounts, no middleman, no data leaves your devices.
+Your computer does the work; your phone is the remote. No accounts, no middleman, no data leaves your devices.
 
 | Threads | Chat | Reasoning & cost | Live preview |
 |---|---|---|---|
@@ -13,7 +13,7 @@ Your Mac does the work; your phone is the remote. No accounts, no middleman, no 
 ## How it works
 
 ```
-iPhone (SwiftUI app)  ──Tailscale──▶  Mac harness server (stdlib Python, :8787)
+iPhone (SwiftUI app)  ──Tailscale──▶  harness server on your Mac/PC (stdlib Python, :8787)
                                         ├─▶ claude -p … --resume   (Claude Code)
                                         └─▶ codex exec --json …    (Codex)
 ```
@@ -24,7 +24,9 @@ iPhone (SwiftUI app)  ──Tailscale──▶  Mac harness server (stdlib Pytho
 
 ## Quick start
 
-**1. Mac server** (requires python3, Tailscale, and at least one of the `claude` / `codex` CLIs):
+**1. Server** — Mac *or* Windows (requires Python 3, Tailscale, and at least one of the `claude` / `codex` CLIs):
+
+macOS:
 
 ```sh
 mkdir -p ~/harness-server && cd ~/harness-server
@@ -33,7 +35,16 @@ curl -fsSLO https://harness-site.vercel.app/install.sh
 bash install.sh
 ```
 
-The installer generates your private token, installs a LaunchAgent (starts at login, restarts on crash), and prints the URL + token for the app. `server/uninstall.sh` removes everything.
+Windows (PowerShell):
+
+```powershell
+mkdir $env:USERPROFILE\harness-server; cd $env:USERPROFILE\harness-server
+curl.exe -fsSLO https://harness-site.vercel.app/server.py
+curl.exe -fsSLO https://harness-site.vercel.app/install.ps1
+powershell -ExecutionPolicy Bypass -File install.ps1
+```
+
+Either installer generates your private token, sets the server to start at login and restart on crash (LaunchAgent on macOS, Task Scheduler on Windows), opens the firewall where needed, and prints the URL + token for the app. `uninstall.sh` / removing the `HarnessServer` scheduled task reverses it.
 
 **2. iPhone app**: App Store (pending review) — or build from source:
 
