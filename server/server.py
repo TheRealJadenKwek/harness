@@ -23,7 +23,7 @@ HTTP API (all except GET /health require  Authorization: Bearer <HARNESS_TOKEN>)
          {type:tool,name} {type:done,text,session_id} {type:error,message}
   POST /threads/{id}/stop           -> {ok}  (kills that thread's running job)
 """
-import os, re, sys, json, time, uuid, glob, shutil, tempfile, threading, subprocess, ipaddress, hmac, base64, signal, plistlib, queue, socket, urllib.parse
+import os, re, sys, json, time, uuid, glob, shutil, tempfile, threading, subprocess, ipaddress, hmac, base64, signal, plistlib, queue, socket, urllib.parse, urllib.request, urllib.error
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
 # Only accept connections from loopback or the Tailscale CGNAT range (100.64.0.0/10).
@@ -446,6 +446,57 @@ def record_rate_limit(info):
 # --------------------------------------------------------------------------- push (APNs)
 _push_lock = threading.Lock()
 
+# Push relay: harnesses WITHOUT a local APNs key (everyone but the developer)
+# forward alert pushes through the hosted relay, which holds the signing key.
+# The relay maps each device token to an opaque relay_id; we cache that mapping.
+RELAY_URL = CFG.get('RELAY_URL', '').strip().rstrip('/')
+_relay_ids = {}          # device token -> relay_id (in-memory cache; re-registers on restart)
+_relay_lock = threading.Lock()
+
+def relay_configured():
+    return bool(RELAY_URL) and not apns_configured()
+
+def _relay_id_for(token):
+    with _relay_lock:
+        rid = _relay_ids.get(token)
+    if rid:
+        return rid
+    try:
+        req = urllib.request.Request(RELAY_URL + '/register',
+                                     data=json.dumps({'token': token}).encode(),
+                                     headers={'Content-Type': 'application/json'})
+        with urllib.request.urlopen(req, timeout=10) as r:
+            rid = json.load(r).get('relay_id')
+    except Exception as e:
+        log('relay register failed: %s' % e)
+        return None
+    if rid:
+        with _relay_lock:
+            _relay_ids[token] = rid
+    return rid
+
+def relay_send(token, title, body_text, thread_id=None, approval_id=None, category=None):
+    """Alert push via the hosted relay. Returns (ok, reason)."""
+    rid = _relay_id_for(token)
+    if not rid:
+        return False, 'no relay_id'
+    payload = {'relay_id': rid, 'title': title, 'body': body_text}
+    if thread_id:
+        payload['thread_id'] = thread_id
+        payload['threadId'] = thread_id
+    if approval_id:
+        payload['approvalId'] = approval_id
+    if category:
+        payload['category'] = category
+    try:
+        req = urllib.request.Request(RELAY_URL + '/push', data=json.dumps(payload).encode(),
+                                     headers={'Content-Type': 'application/json'})
+        with urllib.request.urlopen(req, timeout=15) as r:
+            d = json.load(r)
+            return bool(d.get('ok')), d.get('reason', '')
+    except Exception as e:
+        return False, str(e)[:60]
+
 def load_push_tokens():
     try:
         with open(PUSH_FILE) as f:
@@ -584,10 +635,18 @@ def pending_approvals(tid):
 
 def notify_approval_push(thread, rec):
     tokens = load_push_tokens()
-    if not tokens or not apns_configured():
+    if not tokens:
         return
     title = 'Approval needed — %s' % ((thread or {}).get('title') or 'Claude')[:45]
     body = approval_summary(rec['tool_name'], rec['input'])[:170]
+    if relay_configured():
+        for tok in tokens:
+            ok, reason = relay_send(tok, title, body, thread_id=rec['thread_id'],
+                                    approval_id=rec['id'], category='HARNESS_APPROVAL')
+            log('relay approval push -> %s… : %s %s' % (tok[:8], 'ok' if ok else 'FAIL', reason))
+        return
+    if not apns_configured():
+        return
     payload = {'aps': {'alert': {'title': title, 'body': body}, 'sound': 'default',
                        'category': 'HARNESS_APPROVAL', 'thread-id': rec['thread_id'],
                        'interruption-level': 'time-sensitive'},
@@ -605,15 +664,20 @@ def notify_push(thread, text, questions=None):
     tokens = load_push_tokens()
     if not tokens:
         return
-    if not apns_configured():
-        log('push: %d device(s) registered but APNs not configured (set APNS_* in config.env)' % len(tokens))
-        return
     who = 'Codex' if thread.get('engine') == 'codex' else 'Claude'
     title = (thread.get('title') or who)[:60]
     if questions:
         body = '❓ ' + str((questions[0] or {}).get('question') or 'Has a question for you')[:150]
     else:
         body = (text or '').replace('\n', ' ').strip()[:170] or 'Done'
+    if relay_configured():                     # no local APNs key -> hosted relay
+        for tok in tokens:
+            ok, reason = relay_send(tok, title, body, thread_id=thread['id'])
+            log('relay push -> %s… : %s %s' % (tok[:8], 'ok' if ok else 'FAIL', reason))
+        return
+    if not apns_configured():
+        log('push: %d device(s) registered but APNs not configured (set APNS_* in config.env, or RELAY_URL)' % len(tokens))
+        return
     payload = {'aps': {'alert': {'title': title, 'body': body},
                        'sound': 'default', 'badge': 1, 'thread-id': thread['id']},
                'threadId': thread['id'], 'engine': thread.get('engine')}
@@ -1476,6 +1540,67 @@ def list_automations(show_all=False):
     out.sort(key=lambda a: (a['kind'], a['name']))
     return out
 
+# --------------------------------------------------------------------------- dev-server preview proxy
+# Lets the phone browse a dev server (vite/next/flask…) running on THIS machine:
+# GET/POST /threads/{tid}/proxy/{port}/<path> forwards to http://127.0.0.1:{port}.
+# v1 is plain HTTP — pages, assets, fetch/XHR via the app's scheme handler work;
+# websocket HMR does not (page loads fine, hot-reload needs a manual refresh).
+DEV_PORT_CANDIDATES = (3000, 3001, 4200, 4321, 5000, 5173, 5174, 8000, 8080, 8501, 8888)
+
+def scan_dev_servers():
+    """Listening localhost TCP ports that look like dev servers."""
+    found = []
+    try:
+        if sys.platform == 'win32':
+            r = subprocess.run(['netstat', '-ano', '-p', 'tcp'], capture_output=True, text=True, timeout=10)
+            listening = set()
+            for line in r.stdout.splitlines():
+                p = line.split()
+                if len(p) >= 4 and p[3].upper() == 'LISTENING':
+                    try: listening.add(int(p[1].rsplit(':', 1)[1]))
+                    except Exception: pass
+            found = [{'port': pt, 'process': ''} for pt in DEV_PORT_CANDIDATES if pt in listening]
+        else:
+            r = subprocess.run(['lsof', '-nP', '-iTCP', '-sTCP:LISTEN'],
+                               capture_output=True, text=True, timeout=10, env=BASE_ENV)
+            seen = {}
+            for line in r.stdout.splitlines()[1:]:
+                p = line.split()
+                if len(p) >= 9:
+                    try: port = int(p[8].rsplit(':', 1)[1])
+                    except Exception: continue
+                    if port in DEV_PORT_CANDIDATES and port not in seen \
+                            and not p[0].startswith('ControlCe'):   # macOS AirPlay squats :5000
+                        seen[port] = p[0]
+            found = [{'port': pt, 'process': seen[pt]} for pt in sorted(seen)]
+    except Exception:
+        pass
+    return found
+
+def proxy_request(port, subpath, query, method, body, in_headers):
+    """Forward one request to the local dev server; returns (status, headers, body).
+    Same-origin redirects are followed HERE, so the phone never has to re-resolve
+    a Location header against the custom preview scheme."""
+    url = 'http://127.0.0.1:%d/%s' % (port, subpath)
+    if query:
+        url += '?' + query
+    req = urllib.request.Request(url, data=body if body else None, method=method)
+    for h in ('Content-Type', 'Accept', 'Range', 'Cookie', 'If-None-Match', 'If-Modified-Since'):
+        v = in_headers.get(h)
+        if v:
+            req.add_header(h, v)
+    req.add_header('Accept-Encoding', 'identity')     # skip gzip: we re-frame with Content-Length
+    try:
+        with urllib.request.urlopen(req, timeout=25) as r:
+            data = r.read(64 * 1024 * 1024)
+            return r.status, dict(r.headers), data
+    except urllib.error.HTTPError as e:
+        data = e.read() if e.fp else b''
+        return e.code, dict(e.headers or {}), data
+    except Exception as e:
+        return 502, {'Content-Type': 'application/json'}, \
+               json.dumps({'error': 'dev server not reachable on :%d (%s)' % (port, e)}).encode()
+
 # --------------------------------------------------------------------------- managed automations
 # Phone-created scheduled agent jobs. The harness daemon ITSELF is the scheduler
 # (it's already always-on), so this works identically on macOS and Windows — no
@@ -1661,6 +1786,34 @@ class Handler(BaseHTTPRequestHandler):
                                 'message': 'Denied from the Harness app' if dec == 'deny'
                                 else 'No approval from the phone within %ss' % APPROVAL_TIMEOUT})
 
+    def _proxy(self, tid, parts, raw=b''):
+        """Forward /threads/{tid}/proxy/{port}/<sub> to the local dev server on {port}."""
+        if load_thread(tid) is None:
+            return self._json(404, {'error': 'no such thread'})
+        try:
+            port = int(parts[4])
+            if not (1024 <= port <= 65535):
+                raise ValueError
+        except Exception:
+            return self._json(400, {'error': 'bad port'})
+        sub = '/'.join(parts[5:])
+        q = urllib.parse.urlparse(self.path).query
+        status, hdrs, data = proxy_request(port, sub, q, self.command, raw, self.headers)
+        self.send_response(status)
+        self.send_header('Content-Type', hdrs.get('Content-Type') or 'application/octet-stream')
+        loc = hdrs.get('Location')
+        if loc:   # keep redirects on the proxied origin: strip any local absolute prefix
+            self.send_header('Location',
+                             re.sub(r'^https?://(127\.0\.0\.1|localhost)(:\d+)?', '', loc) or '/')
+        if hdrs.get('Set-Cookie'):
+            self.send_header('Set-Cookie', hdrs['Set-Cookie'])
+        self.send_header('Content-Length', str(len(data)))
+        self.end_headers()
+        try:
+            return self.wfile.write(data)
+        except (BrokenPipeError, ConnectionResetError, OSError):
+            return None
+
     def _client_allowed(self):
         try:
             a = ipaddress.ip_address(self.client_address[0])
@@ -1752,6 +1905,10 @@ class Handler(BaseHTTPRequestHandler):
                 return self._stream_job(job)
             if len(parts) >= 4 and parts[3] == 'approvals':  # pending phone-side approvals
                 return self._json(200, pending_approvals(tid))
+            if len(parts) >= 4 and parts[3] == 'devservers':
+                return self._json(200, scan_dev_servers())
+            if len(parts) >= 5 and parts[3] == 'proxy':      # browse a local dev server
+                return self._proxy(tid, parts)
             if len(parts) >= 4 and parts[3] == 'artifacts':
                 t = load_thread(tid)
                 if not t:
@@ -1902,6 +2059,12 @@ class Handler(BaseHTTPRequestHandler):
         if not self._authed():
             return self._json(401, {'error': 'unauthorized'})
         path = self.path.split('?')[0].rstrip('/')
+        pe = path.split('/')
+        if len(pe) >= 5 and pe[1] == 'threads' and pe[3] == 'proxy':
+            # Dev-server POST (form/fetch): body is raw bytes, not our JSON — read it here.
+            n = int(self.headers.get('Content-Length', 0) or 0)
+            raw = self.rfile.read(n) if 0 < n <= MAX_BODY else b''
+            return self._proxy(pe[2], pe, raw=raw)
         body = self._body()
         if body is None:
             self.close_connection = True
@@ -2018,6 +2181,22 @@ class Handler(BaseHTTPRequestHandler):
                     p.kill()
                     return self._json(200, {'ok': True, 'stopped': True})
                 return self._json(200, {'ok': True, 'stopped': False})
+            if action == 'fork':
+                # Branch the conversation: the fork resumes from the SAME point, then
+                # diverges. Claude's --resume forks cleanly (each -p run mints a new
+                # session). Codex `exec resume` APPENDS to the shared rollout, so a
+                # codex fork gets a fresh session instead (history kept, context reset).
+                now = time.time()
+                f = {**{k: t.get(k) for k in ('title', 'engine', 'provider', 'model', 'cwd',
+                                              'permission_mode', 'effort')},
+                     'id': uuid.uuid4().hex,
+                     'title': (body.get('title') or ((t.get('title') or 'Untitled') + ' (fork)'))[:80],
+                     'session_id': None if t.get('engine') == 'codex' else t.get('session_id'),
+                     'created': now, 'updated': now,
+                     'messages': list(t.get('messages') or [])}
+                save_thread(f)
+                log('fork %s -> %s' % (tid[:8], f['id'][:8]))
+                return self._json(200, f)
             if action == 'messages':
                 return self._send_message(t, body)
         return self._json(404, {'error': 'not found'})

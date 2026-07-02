@@ -105,6 +105,13 @@ struct AutomationsList: Codable {
     var system: [Automation]
 }
 
+// A dev server (vite/next/flask…) listening on the Mac, browsable via the proxy.
+struct DevServer: Codable, Identifiable, Hashable {
+    let port: Int
+    let process: String?
+    var id: Int { port }
+}
+
 struct ToolInfo: Codable, Hashable {
     let name: String
     let summary: String?

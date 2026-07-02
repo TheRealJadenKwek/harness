@@ -29,6 +29,16 @@ struct ThreadListView: View {
                 Button { renameTarget = t; renameText = t.title ?? "" } label: {
                     Label("Rename", systemImage: "pencil")
                 }
+                Button {
+                    Task {
+                        if let f = try? await app.api.fork(t.id) {
+                            await app.refresh()
+                            app.pendingOpenThread = f.id
+                        }
+                    }
+                } label: {
+                    Label("Fork", systemImage: "arrow.triangle.branch")
+                }
                 Button(role: .destructive) { Task { await app.delete(t.id) } } label: {
                     Label("Delete", systemImage: "trash")
                 }

@@ -12,15 +12,24 @@ struct PreviewView: View {
     @Environment(\.dismiss) private var dismiss
     @State private var reload = UUID()
     @State private var shareURL: URL?
+    @State private var devPort: Int?              // non-nil = browsing a live dev server
+    @State private var devServers: [DevServer] = []
+    @State private var showServerPicker = false
+    @State private var askPort = false
+    @State private var portText = ""
 
     private var current: Artifact? { artifacts.indices.contains(index) ? artifacts[index] : nil }
 
     var body: some View {
         NavigationStack {
             Group {
-                if artifacts.isEmpty {
+                if let port = devPort {
+                    DevServerWebView(tid: tid, port: port, base: app.baseURL,
+                                     token: app.token, reload: reload)
+                        .ignoresSafeArea(edges: .bottom)
+                } else if artifacts.isEmpty {
                     ContentUnavailableView("Nothing to preview", systemImage: "doc.viewfinder",
-                                           description: Text("No previewable files yet. Ask Claude/Codex to make an HTML, PDF, image, or chart."))
+                                           description: Text("No previewable files yet. Ask Claude/Codex to make an HTML, PDF, image, or chart — or tap the globe to browse a running dev server."))
                 } else {
                     TabView(selection: $index) {
                         ForEach(Array(artifacts.enumerated()), id: \.element.rel) { i, a in
@@ -33,22 +42,57 @@ struct PreviewView: View {
                 }
             }
             .background(Color.appBG)
-            .navigationTitle(current?.name ?? "Preview")
+            .navigationTitle(devPort.map { "localhost:\($0)" } ?? (current?.name ?? "Preview"))
             .navigationBarTitleDisplayMode(.inline)
             .toolbar {
                 ToolbarItem(placement: .topBarLeading) { Button("Done") { dismiss() } }
                 ToolbarItem(placement: .topBarTrailing) {
                     HStack(spacing: 16) {
-                        if artifacts.count > 1 {
+                        if devPort == nil, artifacts.count > 1 {
                             Text("\(index + 1)/\(artifacts.count)").font(.caption).foregroundStyle(Color.appSecondary)
+                        }
+                        if !Demo.active {
+                            Button { openServerPicker() } label: {
+                                Image(systemName: devPort == nil ? "globe" : "doc.viewfinder")
+                            }
                         }
                         Button { reload = UUID() } label: { Image(systemName: "arrow.clockwise") }
                         Button { Task { await share() } } label: { Image(systemName: "square.and.arrow.up") }
-                            .disabled(current == nil)
+                            .disabled(current == nil || devPort != nil)
                     }
                 }
             }
             .sheet(item: $shareURL) { url in ShareSheet(items: [url]) }
+            .confirmationDialog("Live dev server", isPresented: $showServerPicker, titleVisibility: .visible) {
+                ForEach(devServers) { s in
+                    Button("localhost:\(s.port)\(s.process.map { " (\($0))" } ?? "")") { devPort = s.port }
+                }
+                Button("Enter port…") { portText = ""; askPort = true }
+                if devPort != nil {
+                    Button("Back to artifacts") { devPort = nil }
+                }
+                Button("Cancel", role: .cancel) {}
+            } message: {
+                Text(devServers.isEmpty ? "No dev servers detected on the Mac — start one (vite, next dev, flask…) or enter a port."
+                                        : "Browse a dev server running on the Mac. Hot-reload needs a manual refresh.")
+            }
+            .alert("Dev server port", isPresented: $askPort) {
+                TextField("5173", text: $portText)
+                    .keyboardType(.numberPad)
+                Button("Open") {
+                    if let p = Int(portText.trimmingCharacters(in: .whitespaces)), (1024...65535).contains(p) {
+                        devPort = p
+                    }
+                }
+                Button("Cancel", role: .cancel) {}
+            }
+        }
+    }
+
+    private func openServerPicker() {
+        Task {
+            devServers = (try? await app.api.devServers(tid)) ?? []
+            showServerPicker = true
         }
     }
 
@@ -130,6 +174,101 @@ struct WebPreview: UIViewRepresentable {
     }
 
     final class Coordinator { var lastReload: UUID? }
+}
+
+// MARK: - Live dev-server browsing via the harness proxy
+
+/// Browses http://localhost:{port} on the Mac through /threads/{tid}/proxy/{port}/…
+/// Pages, assets, and fetch/XHR all route through the token'd scheme handler.
+/// Websocket HMR does not (v1) — the reload button re-fetches.
+struct DevServerWebView: UIViewRepresentable {
+    let tid: String
+    let port: Int
+    let base: String
+    let token: String
+    let reload: UUID
+
+    func makeCoordinator() -> Coordinator { Coordinator() }
+
+    func makeUIView(context: Context) -> WKWebView {
+        let cfg = WKWebViewConfiguration()
+        cfg.setURLSchemeHandler(ProxySchemeHandler(base: base, token: token), forURLScheme: "harness-proxy")
+        let wv = WKWebView(frame: .zero, configuration: cfg)
+        wv.isOpaque = false
+        context.coordinator.lastReload = reload
+        load(wv)
+        return wv
+    }
+
+    func updateUIView(_ wv: WKWebView, context: Context) {
+        if context.coordinator.lastReload != reload {
+            context.coordinator.lastReload = reload
+            if wv.url != nil { wv.reload() } else { load(wv) }
+        }
+    }
+
+    private func load(_ wv: WKWebView) {
+        if let url = URL(string: "harness-proxy://\(tid):\(port)/") {
+            wv.load(URLRequest(url: url))
+        }
+    }
+
+    final class Coordinator { var lastReload: UUID? }
+}
+
+/// Maps harness-proxy://{tid}:{port}/path?q -> GET/POST {base}/threads/{tid}/proxy/{port}/path?q
+/// with the bearer token, forwarding method + body so forms and fetch() work.
+final class ProxySchemeHandler: NSObject, WKURLSchemeHandler {
+    let base: String
+    let token: String
+    private var active = Set<ObjectIdentifier>()
+    private let lock = NSLock()
+
+    init(base: String, token: String) { self.base = base; self.token = token }
+
+    func webView(_ webView: WKWebView, start task: WKURLSchemeTask) {
+        let key = ObjectIdentifier(task)
+        lock.lock(); active.insert(key); lock.unlock()
+
+        guard let url = task.request.url, let tid = url.host, let port = url.port else {
+            finish(task, nil, nil, URLError(.badURL)); return
+        }
+        let trimmed = base.hasSuffix("/") ? String(base.dropLast()) : base
+        var target = "\(trimmed)/threads/\(tid)/proxy/\(port)\(url.path.isEmpty ? "/" : url.path)"
+        if let q = url.query, !q.isEmpty { target += "?\(q)" }
+        guard let real = URL(string: target) else { finish(task, nil, nil, URLError(.badURL)); return }
+
+        var req = URLRequest(url: real)
+        req.httpMethod = task.request.httpMethod ?? "GET"
+        req.httpBody = task.request.httpBody
+        if !token.isEmpty { req.setValue("Bearer \(token)", forHTTPHeaderField: "Authorization") }
+        for h in ["Content-Type", "Accept", "Range"] {
+            if let v = task.request.value(forHTTPHeaderField: h) { req.setValue(v, forHTTPHeaderField: h) }
+        }
+        URLSession.shared.dataTask(with: req) { [weak self] data, resp, err in
+            self?.finish(task, resp, data, err)
+        }.resume()
+    }
+
+    func webView(_ webView: WKWebView, stop task: WKURLSchemeTask) {
+        lock.lock(); active.remove(ObjectIdentifier(task)); lock.unlock()
+    }
+
+    private func isActive(_ task: WKURLSchemeTask) -> Bool {
+        lock.lock(); defer { lock.unlock() }; return active.contains(ObjectIdentifier(task))
+    }
+
+    private func finish(_ task: WKURLSchemeTask, _ resp: URLResponse?, _ data: Data?, _ err: Error?) {
+        DispatchQueue.main.async {
+            guard self.isActive(task) else { return }
+            self.lock.lock(); self.active.remove(ObjectIdentifier(task)); self.lock.unlock()
+            if let err { task.didFailWithError(err); return }
+            guard let resp, let data else { task.didFailWithError(URLError(.badServerResponse)); return }
+            task.didReceive(resp)
+            task.didReceive(data)
+            task.didFinish()
+        }
+    }
 }
 
 /// Bridges custom-scheme sub-resource loads to token'd harness GETs, so a previewed page's

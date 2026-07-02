@@ -124,6 +124,10 @@ struct HarnessAPI {
         try await decode(try makeRequest("/threads/\(id)/artifacts"), as: ArtifactList.self)
     }
 
+    func devServers(_ id: String) async throws -> [DevServer] {
+        try await decode(try makeRequest("/threads/\(id)/devservers"), as: [DevServer].self)
+    }
+
     /// Token'd download of a thread file to a temp URL (for QuickLook / share).
     func downloadFile(_ id: String, rel: String) async throws -> URL {
         let trimmed = baseURL.hasSuffix("/") ? String(baseURL.dropLast()) : baseURL
@@ -158,6 +162,14 @@ struct HarnessAPI {
         if let effort { body["effort"] = effort }
         if let model, !model.isEmpty { body["model"] = model }
         return try await decode(try makeRequest("/threads", method: "POST", json: body), as: ThreadDetail.self)
+    }
+
+    /// Branch a conversation — the fork resumes from the same point, then diverges.
+    func fork(_ id: String, title: String? = nil) async throws -> ThreadDetail {
+        var body: [String: Any] = [:]
+        if let title, !title.isEmpty { body["title"] = title }
+        return try await decode(try makeRequest("/threads/\(id)/fork", method: "POST", json: body),
+                                as: ThreadDetail.self)
     }
 
     func rename(_ id: String, title: String) async throws {
