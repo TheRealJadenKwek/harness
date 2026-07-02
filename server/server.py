@@ -85,6 +85,10 @@ def save_keys():
     os.replace(tmp, KEYS_FILE)
 
 TOKEN = CFG.get('HARNESS_TOKEN', '').strip()
+# Per-boot secret shared ONLY with the approval_tool.py we spawn (via its mcp-config env),
+# so the unauthenticated loopback /internal/approval can't be driven by other local processes.
+APPROVAL_SECRET = base64.urlsafe_b64encode(os.urandom(24)).decode().rstrip('=')
+MAX_PENDING_APPROVALS = 64
 PORT = int(CFG.get('HARNESS_PORT', '8787'))
 CLAUDE_BIN = CFG.get('CLAUDE_BIN', '').strip() or shutil.which('claude') or 'claude'
 CODEX_BIN = CFG.get('CODEX_BIN', '').strip() or shutil.which('codex') or 'codex'
@@ -1050,7 +1054,8 @@ def run_claude_stream(thread, provider, text, images=None):
         cfg = {'mcpServers': {'harness_approval': {
             'command': sys.executable or 'python3',
             'args': [os.path.join(BASE, 'approval_tool.py')],
-            'env': {'HARNESS_PORT': str(PORT), 'HARNESS_THREAD_ID': thread['id']}}}}
+            'env': {'HARNESS_PORT': str(PORT), 'HARNESS_THREAD_ID': thread['id'],
+                    'HARNESS_APPROVAL_SECRET': APPROVAL_SECRET}}}}
         f = tempfile.NamedTemporaryFile('w', suffix='.json', delete=False)
         json.dump(cfg, f); f.close()
         mcp_cfg = f.name
@@ -1545,7 +1550,8 @@ def list_automations(show_all=False):
 # GET/POST /threads/{tid}/proxy/{port}/<path> forwards to http://127.0.0.1:{port}.
 # v1 is plain HTTP — pages, assets, fetch/XHR via the app's scheme handler work;
 # websocket HMR does not (page loads fine, hot-reload needs a manual refresh).
-DEV_PORT_CANDIDATES = (3000, 3001, 4200, 4321, 5000, 5173, 5174, 8000, 8080, 8501, 8888)
+DEV_PORT_CANDIDATES = (3000, 3001, 3002, 4200, 4321, 5000, 5173, 5174, 5175, 5176,
+                       5177, 8000, 8080, 8081, 8501, 8888, 9000)
 
 def scan_dev_servers():
     """Listening localhost TCP ports that look like dev servers."""
@@ -1804,6 +1810,13 @@ class Handler(BaseHTTPRequestHandler):
         except Exception:
             return self._json(403, {'error': 'forbidden'})
         body = self._body() or {}
+        # Authenticate the caller as an approval_tool WE spawned (blocks other local processes
+        # from spoofing approval prompts to the phone or exhausting threads).
+        if not hmac.compare_digest(str(body.get('secret') or ''), APPROVAL_SECRET):
+            return self._json(403, {'error': 'forbidden'})
+        with _approvals_lock:
+            if len(APPROVALS) >= MAX_PENDING_APPROVALS:
+                return self._json(429, {'decision': 'deny', 'message': 'too many pending approvals'})
         tid = str(body.get('thread_id') or '')
         rec = {'id': uuid.uuid4().hex[:12], 'thread_id': tid,
                'tool_name': str(body.get('tool_name') or '?')[:80],
@@ -1892,11 +1905,73 @@ class Handler(BaseHTTPRequestHandler):
         except Exception:
             return {}
 
+    def _ws_tunnel(self, tid, parts, qs):
+        """Transparent TCP relay for a WebSocket upgrade on a proxy path (HMR live-reload).
+        Browsers can't set Authorization on a WebSocket, so the token rides in ?_hbtok=.
+        After the dev server's 101, framing is opaque — we just shuttle bytes both ways."""
+        self.close_connection = True          # a hijacked socket is never reused
+        tok = (qs.get('_hbtok', [''])[0])
+        if not (TOKEN and hmac.compare_digest(tok, TOKEN)):
+            self.send_response(401); self.end_headers(); return
+        if load_thread(tid) is None:
+            self.send_response(404); self.end_headers(); return
+        try:
+            port = int(parts[4])
+            if not (1024 <= port <= 65535):
+                raise ValueError
+        except Exception:
+            self.send_response(400); self.end_headers(); return
+        sub = '/'.join(parts[5:])
+        try:
+            dev = socket.create_connection(('127.0.0.1', port), timeout=10)
+        except Exception:
+            self.send_response(502); self.end_headers(); return
+        # Replay the upgrade handshake to the dev server (Host rewritten; token stripped).
+        q = '&'.join('%s=%s' % (k, v) for k, vs in qs.items() if k != '_hbtok' for v in vs)
+        line = 'GET /%s%s HTTP/1.1\r\n' % (sub, ('?' + q) if q else '')
+        heads = [line, 'Host: 127.0.0.1:%d\r\n' % port]
+        for k in self.headers:
+            if k.lower() in ('host', 'authorization'):
+                continue
+            heads.append('%s: %s\r\n' % (k, self.headers[k]))
+        heads.append('\r\n')
+        try:
+            dev.sendall(''.join(heads).encode('latin-1', 'ignore'))
+        except Exception:
+            dev.close(); return
+        client = self.connection
+        client.settimeout(None); dev.settimeout(None)
+        done = threading.Event()
+        def pump(src, dst):
+            try:
+                while not done.is_set():
+                    b = src.recv(65536)
+                    if not b:
+                        break
+                    dst.sendall(b)
+            except Exception:
+                pass
+            finally:
+                done.set()
+                for s in (src, dst):
+                    try: s.shutdown(socket.SHUT_RDWR)
+                    except Exception: pass
+        t2 = threading.Thread(target=pump, args=(dev, client), daemon=True); t2.start()
+        pump(client, dev)                 # dev->client runs in t2; client->dev here
+        try: dev.close()
+        except Exception: pass
+
     # ---- routing
     def do_GET(self):
         if not self._client_allowed():
             return self._json(403, {'error': 'forbidden'})
         path = self.path.split('?')[0].rstrip('/')
+        # WebSocket upgrade on a proxy path -> raw tunnel (auth via ?_hbtok=, pre-_authed).
+        if (self.headers.get('Upgrade', '').lower() == 'websocket'):
+            pe = path.split('/')
+            if len(pe) >= 5 and pe[1] == 'threads' and pe[3] == 'proxy' and valid_tid(pe[2]):
+                qs = urllib.parse.parse_qs(urllib.parse.urlparse(self.path).query)
+                return self._ws_tunnel(pe[2], pe, qs)
         if path == '/health':
             return self._json(200, {'ok': True, 'version': VERSION,
                                     'engines': ['claude', 'codex'],

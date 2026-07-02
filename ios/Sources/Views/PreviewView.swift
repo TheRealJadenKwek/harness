@@ -74,7 +74,7 @@ struct PreviewView: View {
                 Button("Cancel", role: .cancel) {}
             } message: {
                 Text(devServers.isEmpty ? "No dev servers detected on the Mac — start one (vite, next dev, flask…) or enter a port."
-                                        : "Browse a dev server running on the Mac. Hot-reload needs a manual refresh.")
+                                        : "Browse a dev server running on the Mac — with live hot-reload.")
             }
             .alert("Dev server port", isPresented: $askPort) {
                 TextField("5173", text: $portText)
@@ -262,6 +262,32 @@ final class ProxySchemeHandler: NSObject, WKURLSchemeHandler {
         lock.lock(); defer { lock.unlock() }; return active.contains(ObjectIdentifier(task))
     }
 
+    /// Prepend a shim that rewrites any `new WebSocket(...)` targeting the dev server to the
+    /// harness proxy's ws tunnel (real network URL, since custom schemes can't do WebSocket).
+    private func injectWSShim(_ html: Data, tid: String, port: Int) -> Data? {
+        let trimmed = base.hasSuffix("/") ? String(base.dropLast()) : base
+        guard let wsBase = URL(string: trimmed)?
+            .absoluteString.replacingOccurrences(of: "https://", with: "wss://")
+            .replacingOccurrences(of: "http://", with: "ws://") else { return nil }
+        let tokEnc = token.addingPercentEncoding(withAllowedCharacters: .alphanumerics) ?? token
+        let prefix = "\(wsBase)/threads/\(tid)/proxy/\(port)"
+        let shim = """
+        <script>(function(){var OW=window.WebSocket;var P='\(prefix)',T='\(tokEnc)';
+        function map(u){try{var x=new URL(u,location.href);if(x.protocol!=='ws:'&&x.protocol!=='wss:')return u;
+        var q=x.search?x.search+'&':'?';return P+x.pathname+q+'_hbtok='+T;}catch(e){return u;}}
+        window.WebSocket=function(u,p){return p===undefined?new OW(map(u)):new OW(map(u),p);};
+        window.WebSocket.prototype=OW.prototype;window.WebSocket.CONNECTING=0;window.WebSocket.OPEN=1;
+        window.WebSocket.CLOSING=2;window.WebSocket.CLOSED=3;})();</script>
+        """
+        guard var s = String(data: html, encoding: .utf8) else { return nil }
+        if let r = s.range(of: "<head>", options: .caseInsensitive) {
+            s.replaceSubrange(r, with: "<head>" + shim)
+        } else {
+            s = shim + s
+        }
+        return s.data(using: .utf8)
+    }
+
     private func finish(_ task: WKURLSchemeTask, _ resp: URLResponse?, _ data: Data?,
                         _ err: Error?, schemeURL: URL) {
         DispatchQueue.main.async {
@@ -274,12 +300,20 @@ final class ProxySchemeHandler: NSObject, WKURLSchemeHandler {
             // resources (and the main document itself) fail to resolve through this handler.
             let http = resp as? HTTPURLResponse
             let ct = http?.value(forHTTPHeaderField: "Content-Type") ?? "application/octet-stream"
+            var body = data
+            // HMR: WKWebView can't route the page's WebSocket (Vite/Next live-reload) through a
+            // custom scheme, so inject a shim that repoints ws:// at the harness tunnel endpoint.
+            if ct.lowercased().contains("text/html"),
+               let tid = schemeURL.host, let port = schemeURL.port,
+               let shimmed = self.injectWSShim(body, tid: tid, port: port) {
+                body = shimmed
+            }
             let out = HTTPURLResponse(url: schemeURL, statusCode: http?.statusCode ?? 200,
                                       httpVersion: "HTTP/1.1",
                                       headerFields: ["Content-Type": ct,
-                                                     "Content-Length": String(data.count)])!
+                                                     "Content-Length": String(body.count)])!
             task.didReceive(out)
-            task.didReceive(data)
+            task.didReceive(body)
             task.didFinish()
         }
     }

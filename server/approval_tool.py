@@ -11,6 +11,7 @@ import json, os, sys, urllib.request
 
 PORT = os.environ.get('HARNESS_PORT', '8787')
 THREAD = os.environ.get('HARNESS_THREAD_ID', '')
+SECRET = os.environ.get('HARNESS_APPROVAL_SECRET', '')
 
 
 def send(obj):
@@ -19,7 +20,7 @@ def send(obj):
 
 
 def decide(args):
-    body = json.dumps({'thread_id': THREAD,
+    body = json.dumps({'thread_id': THREAD, 'secret': SECRET,
                        'tool_name': args.get('tool_name') or '?',
                        'input': args.get('input') or {}}).encode()
     req = urllib.request.Request('http://127.0.0.1:%s/internal/approval' % PORT,
