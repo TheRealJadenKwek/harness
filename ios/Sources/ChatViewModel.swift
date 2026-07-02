@@ -107,6 +107,8 @@ final class ChatViewModel: ObservableObject {
 
     private var streamTask: Task<Void, Never>?
     private var streamGen = 0
+    // Last phase pushed to the Live Activity — updates only fire on transitions.
+    private var activityPhase = ""
     // Full accumulations, kept for the finalized message on `done` (never rendered live).
     private var textBuf = ""
     private var thinkBuf = ""
@@ -166,6 +168,10 @@ final class ChatViewModel: ObservableObject {
             self.api.stream(threadID: self.threadID, text: toSend, provider: p, cwd: cwd,
                             permissionMode: pm, effort: e, model: m, images: imgs)
         }
+        LiveActivityManager.start(threadID: threadID,
+                                  title: detail?.title ?? (p == "codex" ? "Codex" : "Claude"),
+                                  engine: p, api: api)
+        activityPhase = "thinking"
         return true
     }
 
@@ -205,6 +211,10 @@ final class ChatViewModel: ObservableObject {
     func reconnectIfRunning() {
         guard !Demo.active, !isStreaming else { return }
         consume(reconnect: true) { self.api.reconnect(threadID: self.threadID) }
+        LiveActivityManager.start(threadID: threadID,
+                                  title: detail?.title ?? (provider == "codex" ? "Codex" : "Claude"),
+                                  engine: provider, api: api)
+        activityPhase = "thinking"
     }
 
     private func consume(reconnect: Bool, _ make: @escaping () -> AsyncThrowingStream<StreamEvent, Error>) {
@@ -251,17 +261,31 @@ final class ChatViewModel: ObservableObject {
         }
     }
 
+    /// Push a Live Activity phase change (no-op if the phase didn't change).
+    private func activity(_ phase: String, _ detail: String = "") {
+        guard phase != activityPhase || phase == "tool" else { return }   // tool detail changes matter
+        activityPhase = phase
+        if phase == "done" || phase == "error" {
+            LiveActivityManager.end(threadID: threadID, phase: phase, detail: detail)
+        } else {
+            LiveActivityManager.update(threadID: threadID, phase: phase, detail: detail)
+        }
+    }
+
     private func handle(_ ev: StreamEvent) {
         switch ev.type {
         case "text":
             let d = ev.delta ?? ""
             textBuf += d; pendingText += d; scheduleFlush()
+            activity("streaming")
         case "thinking":
             let d = ev.delta ?? ""
             thinkBuf += d; pendingThink += d; scheduleFlush()
+            activity("thinking")
         case "tool":
             buf.tools.append(ToolInfo(name: ev.name ?? "tool", summary: ev.summary, detail: ev.detail))
             buf.noteActivity()
+            activity("tool", ev.summary ?? ev.name ?? "")
         case "question":
             buf.questions.append(contentsOf: ev.questions ?? [])
             buf.noteActivity()
@@ -270,11 +294,13 @@ final class ChatViewModel: ObservableObject {
                 buf.approvals.append(PendingApproval(id: aid, name: ev.name ?? "tool", detail: ev.detail))
                 buf.noteActivity()
                 UINotificationFeedbackGenerator().notificationOccurred(.warning)
+                activity("approval", ev.detail ?? ev.name ?? "")
             }
         case "approval_resolved":
             if let aid = ev.id {
                 buf.approvals.removeAll { $0.id == aid }
                 buf.noteActivity()
+                if buf.approvals.isEmpty { activity("streaming") }
             }
         case "session":
             if let s = ev.id { detail?.session_id = s }
@@ -289,9 +315,11 @@ final class ChatViewModel: ObservableObject {
             if !messages.contains(where: { $0.id == m.id }) { messages.append(m) }
             buf.reset(); textBuf = ""; thinkBuf = ""; pendingText = ""; pendingThink = ""
             UINotificationFeedbackGenerator().notificationOccurred(.success)
+            activity("done", String(final.prefix(120)))
         case "error":
             errorText = ev.message ?? "error"
             UINotificationFeedbackGenerator().notificationOccurred(.error)
+            activity("error", String((ev.message ?? "error").prefix(120)))
         default:
             break
         }

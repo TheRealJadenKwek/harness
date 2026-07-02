@@ -18,6 +18,9 @@ targets:
     sources:
       - path: Sources
       - path: Resources
+      - path: Shared
+    dependencies:
+      - target: HarnessWidgets
     settings:
       base:
         PRODUCT_BUNDLE_IDENTIFIER: com.jadenkwek.harness
@@ -34,6 +37,7 @@ targets:
       properties:
         CFBundleDisplayName: Harness
         ITSAppUsesNonExemptEncryption: false
+        NSSupportsLiveActivities: true
         CFBundleURLTypes:
           - CFBundleURLName: com.jadenkwek.harness
             CFBundleURLSchemes: [harness]
@@ -50,3 +54,21 @@ targets:
           - UIInterfaceOrientationPortrait
           - UIInterfaceOrientationLandscapeLeft
           - UIInterfaceOrientationLandscapeRight
+
+  HarnessWidgets:                                    # Live Activity (lock screen + Dynamic Island)
+    type: app-extension
+    platform: iOS
+    sources:
+      - path: Widgets
+      - path: Shared
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: com.jadenkwek.harness.widgets
+        TARGETED_DEVICE_FAMILY: "1"
+        SKIP_INSTALL: YES
+    info:
+      path: Widgets/Info.plist
+      properties:
+        CFBundleDisplayName: Harness
+        NSExtension:
+          NSExtensionPointIdentifier: com.apple.widgetkit-extension

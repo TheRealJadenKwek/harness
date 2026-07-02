@@ -46,6 +46,8 @@
 	<string>Dictate messages to Claude/Codex with the mic button.</string>
 	<key>NSSpeechRecognitionUsageDescription</key>
 	<string>Transcribe your dictation into the message box (on-device when available).</string>
+	<key>NSSupportsLiveActivities</key>
+	<true/>
 	<key>UIApplicationSceneManifest</key>
 	<dict>
 		<key>UIApplicationSupportsMultipleScenes</key>

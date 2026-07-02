@@ -144,8 +144,15 @@ final class AppState: ObservableObject {
     }
 
     /// harness://pair?url=…&token=…&name=… — from the server's /pair QR (scanned or tapped).
+    /// harness://thread/<id> — Live Activity / widget tap deep-links into that thread.
     func handlePair(_ u: URL) {
-        guard u.scheme == "harness", u.host == "pair",
+        guard u.scheme == "harness" else { return }
+        if u.host == "thread" {
+            let tid = u.lastPathComponent
+            if !tid.isEmpty, tid != "/" { pendingOpenThread = tid }
+            return
+        }
+        guard u.host == "pair",
               let comps = URLComponents(url: u, resolvingAgainstBaseURL: false) else { return }
         func q(_ n: String) -> String? { comps.queryItems?.first(where: { $0.name == n })?.value }
         guard let url = q("url"), !url.isEmpty else { return }
@@ -209,6 +216,7 @@ final class AppState: ObservableObject {
             threads = t
             status = ""
             connected = true
+            LiveActivityManager.reconcile(running: Set(t.filter { $0.running == true }.map(\.id)))
             pushConfigured = (try? await api.pushConfigured()) ?? pushConfigured
             await registerDeviceTokenIfNeeded()       // (re)send token after a reconnect
         } catch {

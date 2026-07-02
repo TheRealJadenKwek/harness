@@ -311,6 +311,46 @@ _SENTINEL = object()
 JOBS = {}                  # thread_id -> Job (only present while running)
 _jobs_lock = threading.Lock()
 
+# --------------------------------------------------------------------------- Live Activity pushes
+# The app registers each turn's Live Activity push token; the server then keeps the
+# lock screen / Dynamic Island moving after the app is closed by pushing content-state
+# on PHASE changes (not per token — APNs live-activity updates are budget-limited).
+ACTIVITY_TOKENS = {}       # thread_id -> activity push token (ephemeral; re-registered per turn)
+_activity_lock = threading.Lock()
+
+def _activity_state(ev):
+    """Map a stream event to (phase, detail) for the Live Activity — None = no change."""
+    t = ev.get('type')
+    if t == 'thinking':          return 'thinking', ''
+    if t == 'text':              return 'streaming', ''
+    if t == 'tool':              return 'tool', (ev.get('summary') or ev.get('name') or '')[:120]
+    if t == 'approval':          return 'approval', (ev.get('detail') or '')[:120]
+    if t == 'approval_resolved': return 'streaming', ''
+    if t == 'done':              return 'done', (ev.get('text') or '').strip()[:120]
+    if t == 'error':             return 'error', (ev.get('message') or '')[:120]
+    return None, None
+
+def push_activity(tid, phase, detail):
+    with _activity_lock:
+        token = ACTIVITY_TOKENS.get(tid)
+    if not token or not apns_configured():
+        return
+    payload = {'aps': {'timestamp': int(time.time()),
+                       'event': 'end' if phase in ('done', 'error') else 'update',
+                       'content-state': {'phase': phase, 'detail': detail}}}
+    if phase in ('done', 'error'):
+        payload['aps']['dismissal-date'] = int(time.time()) + 15
+    def _send():
+        ok, code, reason = apns_send(token, payload, push_type='liveactivity',
+                                     topic=APNS_BUNDLE + '.push-type.liveactivity')
+        if not ok:
+            log('activity push %s… : %s %s' % (token[:8], code, reason))
+        if phase in ('done', 'error'):
+            with _activity_lock:
+                if ACTIVITY_TOKENS.get(tid) == token:
+                    del ACTIVITY_TOKENS[tid]
+    threading.Thread(target=_send, daemon=True).start()
+
 class Job:
     def __init__(self, tid):
         self.tid = tid
@@ -318,8 +358,21 @@ class Job:
         self.subs = []         # live subscriber Queues
         self.done = False
         self.lock = threading.Lock()
+        self.act_phase = ''    # last phase pushed to the Live Activity
+        self.act_detail = ''
+        self.act_ts = 0.0
 
     def publish(self, ev):
+        # Live Activity: push on phase transitions; tool-detail changes throttle to 1/3s.
+        phase, detail = _activity_state(ev)
+        if phase:
+            now = time.time()
+            changed = phase != self.act_phase
+            tool_refresh = (phase == 'tool' and detail != self.act_detail
+                            and now - self.act_ts >= 3.0)
+            if changed or tool_refresh:
+                self.act_phase, self.act_detail, self.act_ts = phase, detail, now
+                push_activity(self.tid, phase, detail)
         with self.lock:
             self.events.append(ev)
             # Bound replay memory on long agentic turns: keep all structured events
@@ -471,8 +524,9 @@ def apns_jwt():
         _jwt_cache.update(jwt=jwt, iat=now)
         return jwt
 
-def apns_send(token, payload):
-    """Returns (ok, status_code, reason). reason is the APNs JSON 'reason' on failure."""
+def apns_send(token, payload, push_type='alert', topic=None):
+    """Returns (ok, status_code, reason). reason is the APNs JSON 'reason' on failure.
+    push_type 'liveactivity' + topic '<bundle>.push-type.liveactivity' updates Live Activities."""
     jwt = apns_jwt()
     if not jwt:
         return False, 'nojwt', 'NoJWT'
@@ -480,8 +534,8 @@ def apns_send(token, payload):
     url = 'https://%s/3/device/%s' % (host, token)
     cmd = ['curl', '-s', '--http2', '-X', 'POST',
            '-H', 'authorization: bearer ' + jwt,
-           '-H', 'apns-topic: ' + APNS_BUNDLE,
-           '-H', 'apns-push-type: alert',
+           '-H', 'apns-topic: ' + (topic or APNS_BUNDLE),
+           '-H', 'apns-push-type: ' + push_type,
            '-H', 'apns-priority: 10',
            '-d', json.dumps(payload), '-w', '\n%{http_code}', url]   # body + status (no -o /dev/null)
     try:
@@ -1699,6 +1753,13 @@ class Handler(BaseHTTPRequestHandler):
         if path.startswith('/providers/'):
             return self._set_provider(path.split('/')[2], body)
         parts = path.split('/')
+        if len(parts) == 4 and parts[1] == 'threads' and parts[3] == 'activity':
+            tok = (body.get('token') or '').strip().lower()
+            if not tok or not all(c in '0123456789abcdef' for c in tok) or not (32 <= len(tok) <= 200):
+                return self._json(400, {'error': 'bad token'})
+            with _activity_lock:
+                ACTIVITY_TOKENS[parts[2]] = tok
+            return self._json(200, {'ok': True})
         if len(parts) == 5 and parts[1] == 'threads' and parts[3] == 'approvals':
             dec = 'allow' if body.get('decision') == 'allow' else 'deny'
             with _approvals_lock:
