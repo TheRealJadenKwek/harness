@@ -167,6 +167,13 @@ struct ThreadDetail: Codable, Identifiable {
     var messages: [Message]
 }
 
+// A gated tool use waiting for the user's Allow/Deny (Ask mode).
+struct PendingApproval: Decodable, Identifiable, Equatable {
+    let id: String
+    let name: String
+    let detail: String?
+}
+
 // One SSE event from POST /threads/{id}/messages
 struct StreamEvent: Decodable {
     let type: String

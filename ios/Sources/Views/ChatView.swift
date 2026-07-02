@@ -91,7 +91,8 @@ struct ChatView: View {
             // The streaming reply observes vm.buf only, so token updates re-render JUST this bubble —
             // not the whole ChatView (keyboard/field/scroll), which was hanging the device.
             if vm.isStreaming {
-                StreamingBubbleHost(buf: vm.buf, onGrow: { followBottom(proxy, animated: false) })
+                StreamingBubbleHost(buf: vm.buf, onGrow: { followBottom(proxy, animated: false) },
+                                    onDecide: { aid, allow in vm.decide(aid, allow: allow) })
             }
             if let e = vm.errorText {
                 Text(e).foregroundStyle(.red).font(.footnote)
@@ -570,9 +571,10 @@ struct MessageBubble: View, Equatable {
 struct StreamingBubbleHost: View {
     @ObservedObject var buf: StreamBuffer
     var onGrow: () -> Void
+    var onDecide: (String, Bool) -> Void = { _, _ in }
     @State private var lastGrow = Date.distantPast
     var body: some View {
-        StreamingBubble(buf: buf)
+        StreamingBubble(buf: buf, onDecide: onDecide)
             .onChange(of: buf.growTick) { _, _ in throttledGrow() }
     }
     // Auto-scroll at most ~4x/sec while streaming — each scrollTo forces a scroll-content layout
@@ -590,6 +592,7 @@ struct StreamingBubbleHost: View {
 /// beyond the live window are summarized; the full text lands as the finalized message on done.
 struct StreamingBubble: View {
     @ObservedObject var buf: StreamBuffer
+    var onDecide: (String, Bool) -> Void = { _, _ in }
     var body: some View {
         VStack(alignment: .leading, spacing: 8) {
             if buf.thinkingChars > 0 {
@@ -617,6 +620,9 @@ struct StreamingBubble: View {
             if !buf.questions.isEmpty {
                 QuestionGroup(questions: buf.questions, interactive: false, onSubmit: { _ in })
             }
+            if !buf.approvals.isEmpty {
+                ApprovalGroup(approvals: buf.approvals, onDecide: onDecide)
+            }
             if buf.isEmpty {
                 HStack(spacing: 6) {
                     ProgressView().controlSize(.small)
@@ -625,6 +631,45 @@ struct StreamingBubble: View {
             }
         }
         .frame(maxWidth: .infinity, alignment: .leading)
+    }
+}
+
+/// A gated tool use waiting on the user (Ask mode): shows WHAT Claude wants to run,
+/// with Allow/Deny. The turn is frozen server-side until one is tapped (or it times out).
+struct ApprovalGroup: View {
+    let approvals: [PendingApproval]
+    let onDecide: (String, Bool) -> Void
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            ForEach(approvals) { a in
+                VStack(alignment: .leading, spacing: 8) {
+                    Label("Claude wants to use \(a.name)", systemImage: "hand.raised.fill")
+                        .font(.subheadline.weight(.semibold))
+                        .foregroundStyle(.orange)
+                    if let d = a.detail, !d.isEmpty {
+                        Text(d)
+                            .font(.system(.caption, design: .monospaced))
+                            .foregroundStyle(Color.appText)
+                            .lineLimit(6)
+                            .frame(maxWidth: .infinity, alignment: .leading)
+                    }
+                    HStack(spacing: 10) {
+                        Button { onDecide(a.id, true) } label: {
+                            Text("Allow").fontWeight(.semibold).frame(maxWidth: .infinity)
+                        }
+                        .buttonStyle(.borderedProminent).tint(.green)
+                        Button(role: .destructive) { onDecide(a.id, false) } label: {
+                            Text("Deny").frame(maxWidth: .infinity)
+                        }
+                        .buttonStyle(.bordered)
+                    }
+                }
+                .padding(12)
+                .background(RoundedRectangle(cornerRadius: 14).fill(Color.orange.opacity(0.08)))
+                .overlay(RoundedRectangle(cornerRadius: 14).stroke(Color.orange.opacity(0.35)))
+            }
+        }
     }
 }
 

@@ -59,6 +59,7 @@ No Mac handy? The app ships with a fully offline **demo mode** ("Explore the dem
 ## Features
 
 - Multiple concurrent threads, each with its own engine, model, working directory, permission mode, and reasoning effort
+- **Phone-side tool approval**: in Ask mode, gated tool uses (shell commands, file edits) freeze the turn and surface on your phone — as an in-app Allow/Deny card and as an actionable push notification — exactly like pressing y/n in the terminal. Deny is safe-by-default on timeout, and approving from the lockscreen requires unlocking
 - Streaming replies with markdown, code blocks, collapsible thought-process disclosures, and tool-activity timelines (with red/green diffs for edits)
 - Per-message token/cost readouts and usage-limit tracking
 - Preview HTML, PDFs, images, and code your agents create — rendered on the phone, scoped and sandboxed on the Mac

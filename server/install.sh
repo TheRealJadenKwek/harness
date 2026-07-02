@@ -35,6 +35,10 @@ if [ ! -f "$SRC/server.py" ]; then die "server.py not found next to install.sh (
 if [ "$DRY" = 0 ]; then
   mkdir -p "$DEST" "$DEST/threads" "$DEST/trash" "$DEST/uploads"
   [ "$SRC/server.py" -ef "$DEST/server.py" ] || cp "$SRC/server.py" "$DEST/server.py"
+  # Phone-side tool approval (Ask mode) relies on this MCP relay next to server.py.
+  if [ -f "$SRC/approval_tool.py" ] && ! [ "$SRC/approval_tool.py" -ef "$DEST/approval_tool.py" ]; then
+    cp "$SRC/approval_tool.py" "$DEST/approval_tool.py"
+  fi
 fi
 say "server.py -> $DEST/server.py"
 

@@ -498,6 +498,55 @@ def apns_send(token, payload):
     except Exception as e:
         return False, 'err', str(e)[:40]
 
+# --------------------------------------------------------------------------- phone-side tool approval
+# Ask-mode ('default') claude threads run with --permission-prompt-tool wired to
+# approval_tool.py, which POSTs gated tool uses to /internal/approval. That
+# request BLOCKS until the phone answers (or times out -> deny), so the CLI
+# turn simply waits mid-flight, exactly like pressing y/n in a terminal.
+APPROVALS = {}                 # id -> {thread_id, tool_name, input, decision, event, created}
+_approvals_lock = threading.Lock()
+APPROVAL_TIMEOUT = int(CFG.get('APPROVAL_TIMEOUT', '600'))
+
+def approval_summary(tool_name, tool_input):
+    """One human line describing what Claude wants to do."""
+    d = tool_input or {}
+    if tool_name == 'Bash':
+        s = d.get('command') or ''
+    elif tool_name in ('Edit', 'Write', 'MultiEdit', 'NotebookEdit'):
+        s = d.get('file_path') or ''
+    elif tool_name in ('WebFetch', 'WebSearch'):
+        s = d.get('url') or d.get('query') or ''
+    else:
+        s = json.dumps(d)[:180]
+    return ('%s: %s' % (tool_name, s))[:200]
+
+def pending_approvals(tid):
+    with _approvals_lock:
+        return [{'id': a['id'], 'name': a['tool_name'],
+                 'detail': approval_summary(a['tool_name'], a['input']),
+                 'created': a['created']}
+                for a in APPROVALS.values()
+                if a['thread_id'] == tid and a['decision'] is None]
+
+def notify_approval_push(thread, rec):
+    tokens = load_push_tokens()
+    if not tokens or not apns_configured():
+        return
+    title = 'Approval needed — %s' % ((thread or {}).get('title') or 'Claude')[:45]
+    body = approval_summary(rec['tool_name'], rec['input'])[:170]
+    payload = {'aps': {'alert': {'title': title, 'body': body}, 'sound': 'default',
+                       'category': 'HARNESS_APPROVAL', 'thread-id': rec['thread_id'],
+                       'interruption-level': 'time-sensitive'},
+               'threadId': rec['thread_id'], 'approvalId': rec['id']}
+    bad = []
+    for tok in tokens:
+        ok, code, reason = apns_send(tok, payload)
+        log('approval push -> %s… : %s %s' % (tok[:8], code, reason))
+        if not ok and (code == '410' or reason in ('BadDeviceToken', 'Unregistered', 'DeviceTokenNotForTopic')):
+            bad.append(tok)
+    if bad:
+        remove_push_tokens(bad)
+
 def notify_push(thread, text, questions=None):
     tokens = load_push_tokens()
     if not tokens:
@@ -872,10 +921,23 @@ def run_claude_stream(thread, provider, text, images=None):
            '--include-partial-messages', '--verbose',
            '--append-system-prompt', HINT]
     mode = thread.get('permission_mode') or 'bypass'
+    mcp_cfg = None
     if mode == 'bypass':
         cmd += ['--dangerously-skip-permissions']
     else:                                   # plan | acceptEdits | default
         cmd += ['--permission-mode', mode]
+    if mode in ('default', 'acceptEdits'):
+        # Phone-side approval: gated tool uses relay through approval_tool.py
+        # (MCP permission tool) -> /internal/approval -> push -> user decides.
+        cfg = {'mcpServers': {'harness_approval': {
+            'command': sys.executable or 'python3',
+            'args': [os.path.join(BASE, 'approval_tool.py')],
+            'env': {'HARNESS_PORT': str(PORT), 'HARNESS_THREAD_ID': thread['id']}}}}
+        f = tempfile.NamedTemporaryFile('w', suffix='.json', delete=False)
+        json.dump(cfg, f); f.close()
+        mcp_cfg = f.name
+        cmd += ['--mcp-config', mcp_cfg,
+                '--permission-prompt-tool', 'mcp__harness_approval__approve']
     effort = thread.get('effort')
     if effort and effort != 'default':
         cmd += ['--effort', effort]
@@ -975,6 +1037,9 @@ def run_claude_stream(thread, provider, text, images=None):
     finally:
         done.set()
         unreg_run(thread['id'])
+        if mcp_cfg:
+            try: os.unlink(mcp_cfg)
+            except Exception: pass
     final = (final_result if final_result else ''.join(answer)).strip()
     if timed['v']:
         yield {'type': 'error', 'message': 'claude timed out after %ss' % JOB_TIMEOUT}; return
@@ -1335,6 +1400,43 @@ class Handler(BaseHTTPRequestHandler):
     def log_message(self, *a):
         pass
 
+    def _internal_approval(self):
+        """approval_tool.py relay: register the ask, alert the phone, block until
+        the user decides (or APPROVAL_TIMEOUT -> deny). Loopback only — this
+        endpoint is unauthenticated and must never be reachable from the tailnet."""
+        try:
+            if not ipaddress.ip_address(self.client_address[0]).is_loopback:
+                return self._json(403, {'error': 'forbidden'})
+        except Exception:
+            return self._json(403, {'error': 'forbidden'})
+        body = self._body() or {}
+        tid = str(body.get('thread_id') or '')
+        rec = {'id': uuid.uuid4().hex[:12], 'thread_id': tid,
+               'tool_name': str(body.get('tool_name') or '?')[:80],
+               'input': body.get('input') if isinstance(body.get('input'), dict) else {},
+               'decision': None, 'event': threading.Event(), 'created': time.time()}
+        with _approvals_lock:
+            APPROVALS[rec['id']] = rec
+        summary = approval_summary(rec['tool_name'], rec['input'])
+        job = job_for(tid)
+        if job:
+            job.publish({'type': 'approval', 'id': rec['id'],
+                         'name': rec['tool_name'], 'detail': summary})
+        notify_approval_push(load_thread(tid), rec)
+        log('approval WAIT %s %s' % (rec['id'], summary[:100]))
+        rec['event'].wait(APPROVAL_TIMEOUT)
+        with _approvals_lock:
+            APPROVALS.pop(rec['id'], None)
+        dec = rec['decision']
+        if job:
+            job.publish({'type': 'approval_resolved', 'id': rec['id'], 'text': dec or 'timeout'})
+        log('approval %s -> %s' % (rec['id'], dec or 'timeout(deny)'))
+        if dec == 'allow':
+            return self._json(200, {'decision': 'allow'})
+        return self._json(200, {'decision': 'deny',
+                                'message': 'Denied from the Harness app' if dec == 'deny'
+                                else 'No approval from the phone within %ss' % APPROVAL_TIMEOUT})
+
     def _client_allowed(self):
         try:
             a = ipaddress.ip_address(self.client_address[0])
@@ -1420,6 +1522,8 @@ class Handler(BaseHTTPRequestHandler):
                 if not job:
                     return self._json(200, {'running': False})
                 return self._stream_job(job)
+            if len(parts) >= 4 and parts[3] == 'approvals':  # pending phone-side approvals
+                return self._json(200, pending_approvals(tid))
             if len(parts) >= 4 and parts[3] == 'artifacts':
                 t = load_thread(tid)
                 if not t:
@@ -1557,6 +1661,8 @@ class Handler(BaseHTTPRequestHandler):
     def do_POST(self):
         if not self._client_allowed():
             return self._json(403, {'error': 'forbidden'})
+        if self.path.split('?')[0].rstrip('/') == '/internal/approval':
+            return self._internal_approval()   # loopback-only, pre-auth (relay from approval_tool.py)
         if not self._authed():
             return self._json(401, {'error': 'unauthorized'})
         path = self.path.split('?')[0].rstrip('/')
@@ -1593,6 +1699,18 @@ class Handler(BaseHTTPRequestHandler):
         if path.startswith('/providers/'):
             return self._set_provider(path.split('/')[2], body)
         parts = path.split('/')
+        if len(parts) == 5 and parts[1] == 'threads' and parts[3] == 'approvals':
+            dec = 'allow' if body.get('decision') == 'allow' else 'deny'
+            with _approvals_lock:
+                rec = APPROVALS.get(parts[4])
+                if rec and rec['thread_id'] == parts[2] and rec['decision'] is None:
+                    rec['decision'] = dec
+                    rec['event'].set()
+                else:
+                    rec = None
+            if not rec:
+                return self._json(404, {'error': 'no such pending approval'})
+            return self._json(200, {'ok': True, 'decision': dec})
         if len(parts) >= 4 and parts[1] == 'threads':
             tid, action = parts[2], parts[3]
             if not valid_tid(tid):

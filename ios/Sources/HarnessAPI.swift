@@ -151,6 +151,16 @@ struct HarnessAPI {
         _ = try await URLSession.shared.data(for: try makeRequest("/threads/\(id)/stop", method: "POST"))
     }
 
+    func pendingApprovals(_ id: String) async throws -> [PendingApproval] {
+        try await decode(try makeRequest("/threads/\(id)/approvals"), as: [PendingApproval].self)
+    }
+
+    func decideApproval(_ id: String, approvalID: String, allow: Bool) async throws {
+        _ = try await URLSession.shared.data(for: try makeRequest(
+            "/threads/\(id)/approvals/\(approvalID)", method: "POST",
+            json: ["decision": allow ? "allow" : "deny"]))
+    }
+
     func setProvider(_ id: String, apiKey: String?, enabled: Bool?) async throws {
         var body: [String: Any] = [:]
         if let apiKey { body["api_key"] = apiKey }

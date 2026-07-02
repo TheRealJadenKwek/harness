@@ -28,6 +28,7 @@ final class StreamBuffer: ObservableObject {
     @Published private(set) var thinkingChars = 0
     @Published var tools: [ToolInfo] = []
     @Published var questions: [AskQuestion] = []
+    @Published var approvals: [PendingApproval] = []    // gated tool uses awaiting Allow/Deny
     @Published private(set) var growTick = 0            // cheap change signal for scroll-follow
 
     static let chunkSize = 2000
@@ -37,7 +38,7 @@ final class StreamBuffer: ObservableObject {
 
     var isEmpty: Bool {
         chunks.isEmpty && tail.isEmpty && trimmedChars == 0 && thinkingChars == 0
-            && tools.isEmpty && questions.isEmpty
+            && tools.isEmpty && questions.isEmpty && approvals.isEmpty
     }
 
     private var tailLines = 0
@@ -79,7 +80,7 @@ final class StreamBuffer: ObservableObject {
     func reset() {
         chunks = []; tail = ""; tailLines = 0; trimmedChars = 0
         thinkingTail = ""; thinkingChars = 0
-        tools = []; questions = []
+        tools = []; questions = []; approvals = []
         nextChunkID = 0
     }
 }
@@ -190,6 +191,17 @@ final class ChatViewModel: ObservableObject {
         } catch { /* offline; keep what we have */ }
     }
 
+    /// Answer a pending tool approval. The server publishes approval_resolved, which
+    /// removes the card — we also remove optimistically for instant feedback.
+    func decide(_ approvalID: String, allow: Bool) {
+        buf.approvals.removeAll { $0.id == approvalID }
+        buf.noteActivity()
+        let a = api
+        let tid = threadID
+        Task { try? await a.decideApproval(tid, approvalID: approvalID, allow: allow) }
+        UIImpactFeedbackGenerator(style: .medium).impactOccurred()
+    }
+
     func reconnectIfRunning() {
         guard !Demo.active, !isStreaming else { return }
         consume(reconnect: true) { self.api.reconnect(threadID: self.threadID) }
@@ -253,6 +265,17 @@ final class ChatViewModel: ObservableObject {
         case "question":
             buf.questions.append(contentsOf: ev.questions ?? [])
             buf.noteActivity()
+        case "approval":
+            if let aid = ev.id, !buf.approvals.contains(where: { $0.id == aid }) {
+                buf.approvals.append(PendingApproval(id: aid, name: ev.name ?? "tool", detail: ev.detail))
+                buf.noteActivity()
+                UINotificationFeedbackGenerator().notificationOccurred(.warning)
+            }
+        case "approval_resolved":
+            if let aid = ev.id {
+                buf.approvals.removeAll { $0.id == aid }
+                buf.noteActivity()
+            }
         case "session":
             if let s = ev.id { detail?.session_id = s }
         case "done":
