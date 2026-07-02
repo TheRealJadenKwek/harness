@@ -62,8 +62,30 @@ def health():
     return {"ok": True, "devices": n}
 
 
+MAX_DEVICES = int(os.environ.get("MAX_DEVICES", "10000"))
+_reg_rate = {}   # client ip -> [window_start, count]
+
+
+def _client_ip(req):
+    fwd = req.headers.get("x-forwarded-for")
+    return (fwd.split(",")[0].strip() if fwd else None) or (req.client.host if req.client else "?")
+
+
 @app.post("/register")
 async def register(req: Request):
+    # Per-IP rate limit + global cap: keeps a scraper from filling the volume.
+    ip = _client_ip(req)
+    with _lock:
+        now = time.time()
+        w = _reg_rate.get(ip)
+        if not w or now - w[0] > 3600:
+            _reg_rate[ip] = [now, 1]
+        elif w[1] >= 30:
+            raise HTTPException(429, "rate limited")
+        else:
+            w[1] += 1
+        if len(_reg_rate) > 50000:               # bound the rate table itself
+            _reg_rate.clear()
     body = await req.json()
     token = (body.get("token") or "").strip().lower()
     if not token or not all(c in "0123456789abcdef" for c in token) or not (32 <= len(token) <= 200):
@@ -72,6 +94,8 @@ async def register(req: Request):
         row = db.execute("SELECT relay_id FROM devices WHERE token=?", (token,)).fetchone()
         if row:
             return {"relay_id": row[0]}
+        if db.execute("SELECT COUNT(*) FROM devices").fetchone()[0] >= MAX_DEVICES:
+            raise HTTPException(503, "relay full")
         rid = secrets.token_urlsafe(16)
         db.execute("INSERT INTO devices (relay_id, token, created) VALUES (?,?,?)",
                    (rid, token, time.time()))
