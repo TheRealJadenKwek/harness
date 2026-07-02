@@ -1001,7 +1001,7 @@ def run_claude_stream(thread, provider, text, images=None):
     if thread.get('session_id'):
         cmd += ['--resume', thread['session_id']]
     proc = subprocess.Popen(cmd, cwd=thread.get('cwd') or HOME, env=_provider_env(provider),
-                            text=True, bufsize=1,
+                            text=True, bufsize=1, encoding='utf-8', errors='replace',
                             stdout=subprocess.PIPE, stderr=subprocess.PIPE)
     reg_run(thread['id'], proc)
     answer, session_id, final_result, saw_error = [], None, None, False
@@ -1175,7 +1175,8 @@ def run_codex_stream(thread, provider, text, images=None):
         cmd = [CODEX_BIN, 'exec'] + opts + ['-C', thread.get('cwd') or HOME, '--color', 'never', text]
     t0 = time.time()
     proc = subprocess.Popen(cmd, cwd=thread.get('cwd') or HOME, env=_provider_env(provider),
-                            text=True, bufsize=1, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+                            text=True, bufsize=1, encoding='utf-8', errors='replace',
+                            stdout=subprocess.PIPE, stderr=subprocess.PIPE)
     reg_run(thread['id'], proc)
     # Watchdog kills the run past JOB_TIMEOUT; stderr drained off-thread to avoid pipe deadlock.
     timed_out = {'v': False}
@@ -1225,7 +1226,7 @@ def run_codex_stream(thread, provider, text, images=None):
         except Exception: pass
         yield {'type': 'error', 'message': 'codex timed out after %ss' % JOB_TIMEOUT}; return
     try:
-        result = open(outfile.name).read().strip()
+        result = open(outfile.name, encoding='utf-8', errors='replace').read().strip()
     except Exception:
         result = ''
     finally:
