@@ -31,7 +31,7 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 # clients are refused before auth, since this exec server runs full-control CLIs.
 TAILNET = ipaddress.ip_network('100.64.0.0/10')
 
-VERSION = '0.2.0'
+VERSION = '0.5.0'
 BASE = os.path.expanduser('~/.claude-harness')
 CONFIG = os.path.join(BASE, 'config.env')
 PROVIDERS_FILE = os.path.join(BASE, 'providers.json')
@@ -1630,7 +1630,8 @@ def schedule_text(s):
 
 def auto_public(a):
     d = {k: a.get(k) for k in ('id', 'name', 'prompt', 'provider', 'model', 'effort',
-                               'cwd', 'enabled', 'thread_id', 'last_run', 'last_status')}
+                               'cwd', 'enabled', 'thread_id', 'last_run', 'last_status',
+                               'max_runs_per_day')}
     d['schedule'] = a.get('schedule') or {}
     d['schedule_text'] = schedule_text(d['schedule'])
     return d
@@ -1667,12 +1668,41 @@ def _validate_auto(body, existing=None):
     eff = body.get('effort') or a.get('effort') or 'default'
     if eff not in ALLOWED_EFFORTS:
         eff = 'default'
+    try:
+        cap = max(0, min(96, int(body.get('max_runs_per_day',
+                                          a.get('max_runs_per_day') or 0) or 0)))
+    except Exception:
+        cap = 0
     a.update({'name': name, 'prompt': prompt, 'provider': pid,
               'model': (body.get('model') if 'model' in body else a.get('model')) or None,
-              'effort': eff, 'cwd': cwd, 'schedule': s,
+              'effort': eff, 'cwd': cwd, 'schedule': s, 'max_runs_per_day': cap,
               'enabled': bool(body.get('enabled', a.get('enabled', True)))})
     a.setdefault('id', uuid.uuid4().hex[:12])
     return a, None
+
+def usage_blocked():
+    """True while Claude's five-hour window is exhausted (auto-lifts at resetsAt).
+    Scheduled automations skip instead of burning the user's remaining window."""
+    with _usage_lock:
+        fh = (RATE_LIMITS.get('claude') or {}).get('five_hour') or {}
+    if fh.get('status') != 'rejected':
+        return False
+    try:
+        resets = float(fh.get('resetsAt') or 0)
+    except Exception:
+        resets = 0
+    return not resets or time.time() < resets
+
+def _mark_auto(aid, status):
+    """Record a scheduler decision on the automation (only when it changed)."""
+    with _autos_lock:
+        autos = load_autos()
+        for x in autos:
+            if x['id'] == aid and x.get('last_status') != status:
+                x['last_status'] = status
+                save_autos(autos)
+                log('automation "%s" %s' % (x['name'], status))
+                return
 
 def _auto_thread(a):
     """The automation's dedicated thread — created on first run."""
@@ -1712,12 +1742,16 @@ def run_automation(aid):
     except Exception as e:
         lock.release()
         return False, str(e)
+    today = time.strftime('%Y-%m-%d')
     with _autos_lock:
         autos = load_autos()
         for x in autos:
             if x['id'] == aid:
                 x['thread_id'] = t['id']
                 x['last_run'] = time.time()
+                x['last_status'] = 'started'
+                x['runs_today'] = (int(x.get('runs_today') or 0) + 1) if x.get('runs_day') == today else 1
+                x['runs_day'] = today
         save_autos(autos)
     log('automation RUN "%s" -> thread %s' % (a['name'], t['id'][:8]))
     return True, t['id']
@@ -1733,12 +1767,23 @@ def _autos_loop():
                 if not a.get('enabled', True):
                     continue
                 s, last = a.get('schedule') or {}, a.get('last_run') or 0
-                if s.get('type') == 'interval':
-                    if nowts - last >= int(s.get('minutes', 60)) * 60:
-                        run_automation(a['id'])
-                elif lt.tm_hour == int(s.get('hour', -1)) and lt.tm_min == int(s.get('minute', -1)) \
-                        and nowts - last > 120:
-                    run_automation(a['id'])
+                due = (nowts - last >= int(s.get('minutes', 60)) * 60) if s.get('type') == 'interval' \
+                    else (lt.tm_hour == int(s.get('hour', -1)) and lt.tm_min == int(s.get('minute', -1))
+                          and nowts - last > 120)
+                if not due:
+                    continue
+                # Guardrails: never burn a capped Claude window on a scheduled run,
+                # and honor the per-automation daily run limit (manual Run-now bypasses both).
+                prov = provider_by_id(a.get('provider') or 'claude')
+                if prov and prov.get('engine') == 'claude' and usage_blocked():
+                    _mark_auto(a['id'], 'skipped: usage cap')
+                    continue
+                cap = int(a.get('max_runs_per_day') or 0)
+                if cap and a.get('runs_day') == time.strftime('%Y-%m-%d') \
+                        and int(a.get('runs_today') or 0) >= cap:
+                    _mark_auto(a['id'], 'skipped: daily cap')
+                    continue
+                run_automation(a['id'])
         except Exception as e:
             log('automations loop error: %s' % e)
 

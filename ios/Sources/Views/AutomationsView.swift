@@ -174,6 +174,9 @@ private struct ManagedAutomationRow: View {
                     Text("last run \(relativeTime(lr))")
                         .font(.caption2).foregroundStyle(Color.appSecondary)
                 }
+                if let st = a.last_status, st.hasPrefix("skipped") {
+                    Text(st).font(.caption2).foregroundStyle(.orange)
+                }
             }
         }
         .padding(.vertical, 3)
@@ -194,6 +197,7 @@ struct AutomationEditor: View {
     @State private var scheduleType = "daily"
     @State private var time = Calendar.current.date(from: DateComponents(hour: 9, minute: 0)) ?? Date()
     @State private var intervalMinutes = 60
+    @State private var dailyCap = 0
     @State private var saving = false
     @State private var errorText: String?
 
@@ -219,7 +223,7 @@ struct AutomationEditor: View {
                             }
                         }
                 }
-                Section("Schedule") {
+                Section {
                     Picker("Repeats", selection: $scheduleType) {
                         Text("Daily at a time").tag("daily")
                         Text("Every interval").tag("interval")
@@ -233,6 +237,17 @@ struct AutomationEditor: View {
                             }
                         }
                     }
+                    Picker("Daily run limit", selection: $dailyCap) {
+                        Text("Unlimited").tag(0)
+                        ForEach([2, 4, 8, 12, 24], id: \.self) { n in
+                            Text("\(n) runs").tag(n)
+                        }
+                    }
+                } header: {
+                    Text("Schedule")
+                } footer: {
+                    Text("Scheduled runs also pause automatically while your Claude 5-hour usage window is maxed out. Run-now always works.")
+                        .font(.caption2)
                 }
                 Section("Engine") {
                     Picker("Engine", selection: $provider) {
@@ -274,6 +289,7 @@ struct AutomationEditor: View {
         provider = a.provider ?? "claude"
         effort = a.effort ?? "default"
         cwd = a.cwd ?? ""
+        dailyCap = a.max_runs_per_day ?? 0
         if a.schedule.type == "interval" {
             scheduleType = "interval"
             intervalMinutes = a.schedule.minutes ?? 60
@@ -301,6 +317,7 @@ struct AutomationEditor: View {
             "provider": provider,
             "effort": effort,
             "schedule": schedule,
+            "max_runs_per_day": dailyCap,
         ]
         if !cwd.trimmingCharacters(in: .whitespaces).isEmpty {
             body["cwd"] = cwd.trimmingCharacters(in: .whitespaces)

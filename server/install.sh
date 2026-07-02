@@ -1,10 +1,16 @@
 #!/bin/bash
 # Harness installer — sets up the Mac companion server that the iOS "Harness" app drives.
 # Usage:  ./install.sh            install / repair (idempotent — keeps an existing token)
+#         ./install.sh --update   fetch the latest server from harness-site, verify, restart
+#                                 (compile-checked; auto-rolls-back if the new server won't start)
 #         ./install.sh --dry-run  show what it would do, change nothing
 set -euo pipefail
 
-DRY=0; [ "${1:-}" = "--dry-run" ] && DRY=1
+DRY=0; MODE=install
+case "${1:-}" in
+  --dry-run) DRY=1 ;;
+  --update)  MODE=update ;;
+esac
 say()  { printf '  %s\n' "$*"; }
 head() { printf '\n\033[1m%s\033[0m\n' "$*"; }
 die()  { printf '\n\033[31m✗ %s\033[0m\n' "$*" >&2; exit 1; }
@@ -16,6 +22,36 @@ PLIST="$HOME/Library/LaunchAgents/$LABEL.plist"
 PORT=8787
 
 head "Harness installer"
+
+# 0) Self-update -----------------------------------------------------------
+SITE="${HARNESS_UPDATE_URL:-https://harness-site.vercel.app}"
+if [ "$MODE" = update ]; then
+  PY="$(command -v python3 || true)"; [ -n "$PY" ] || die "python3 not found"
+  [ -f "$DEST/server.py" ] || die "no existing install at $DEST — run ./install.sh first"
+  UPORT="$(grep -m1 '^HARNESS_PORT=' "$DEST/config.env" 2>/dev/null | cut -d= -f2 || true)"
+  UPORT="${UPORT:-$PORT}"
+  head "Updating harness from $SITE"
+  for f in server.py approval_tool.py; do
+    curl -fsSL "$SITE/$f" -o "$DEST/$f.new" || die "download failed: $f"
+  done
+  "$PY" -m py_compile "$DEST/server.py.new" || die "new server.py doesn't compile — aborting, nothing changed"
+  cp "$DEST/server.py" "$DEST/server.py.prev"
+  mv "$DEST/server.py.new" "$DEST/server.py"
+  mv "$DEST/approval_tool.py.new" "$DEST/approval_tool.py"
+  launchctl kickstart -k "gui/$(id -u)/$LABEL" 2>/dev/null || true
+  ok=0
+  for i in $(seq 1 15); do
+    curl -fsS "http://127.0.0.1:$UPORT/health" >/dev/null 2>&1 && ok=1 && break || sleep 1
+  done
+  if [ "$ok" = 0 ]; then
+    cp "$DEST/server.py.prev" "$DEST/server.py"
+    launchctl kickstart -k "gui/$(id -u)/$LABEL" 2>/dev/null || true
+    die "new server failed its health check — ROLLED BACK to the previous version"
+  fi
+  VER="$(curl -fsS "http://127.0.0.1:$UPORT/health" | "$PY" -c 'import json,sys;print(json.load(sys.stdin).get("version","?"))' 2>/dev/null || echo '?')"
+  head "✅ Updated to $VER (previous kept at server.py.prev)"
+  exit 0
+fi
 
 # 1) Prerequisites ---------------------------------------------------------
 head "1. Checking prerequisites"

@@ -96,6 +96,8 @@ struct ManagedAutomation: Codable, Identifiable, Hashable {
     var enabled: Bool
     var thread_id: String?
     var last_run: Double?
+    var last_status: String?
+    var max_runs_per_day: Int?
     var schedule: AutoSchedule
     var schedule_text: String?
 }
