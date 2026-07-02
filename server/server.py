@@ -1799,6 +1799,8 @@ class Handler(BaseHTTPRequestHandler):
         sub = '/'.join(parts[5:])
         q = urllib.parse.urlparse(self.path).query
         status, hdrs, data = proxy_request(port, sub, q, self.command, raw, self.headers)
+        log('proxy %s :%d /%s -> %s (%dB)' % (self.command, port, sub, status, len(data)))
+        hdrs = {k.title(): v for k, v in hdrs.items()}   # http.server sends 'Content-type'
         self.send_response(status)
         self.send_header('Content-Type', hdrs.get('Content-Type') or 'application/octet-stream')
         loc = hdrs.get('Location')

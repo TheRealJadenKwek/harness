@@ -59,7 +59,9 @@ CLAUDE_BIN=$CLAUDE
 CODEX_BIN=$CODEX
 JOB_TIMEOUT=1800
 MAX_MSG_CHARS=100000
-# Push (optional): create an APNs key at developer.apple.com and fill these in.
+# Push notifications work out of the box via the hosted relay (no Apple key needed).
+RELAY_URL=https://harness-relay-production.up.railway.app
+# Advanced: run your OWN APNs push instead of the relay — fill these and the relay is bypassed.
 # APNS_KEY_ID=
 # APNS_TEAM_ID=
 # APNS_KEY_FILE=

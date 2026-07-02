@@ -231,12 +231,15 @@ final class ProxySchemeHandler: NSObject, WKURLSchemeHandler {
         lock.lock(); active.insert(key); lock.unlock()
 
         guard let url = task.request.url, let tid = url.host, let port = url.port else {
-            finish(task, nil, nil, URLError(.badURL)); return
+            let u = task.request.url ?? URL(string: "harness-proxy://x/")!
+            finish(task, nil, nil, URLError(.badURL), schemeURL: u); return
         }
         let trimmed = base.hasSuffix("/") ? String(base.dropLast()) : base
         var target = "\(trimmed)/threads/\(tid)/proxy/\(port)\(url.path.isEmpty ? "/" : url.path)"
         if let q = url.query, !q.isEmpty { target += "?\(q)" }
-        guard let real = URL(string: target) else { finish(task, nil, nil, URLError(.badURL)); return }
+        guard let real = URL(string: target) else {
+            finish(task, nil, nil, URLError(.badURL), schemeURL: url); return
+        }
 
         var req = URLRequest(url: real)
         req.httpMethod = task.request.httpMethod ?? "GET"
@@ -245,8 +248,9 @@ final class ProxySchemeHandler: NSObject, WKURLSchemeHandler {
         for h in ["Content-Type", "Accept", "Range"] {
             if let v = task.request.value(forHTTPHeaderField: h) { req.setValue(v, forHTTPHeaderField: h) }
         }
+        let schemeURL = url
         URLSession.shared.dataTask(with: req) { [weak self] data, resp, err in
-            self?.finish(task, resp, data, err)
+            self?.finish(task, resp, data, err, schemeURL: schemeURL)
         }.resume()
     }
 
@@ -258,13 +262,23 @@ final class ProxySchemeHandler: NSObject, WKURLSchemeHandler {
         lock.lock(); defer { lock.unlock() }; return active.contains(ObjectIdentifier(task))
     }
 
-    private func finish(_ task: WKURLSchemeTask, _ resp: URLResponse?, _ data: Data?, _ err: Error?) {
+    private func finish(_ task: WKURLSchemeTask, _ resp: URLResponse?, _ data: Data?,
+                        _ err: Error?, schemeURL: URL) {
         DispatchQueue.main.async {
             guard self.isActive(task) else { return }
             self.lock.lock(); self.active.remove(ObjectIdentifier(task)); self.lock.unlock()
             if let err { task.didFailWithError(err); return }
             guard let resp, let data else { task.didFailWithError(URLError(.badServerResponse)); return }
-            task.didReceive(resp)
+            // Re-issue the response under the harness-proxy:// URL, not the real harness URL —
+            // otherwise WKWebView sets the document origin to http://…:8787 and relative
+            // resources (and the main document itself) fail to resolve through this handler.
+            let http = resp as? HTTPURLResponse
+            let ct = http?.value(forHTTPHeaderField: "Content-Type") ?? "application/octet-stream"
+            let out = HTTPURLResponse(url: schemeURL, statusCode: http?.statusCode ?? 200,
+                                      httpVersion: "HTTP/1.1",
+                                      headerFields: ["Content-Type": ct,
+                                                     "Content-Length": String(data.count)])!
+            task.didReceive(out)
             task.didReceive(data)
             task.didFinish()
         }
