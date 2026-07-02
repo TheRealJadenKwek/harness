@@ -23,7 +23,7 @@ HTTP API (all except GET /health require  Authorization: Bearer <HARNESS_TOKEN>)
          {type:tool,name} {type:done,text,session_id} {type:error,message}
   POST /threads/{id}/stop           -> {ok}  (kills that thread's running job)
 """
-import os, sys, json, time, uuid, glob, shutil, tempfile, threading, subprocess, ipaddress, hmac, base64, signal, plistlib, queue, socket, urllib.parse
+import os, re, sys, json, time, uuid, glob, shutil, tempfile, threading, subprocess, ipaddress, hmac, base64, signal, plistlib, queue, socket, urllib.parse
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
 # Only accept connections from loopback or the Tailscale CGNAT range (100.64.0.0/10).
@@ -1408,8 +1408,30 @@ def describe_schedule(d):
         return 'at login'
     return 'on demand'
 
-def list_automations():
-    """Read the user's launchd agents + cron jobs (read-only view for the app)."""
+_LLM_MARK = re.compile(r'(claude|codex|gemini|anthropic|openai|gpt-?\d|\bllm\b)', re.I)
+
+def _touches_llm(cmd_tokens):
+    """True if a job's command — or a script file it runs — mentions an LLM CLI.
+    Jobs like a daily brief bury the `claude -p` inside a shell script, so any
+    referenced file is scanned too (bounded read)."""
+    text = ' '.join(str(x) for x in cmd_tokens)
+    if _LLM_MARK.search(text):
+        return True
+    for tok in cmd_tokens:
+        p = os.path.expanduser(str(tok))
+        if os.path.isabs(p) and os.path.isfile(p):
+            try:
+                if os.path.getsize(p) <= 256 * 1024 and \
+                   _LLM_MARK.search(open(p, encoding='utf-8', errors='replace').read()):
+                    return True
+            except Exception:
+                pass
+    return False
+
+def list_automations(show_all=False):
+    """The user's SCHEDULED agent jobs (read-only view for the app). By default this
+    hides the plumbing — always-on daemons (KeepAlive services) and anything that
+    never touches an LLM (dock scripts, backups). show_all=True returns everything."""
     out = []
     home = os.path.expanduser('~')
     pids = {}
@@ -1429,6 +1451,10 @@ def list_automations():
             continue
         label = d.get('Label') or os.path.basename(plist)[:-6]
         prog = d.get('ProgramArguments') or ([d['Program']] if d.get('Program') else [])
+        if not show_all:
+            scheduled = bool(d.get('StartCalendarInterval') or d.get('StartInterval'))
+            if not scheduled or not _touches_llm(prog):
+                continue
         pid = pids.get(label)
         status = 'running' if (pid and pid not in ('-', '0')) else ('loaded' if label in pids else 'stopped')
         out.append({'name': label, 'kind': 'launchd', 'schedule': describe_schedule(d),
@@ -1441,6 +1467,8 @@ def list_automations():
                 continue
             parts = line.split(None, 5)
             if len(parts) >= 6:
+                if not show_all and not _touches_llm(parts[5].split()):
+                    continue
                 out.append({'name': parts[5][:48], 'kind': 'cron', 'schedule': ' '.join(parts[:5]),
                             'status': 'active', 'detail': parts[5][:240]})
     except Exception:
@@ -1563,7 +1591,8 @@ class Handler(BaseHTTPRequestHandler):
         if path == '/trash':
             return self._json(200, list_threads('trash'))
         if path == '/automations':
-            return self._json(200, list_automations())
+            q = urllib.parse.parse_qs(urllib.parse.urlparse(self.path).query)
+            return self._json(200, list_automations(show_all=q.get('all', [''])[0] == '1'))
         if path == '/usage':
             with _usage_lock:
                 return self._json(200, json.loads(json.dumps(RATE_LIMITS)))
