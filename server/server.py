@@ -1,0 +1,1724 @@
+#!/usr/bin/env python3
+"""
+Claude/Codex Harness Server — a local, multi-thread, multi-model harness that
+fronts the `claude` and `codex` CLIs on the Mac and streams to a native iOS app
+over Tailscale. Stdlib only (http.server + threading), no pip deps.
+
+Each THREAD is an independent CLI conversation (its own resumable session) with
+its own engine + model/provider. New providers (GLM 5.2, Kimi, DeepSeek, …) are
+added in providers.json — for Anthropic-compatible APIs the harness sets
+ANTHROPIC_BASE_URL / ANTHROPIC_AUTH_TOKEN / model per thread, so any such model
+runs through the real `claude` CLI with full tool use.
+
+HTTP API (all except GET /health require  Authorization: Bearer <HARNESS_TOKEN>):
+  GET  /health                      -> {ok, version, engines}
+  GET  /providers                   -> [{id,label,engine,model,enabled,...}]
+  GET  /threads                     -> [thread summaries] (newest first)
+  POST /threads  {provider?,engine?,cwd?,title?}   -> thread
+  GET  /threads/{id}                -> full thread incl. messages
+  POST /threads/{id}/rename {title} -> thread
+  DELETE /threads/{id}              -> {ok}
+  POST /threads/{id}/messages {text}-> text/event-stream of:
+         {type:session,id} {type:thinking,delta} {type:text,delta}
+         {type:tool,name} {type:done,text,session_id} {type:error,message}
+  POST /threads/{id}/stop           -> {ok}  (kills that thread's running job)
+"""
+import os, sys, json, time, uuid, glob, shutil, tempfile, threading, subprocess, ipaddress, hmac, base64, signal, plistlib, queue, urllib.parse
+from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+
+# Only accept connections from loopback or the Tailscale CGNAT range (100.64.0.0/10).
+# Belt-and-suspenders with the bearer token: even on hostile Wi-Fi, non-tailnet
+# clients are refused before auth, since this exec server runs full-control CLIs.
+TAILNET = ipaddress.ip_network('100.64.0.0/10')
+
+VERSION = '0.2.0'
+BASE = os.path.expanduser('~/.claude-harness')
+CONFIG = os.path.join(BASE, 'config.env')
+PROVIDERS_FILE = os.path.join(BASE, 'providers.json')
+KEYS_FILE = os.path.join(BASE, 'keys.json')   # app-set provider API keys (chmod 600)
+THREADS_DIR = os.path.join(BASE, 'threads')
+TRASH_DIR = os.path.join(BASE, 'trash')        # soft-deleted threads (restorable; auto-purged)
+IMG_DIR = os.path.join(BASE, 'uploads')
+PUSH_FILE = os.path.join(BASE, 'push.json')   # registered APNs device tokens
+USAGE_FILE = os.path.join(BASE, 'usage.json') # latest plan rate-limit snapshot (from Claude stream)
+LOG = os.path.join(BASE, 'harness.log')
+HOME = os.path.expanduser('~')
+TRASH_TTL_DAYS = 30
+os.makedirs(THREADS_DIR, exist_ok=True)
+os.makedirs(TRASH_DIR, exist_ok=True)
+os.makedirs(IMG_DIR, exist_ok=True)
+
+# --------------------------------------------------------------------------- config
+def load_config():
+    cfg = {}
+    try:
+        with open(CONFIG) as f:
+            for line in f:
+                line = line.strip()
+                if not line or line.startswith('#') or '=' not in line:
+                    continue
+                k, v = line.split('=', 1)
+                cfg[k.strip()] = v.strip()
+    except FileNotFoundError:
+        pass
+    return cfg
+
+CFG = load_config()
+# App-set provider keys persist here and overlay config.env (so keys entered in the
+# iOS app survive restarts without editing config.env).
+APP_KEYS = {}
+try:
+    with open(KEYS_FILE) as _kf:
+        APP_KEYS = json.load(_kf)
+        CFG.update(APP_KEYS)
+except Exception:
+    APP_KEYS = {}
+
+def save_keys():
+    tmp = KEYS_FILE + '.tmp'
+    with open(tmp, 'w') as f:
+        json.dump(APP_KEYS, f)
+    try:
+        os.chmod(tmp, 0o600)
+    except Exception:
+        pass
+    os.replace(tmp, KEYS_FILE)
+
+TOKEN = CFG.get('HARNESS_TOKEN', '').strip()
+PORT = int(CFG.get('HARNESS_PORT', '8787'))
+CLAUDE_BIN = CFG.get('CLAUDE_BIN', '').strip() or shutil.which('claude') or 'claude'
+CODEX_BIN = CFG.get('CODEX_BIN', '').strip() or shutil.which('codex') or 'codex'
+GEMINI_BIN = CFG.get('GEMINI_BIN', '').strip() or shutil.which('gemini') or 'gemini'
+JOB_TIMEOUT = int(CFG.get('JOB_TIMEOUT', '1800'))
+MAX_MSG = int(CFG.get('MAX_MSG_CHARS', '100000'))
+# APNs (push). Inactive until APNS_KEY_FILE/KEY_ID/TEAM_ID are set in config.env.
+APNS_KEY_ID   = CFG.get('APNS_KEY_ID', '').strip()
+APNS_TEAM_ID  = CFG.get('APNS_TEAM_ID', '').strip()
+APNS_KEY_FILE = os.path.expanduser(CFG.get('APNS_KEY_FILE', '').strip())
+APNS_BUNDLE   = CFG.get('APNS_BUNDLE_ID', 'com.jadenkwek.harness').strip()
+APNS_ENV      = CFG.get('APNS_ENV', 'sandbox').strip()   # dev-signed app => sandbox
+MAX_BODY = 32 * 1024 * 1024         # hard cap on raw request body (anti-DoS; fits compressed images)
+ALLOWED_MODES = {'bypass', 'plan', 'acceptEdits', 'default'}   # Claude permission modes
+ALLOWED_EFFORTS = {'default', 'low', 'medium', 'high', 'xhigh', 'max'}  # claude has max; codex tops at xhigh
+
+HINT = (CFG.get('HARNESS_HINT', '').strip() or
+        "You are reachable from a native iOS app on the user's Mac; keep replies readable on a phone.")
+
+# Portable PATH: keep whatever launchd/shell gave us, then add the dirs of the detected CLIs
+# plus the usual install locations — so node-based `claude`/`codex` resolve on any Mac.
+BASE_ENV = dict(os.environ)
+BASE_ENV['HOME'] = HOME
+_extra_path = []
+for _b in (CLAUDE_BIN, CODEX_BIN, GEMINI_BIN):
+    _d = os.path.dirname(_b) if os.path.isabs(_b) else ''
+    if _d and _d not in _extra_path:
+        _extra_path.append(_d)
+for _d in (os.path.join(HOME, '.local/bin'), '/opt/homebrew/bin', '/usr/local/bin',
+           '/usr/bin', '/bin', '/usr/sbin', '/sbin'):
+    if _d not in _extra_path:
+        _extra_path.append(_d)
+BASE_ENV['PATH'] = ':'.join(_extra_path) + ':' + BASE_ENV.get('PATH', '')
+
+def log(msg):
+    line = '[%s] %s' % (time.strftime('%Y-%m-%d %H:%M:%S'), msg)
+    print(line, flush=True)
+    try:
+        open(LOG, 'a').write(line + '\n')
+    except Exception:
+        pass
+
+# --------------------------------------------------------------------------- providers
+DEFAULT_PROVIDERS = [
+    {"id": "claude", "label": "Claude", "engine": "claude", "model": None,
+     "base_url": None, "api_key_env": None, "enabled": True,
+     "models": [{"label": "Opus 4.8", "value": "claude-opus-4-8"},
+                {"label": "Sonnet 4.6", "value": "claude-sonnet-4-6"},
+                {"label": "Haiku 4.5", "value": "claude-haiku-4-5"},
+                {"label": "Opus 4.7", "value": "claude-opus-4-7"},
+                {"label": "Opus 4.6", "value": "claude-opus-4-6"}]},
+    {"id": "codex",  "label": "Codex",  "engine": "codex",  "model": None,
+     "base_url": None, "api_key_env": None, "enabled": True,
+     "models": [{"label": "GPT-5.5", "value": "gpt-5.5"},
+                {"label": "GPT-5.4", "value": "gpt-5.4"},
+                {"label": "GPT-5.4-Mini", "value": "gpt-5.4-mini"},
+                {"label": "GPT-5.3-Codex-Spark", "value": "gpt-5.3-codex-spark"}]},
+    # --- BYO-key slots: add the key to config.env, set "enabled": true, restart the harness ---
+    # GLM coding plan via Z.ai's Anthropic-compatible endpoint (runs through the claude CLI).
+    # Set model to glm-4.6 (stable) or glm-5.2 if your plan serves it.
+    {"id": "glm", "label": "GLM (Z.ai coding)", "engine": "claude", "model": "glm-4.6",
+     "base_url": "https://api.z.ai/api/anthropic", "api_key_env": "GLM_API_KEY", "enabled": False,
+     "models": [{"label": "GLM-4.6", "value": "glm-4.6"}, {"label": "GLM-5.2", "value": "glm-5.2"}]},
+    # OpenRouter via Codex's custom-provider mechanism (OpenAI-compatible). Set `model` to any
+    # OpenRouter model id (e.g. "z-ai/glm-4.6", "anthropic/claude-3.7-sonnet", "deepseek/deepseek-chat").
+    # If it errors on startup, change "wire_api" to "chat".
+    {"id": "openrouter", "label": "OpenRouter", "engine": "codex", "model": "z-ai/glm-4.6",
+     "base_url": "https://openrouter.ai/api/v1", "api_key_env": "OPENROUTER_API_KEY",
+     "wire_api": "responses", "enabled": False},
+]
+
+def load_providers():
+    try:
+        with open(PROVIDERS_FILE) as f:
+            return json.load(f)
+    except Exception:
+        with open(PROVIDERS_FILE, 'w') as f:
+            json.dump(DEFAULT_PROVIDERS, f, indent=2)
+        return list(DEFAULT_PROVIDERS)
+
+def provider_by_id(pid):
+    for p in load_providers():
+        if p.get('id') == pid:
+            return p
+    return None
+
+ALIAS_LABELS = {
+    'opus': 'Opus 4.8', 'sonnet': 'Sonnet 4.6', 'haiku': 'Haiku 4.5',
+    'claude-opus-4-8': 'Opus 4.8', 'claude-sonnet-4-6': 'Sonnet 4.6',
+    'claude-haiku-4-5': 'Haiku 4.5', 'claude-opus-4-7': 'Opus 4.7', 'claude-opus-4-6': 'Opus 4.6',
+    'gpt-5.5': 'GPT-5.5', 'gpt-5.4': 'GPT-5.4', 'gpt-5.4-mini': 'GPT-5.4-Mini',
+    'gpt-5.3-codex-spark': 'GPT-5.3-Codex-Spark',
+}
+
+def _claude_default_model():
+    try:
+        return json.load(open(os.path.expanduser('~/.claude/settings.json'))).get('model')
+    except Exception:
+        return None
+
+def _codex_default_model():
+    try:
+        for line in open(os.path.expanduser('~/.codex/config.toml')):
+            line = line.strip()
+            if (line.startswith('model') and '=' in line and 'reasoning' not in line
+                    and 'provider' not in line):
+                return line.split('=', 1)[1].strip().strip('"\'')
+    except Exception:
+        pass
+    return None
+
+def default_model_label(p):
+    """Friendly name of what 'Default' resolves to for a provider."""
+    raw = p.get('model')
+    if not raw:
+        eng = p.get('engine')
+        raw = _claude_default_model() if eng == 'claude' else (_codex_default_model() if eng == 'codex' else None)
+    return ALIAS_LABELS.get(str(raw).lower(), str(raw)) if raw else None
+
+EFFORT_LABELS = {'low': 'Low', 'medium': 'Medium', 'high': 'High',
+                 'xhigh': 'Extra High', 'max': 'Max', 'minimal': 'Minimal'}
+
+def _codex_default_effort():
+    try:
+        for line in open(os.path.expanduser('~/.codex/config.toml')):
+            line = line.strip()
+            if line.startswith('model_reasoning_effort') and '=' in line:
+                return line.split('=', 1)[1].strip().strip('"\'')
+    except Exception:
+        pass
+    return None
+
+def default_effort_label(p):
+    eng = p.get('engine')
+    raw = _codex_default_effort() if eng == 'codex' else None   # claude has no settable default
+    return EFFORT_LABELS.get(str(raw).lower(), str(raw)) if raw else None
+
+def _provider_public(p):
+    """Projection sent to the app — never the key value, just whether one is set."""
+    return {'id': p.get('id'), 'label': p.get('label'), 'engine': p.get('engine'),
+            'model': p.get('model'), 'enabled': p.get('enabled'),
+            'models': p.get('models'), 'default_model': default_model_label(p),
+            'default_effort': default_effort_label(p),
+            'requires_key': bool(p.get('api_key_env')),
+            'has_key': bool(p.get('api_key_env') and CFG.get(p['api_key_env']))}
+
+# --------------------------------------------------------------------------- detached jobs
+# A "job" runs an engine turn in a background thread, decoupled from the HTTP
+# request that started it. The client SSE connection is just a *subscriber*: if
+# the phone closes mid-turn, the job keeps running to completion, persists the
+# answer, and fires a push notification. Reconnecting clients re-attach and get
+# the buffered backlog + live tail.
+_SENTINEL = object()
+JOBS = {}                  # thread_id -> Job (only present while running)
+_jobs_lock = threading.Lock()
+
+class Job:
+    def __init__(self, tid):
+        self.tid = tid
+        self.events = []       # everything published so far (replay for late subscribers)
+        self.subs = []         # live subscriber Queues
+        self.done = False
+        self.lock = threading.Lock()
+
+    def publish(self, ev):
+        with self.lock:
+            self.events.append(ev)
+            # Bound replay memory on long agentic turns: keep all structured events
+            # (session/tool/question/done/error) but only the tail of text/thinking deltas.
+            if len(self.events) > 6000:
+                self.events = ([e for e in self.events[:-2000]
+                                if e.get('type') not in ('text', 'thinking')]
+                               + self.events[-2000:])
+            subs = list(self.subs)
+        for q in subs:
+            try: q.put_nowait(ev)
+            except Exception: pass
+
+    def attach(self):
+        """Returns (backlog, queue_or_None). None queue => job already finished."""
+        q = queue.Queue()
+        with self.lock:
+            backlog = list(self.events)
+            if self.done:
+                return backlog, None
+            self.subs.append(q)
+            return backlog, q
+
+    def detach(self, q):
+        with self.lock:
+            if q in self.subs:
+                self.subs.remove(q)
+
+    def finish(self):
+        with self.lock:
+            self.done = True
+            subs = list(self.subs); self.subs = []
+        for q in subs:
+            try: q.put_nowait(_SENTINEL)
+            except Exception: pass
+
+def job_for(tid):
+    with _jobs_lock:
+        return JOBS.get(tid)
+
+# --------------------------------------------------------------------------- usage / rate limits
+# Claude's stream-json emits a `rate_limit_event` carrying the plan limit that's currently
+# binding (five_hour, and seven_day when near the weekly cap): status + resetsAt. We snapshot
+# the latest per type. Codex's CLI exposes no plan/quota info — only per-turn tokens.
+_usage_lock = threading.Lock()
+def _load_usage():
+    try:
+        with open(USAGE_FILE) as f:
+            return json.load(f)
+    except Exception:
+        return {}
+RATE_LIMITS = _load_usage()
+
+def record_rate_limit(info):
+    rlt = (info or {}).get('rateLimitType')
+    if not rlt:
+        return
+    with _usage_lock:
+        c = RATE_LIMITS.setdefault('claude', {})
+        c[rlt] = {'status': info.get('status'), 'resetsAt': info.get('resetsAt'),
+                  'isUsingOverage': info.get('isUsingOverage'), 'at': time.time()}
+        c['updated'] = time.time()
+        try:
+            tmp = USAGE_FILE + '.tmp'
+            with open(tmp, 'w') as f:
+                json.dump(RATE_LIMITS, f)
+            os.replace(tmp, USAGE_FILE)
+        except Exception:
+            pass
+
+# --------------------------------------------------------------------------- push (APNs)
+_push_lock = threading.Lock()
+
+def load_push_tokens():
+    try:
+        with open(PUSH_FILE) as f:
+            return list(dict.fromkeys(json.load(f).get('tokens', [])))
+    except Exception:
+        return []
+
+def save_push_tokens(tokens):
+    tokens = list(dict.fromkeys(tokens))
+    tmp = PUSH_FILE + '.tmp'
+    with open(tmp, 'w') as f:
+        json.dump({'tokens': tokens}, f)
+    try: os.chmod(tmp, 0o600)
+    except Exception: pass
+    os.replace(tmp, PUSH_FILE)
+    return tokens
+
+def add_push_token(tok):
+    with _push_lock:
+        toks = load_push_tokens()
+        if tok not in toks:
+            toks.append(tok)
+            save_push_tokens(toks)
+        return toks
+
+def remove_push_tokens(bad):
+    with _push_lock:
+        toks = [t for t in load_push_tokens() if t not in set(bad)]
+        save_push_tokens(toks)
+
+def apns_configured():
+    return bool(APNS_KEY_ID and APNS_TEAM_ID and APNS_KEY_FILE and os.path.exists(APNS_KEY_FILE))
+
+_jwt_cache = {'jwt': None, 'iat': 0}
+_jwt_lock = threading.Lock()
+
+def _der_to_jose(der):
+    """ECDSA DER signature (SEQUENCE{ INTEGER r, INTEGER s }) -> raw 64-byte r||s."""
+    if not der or der[0] != 0x30:
+        raise ValueError('bad DER')
+    i = 2
+    if der[1] & 0x80:                       # long-form outer length (defensive)
+        i = 2 + (der[1] & 0x7f)
+    if der[i] != 0x02: raise ValueError('bad DER r')
+    i += 1; rlen = der[i]; i += 1; r = der[i:i+rlen]; i += rlen
+    if der[i] != 0x02: raise ValueError('bad DER s')
+    i += 1; slen = der[i]; i += 1; s = der[i:i+slen]; i += slen
+    r = r.lstrip(b'\x00').rjust(32, b'\x00')
+    s = s.lstrip(b'\x00').rjust(32, b'\x00')
+    return r + s
+
+def _b64u(b):
+    return base64.urlsafe_b64encode(b).rstrip(b'=')
+
+def apns_jwt():
+    """ES256 JWT for APNs, signed via openssl (no pip deps). Cached ~40 min.
+    Lock guards the check-mint-store so concurrent job threads don't double-mint."""
+    with _jwt_lock:
+        now = time.time()
+        if _jwt_cache['jwt'] and now - _jwt_cache['iat'] < 2400:
+            return _jwt_cache['jwt']
+        if not apns_configured():
+            return None
+        header = _b64u(json.dumps({'alg': 'ES256', 'kid': APNS_KEY_ID}, separators=(',', ':')).encode())
+        payload = _b64u(json.dumps({'iss': APNS_TEAM_ID, 'iat': int(now)}, separators=(',', ':')).encode())
+        signing_input = header + b'.' + payload
+        try:
+            p = subprocess.run(['openssl', 'dgst', '-sha256', '-sign', APNS_KEY_FILE],
+                               input=signing_input, stdout=subprocess.PIPE, stderr=subprocess.PIPE, timeout=10)
+            if p.returncode != 0 or not p.stdout:
+                log('apns jwt sign failed: %s' % (p.stderr or b'')[-200:]); return None
+            sig = _der_to_jose(p.stdout)
+        except Exception as e:
+            log('apns jwt error: %s' % e); return None
+        jwt = (signing_input + b'.' + _b64u(sig)).decode()
+        _jwt_cache.update(jwt=jwt, iat=now)
+        return jwt
+
+def apns_send(token, payload):
+    """Returns (ok, status_code, reason). reason is the APNs JSON 'reason' on failure."""
+    jwt = apns_jwt()
+    if not jwt:
+        return False, 'nojwt', 'NoJWT'
+    host = 'api.sandbox.push.apple.com' if APNS_ENV == 'sandbox' else 'api.push.apple.com'
+    url = 'https://%s/3/device/%s' % (host, token)
+    cmd = ['curl', '-s', '--http2', '-X', 'POST',
+           '-H', 'authorization: bearer ' + jwt,
+           '-H', 'apns-topic: ' + APNS_BUNDLE,
+           '-H', 'apns-push-type: alert',
+           '-H', 'apns-priority: 10',
+           '-d', json.dumps(payload), '-w', '\n%{http_code}', url]   # body + status (no -o /dev/null)
+    try:
+        p = subprocess.run(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, timeout=15)
+        out = (p.stdout or '').rsplit('\n', 1)
+        code = out[-1].strip()[-3:] if out else ''
+        reason = ''
+        if code != '200' and len(out) == 2 and out[0].strip():
+            try: reason = (json.loads(out[0]) or {}).get('reason', '')
+            except Exception: reason = out[0].strip()[:60]
+        return code == '200', (code or 'err'), reason
+    except FileNotFoundError:
+        return False, 'nocurl', 'CurlMissing'
+    except Exception as e:
+        return False, 'err', str(e)[:40]
+
+def notify_push(thread, text, questions=None):
+    tokens = load_push_tokens()
+    if not tokens:
+        return
+    if not apns_configured():
+        log('push: %d device(s) registered but APNs not configured (set APNS_* in config.env)' % len(tokens))
+        return
+    who = 'Codex' if thread.get('engine') == 'codex' else 'Claude'
+    title = (thread.get('title') or who)[:60]
+    if questions:
+        body = '❓ ' + str((questions[0] or {}).get('question') or 'Has a question for you')[:150]
+    else:
+        body = (text or '').replace('\n', ' ').strip()[:170] or 'Done'
+    payload = {'aps': {'alert': {'title': title, 'body': body},
+                       'sound': 'default', 'badge': 1, 'thread-id': thread['id']},
+               'threadId': thread['id'], 'engine': thread.get('engine')}
+    bad = []
+    for tok in tokens:
+        ok, code, reason = apns_send(tok, payload)
+        log('push -> %s… : %s %s' % (tok[:8], code, reason))
+        # Only prune on a genuine dead-token signal — 410 Unregistered, or 400 BadDeviceToken.
+        # A blanket 400/403 prune would delete still-valid tokens on transient/JWT errors.
+        if not ok and (code == '410' or reason in ('BadDeviceToken', 'Unregistered', 'DeviceTokenNotForTopic')):
+            bad.append(tok)
+    if bad:
+        remove_push_tokens(bad)
+
+# --------------------------------------------------------------------------- thread store
+_store_lock = threading.Lock()
+_persist_lock = threading.Lock()   # serializes thread-file read-modify-write (job persist vs rename)
+thread_locks = {}          # id -> Lock (one running job per thread)
+running = {}               # id -> Popen (for /stop)
+_running_lock = threading.Lock()
+
+def reg_run(tid, proc):
+    with _running_lock:
+        running[tid] = proc
+
+def unreg_run(tid):
+    with _running_lock:
+        running.pop(tid, None)
+
+def get_run(tid):
+    with _running_lock:
+        return running.get(tid)
+
+def valid_tid(tid):
+    return len(tid) == 32 and all(c in '0123456789abcdef' for c in tid)
+
+def _lock_for(tid):
+    with _store_lock:
+        if tid not in thread_locks:
+            thread_locks[tid] = threading.Lock()
+        return thread_locks[tid]
+
+def thread_path(tid):
+    return os.path.join(THREADS_DIR, '%s.json' % tid)
+
+def load_thread(tid):
+    try:
+        with open(thread_path(tid)) as f:
+            return json.load(f)
+    except Exception:
+        return None
+
+def save_thread(t):
+    tmp = thread_path(t['id']) + '.tmp'
+    with open(tmp, 'w') as f:
+        json.dump(t, f, indent=2)
+    os.replace(tmp, thread_path(t['id']))
+
+def thread_summary(t):
+    s = {k: t.get(k) for k in
+         ('id', 'title', 'engine', 'provider', 'model', 'cwd',
+          'permission_mode', 'effort', 'session_id', 'created', 'updated', 'total_cost')}
+    msgs = t.get('messages', [])
+    s['message_count'] = len(msgs)
+    s['running'] = job_for(t.get('id')) is not None
+    s['archived'] = bool(t.get('archived'))
+    if t.get('deleted_at'):
+        s['deleted_at'] = t['deleted_at']
+    if msgs:
+        last = msgs[-1]
+        s['last'] = (last.get('text') or '').replace('\n', ' ').strip()[:120]
+        s['last_role'] = last.get('role')
+        # a thread is "awaiting you" if its newest message is an assistant question
+        s['awaiting'] = bool(last.get('role') == 'assistant' and last.get('questions'))
+    return s
+
+def list_threads(view='active'):
+    """view: 'active' (non-archived), 'archived', or 'trash' (soft-deleted)."""
+    directory = TRASH_DIR if view == 'trash' else THREADS_DIR
+    out = []
+    for p in glob.glob(os.path.join(directory, '*.json')):
+        try:
+            with open(p) as f:
+                t = json.load(f)
+        except Exception:
+            continue
+        archived = bool(t.get('archived'))
+        if view == 'active' and archived:
+            continue
+        if view == 'archived' and not archived:
+            continue
+        out.append(thread_summary(t))
+    key = 'deleted_at' if view == 'trash' else 'updated'
+    out.sort(key=lambda x: x.get(key) or 0, reverse=True)
+    return out
+
+def purge_trash():
+    cutoff = time.time() - TRASH_TTL_DAYS * 86400
+    for p in glob.glob(os.path.join(TRASH_DIR, '*.json')):
+        try:
+            with open(p) as f:
+                t = json.load(f)
+            if (t.get('deleted_at') or 0) < cutoff:
+                os.remove(p)
+        except Exception:
+            pass
+
+# --------------------------------------------------------------------------- preview (file serving)
+MAX_PREVIEW_BYTES = 64 * 1024 * 1024     # 413 above this
+MAX_TEXT_BYTES = 4 * 1024 * 1024         # truncate text/code/markdown/svg past this
+SCAN_MAX_DEPTH = 4
+SCAN_MAX_ENTRIES = 6000
+ARTIFACT_CAP = 300
+SCAN_SKIP_DIRS = {'node_modules', '.git', 'dist', '.next', 'build', '.venv', 'venv',
+                  '__pycache__', '.cache', 'target', '.svelte-kit', 'vendor', 'Pods'}
+
+# extension -> (kind, content-type). Only these are previewable/served.
+PREVIEW_TYPES = {
+    '.html': ('html', 'text/html; charset=utf-8'), '.htm': ('html', 'text/html; charset=utf-8'),
+    '.pdf': ('pdf', 'application/pdf'),
+    '.png': ('image', 'image/png'), '.jpg': ('image', 'image/jpeg'), '.jpeg': ('image', 'image/jpeg'),
+    '.gif': ('image', 'image/gif'), '.webp': ('image', 'image/webp'), '.bmp': ('image', 'image/bmp'),
+    '.heic': ('image', 'image/heic'),
+    '.svg': ('svg', 'image/svg+xml; charset=utf-8'),
+    '.md': ('markdown', 'text/markdown; charset=utf-8'), '.markdown': ('markdown', 'text/markdown; charset=utf-8'),
+    '.txt': ('text', 'text/plain; charset=utf-8'), '.log': ('text', 'text/plain; charset=utf-8'),
+    '.csv': ('text', 'text/plain; charset=utf-8'),
+    '.py': ('code', 'text/plain; charset=utf-8'),
+    # css/js/json keep their REAL web MIME so they load as a page's sub-resources (nosniff-safe);
+    # direct preview still works because QuickLook keys off the file extension, not content-type.
+    '.js': ('code', 'text/javascript; charset=utf-8'), '.mjs': ('code', 'text/javascript; charset=utf-8'),
+    '.ts': ('code', 'text/plain; charset=utf-8'), '.tsx': ('code', 'text/plain; charset=utf-8'),
+    '.jsx': ('code', 'text/plain; charset=utf-8'), '.json': ('code', 'application/json; charset=utf-8'),
+    '.css': ('code', 'text/css; charset=utf-8'), '.sh': ('code', 'text/plain; charset=utf-8'),
+    '.go': ('code', 'text/plain; charset=utf-8'), '.rs': ('code', 'text/plain; charset=utf-8'),
+    '.rb': ('code', 'text/plain; charset=utf-8'), '.yml': ('code', 'text/plain; charset=utf-8'),
+    '.yaml': ('code', 'text/plain; charset=utf-8'), '.toml': ('code', 'text/plain; charset=utf-8'),
+    '.sql': ('code', 'text/plain; charset=utf-8'), '.swift': ('code', 'text/plain; charset=utf-8'),
+    '.c': ('code', 'text/plain; charset=utf-8'), '.h': ('code', 'text/plain; charset=utf-8'),
+    '.cpp': ('code', 'text/plain; charset=utf-8'), '.java': ('code', 'text/plain; charset=utf-8'),
+}
+_TEXTY = {'svg', 'markdown', 'text', 'code'}
+
+# NOTE: macOS APFS is case-INSENSITIVE but realpath preserves the caller's typed case, AND
+# os.path.normcase is a NO-OP on POSIX/macOS — so every path comparison MUST be .casefold()'d
+# explicitly or `.SSH/config` / `.CLAUDE/keys.json` slip past the deny for `.ssh` / `.claude`.
+_HOME_CF = os.path.realpath(HOME).casefold()
+DENY_DIRS = [os.path.realpath(os.path.join(HOME, p)).casefold() for p in
+             ('.ssh', '.aws', '.gnupg', '.config', '.docker', '.kube', '.gcloud',
+              '.codex', '.claude', '.claude-harness',
+              'Library/Keychains', 'Library/Cookies', 'Library/Application Support/Google')]
+DENY_BASENAMES = {x.casefold() for x in
+                  ('config.env', 'keys.json', 'push.json', 'usage.json', 'auth.json',
+                   '.credentials.json', 'credentials.json', 'known_hosts', '.netrc',
+                   '.git-credentials', '.npmrc', '.pypirc', 'serviceaccount.json')}
+DENY_EXT = {'.p8', '.pem', '.key', '.kdbx', '.keychain', '.keychain-db', '.env', '.crt', '.cer', '.pfx'}
+DENY_PREFIX = tuple(p.casefold() for p in ('id_rsa', 'id_ed25519', 'id_ecdsa', 'id_dsa'))
+
+def valid_cwd(cwd):
+    """A thread cwd must resolve to a dir UNDER (or equal to) HOME and not inside a denied
+    dir — so /file can never be pointed at /private/etc, /Library, another user's home, etc."""
+    try:
+        rp = os.path.realpath(os.path.expanduser(cwd or HOME))
+    except Exception:
+        return None
+    rpcf = rp.casefold()
+    if not (rpcf == _HOME_CF or rpcf.startswith(_HOME_CF + os.sep)):
+        return None
+    if any(rpcf == d or rpcf.startswith(d + os.sep) for d in DENY_DIRS):
+        return None
+    if not os.path.isdir(rp):
+        return None
+    return rp
+
+def _allowed_roots(thread):
+    # Only the thread's own working dir — narrow on purpose.
+    return [os.path.realpath(thread.get('cwd') or HOME).casefold()]
+
+def safe_resolve(thread, rel_or_abs):
+    """The single chokepoint. realpath the FINAL target, then (all case-folded): require it
+    inside the thread root, not under any denied dir, basename/ext not denied, and ext on the
+    POSITIVE preview allowlist (so extensionless secrets — id_rsa, .env, cookies — never serve)."""
+    if not rel_or_abs:
+        return None
+    base = thread.get('cwd') or HOME
+    cand = rel_or_abs if os.path.isabs(rel_or_abs) else os.path.join(base, rel_or_abs)
+    try:
+        tgt = os.path.realpath(cand)
+    except Exception:
+        return None
+    tcf = tgt.casefold()
+    if not any(tcf == r or tcf.startswith(r + os.sep) for r in _allowed_roots(thread)):
+        return None
+    if any(tcf == d or tcf.startswith(d + os.sep) for d in DENY_DIRS):
+        return None
+    bncf = os.path.basename(tgt).casefold()
+    if bncf in DENY_BASENAMES:
+        return None
+    if any(bncf.startswith(p) for p in DENY_PREFIX):
+        return None
+    if bncf == '.env' or bncf.startswith('.env.') or bncf.endswith('.env'):
+        return None
+    ext = os.path.splitext(bncf)[1]
+    if ext in DENY_EXT:
+        return None
+    if ext not in PREVIEW_TYPES:        # positive allowlist — only known previewable types
+        return None
+    if not os.path.isfile(tgt):
+        return None
+    return tgt
+
+def scan_artifacts(thread):
+    """Previewable files under the thread cwd modified after the thread was created.
+    The ONLY artifact source that works for both Claude and Codex (codex emits no file events)."""
+    base = os.path.realpath(thread.get('cwd') or HOME)
+    since = (thread.get('created') or 0) - 5      # small grace for clock granularity
+    out, seen, count = [], set(), 0
+    def walk(d, depth):
+        nonlocal count
+        if depth > SCAN_MAX_DEPTH or count > SCAN_MAX_ENTRIES:
+            return
+        try:
+            entries = list(os.scandir(d))
+        except Exception:
+            return
+        for e in entries:
+            count += 1
+            if count > SCAN_MAX_ENTRIES:
+                return
+            try:
+                if e.is_dir(follow_symlinks=False):
+                    if e.name in SCAN_SKIP_DIRS or e.name.startswith('.'):
+                        continue
+                    walk(e.path, depth + 1)
+                    continue
+                ext = os.path.splitext(e.name)[1].lower()
+                if ext not in PREVIEW_TYPES:
+                    continue
+                st = e.stat()
+                if st.st_mtime < since:
+                    continue
+                rp = os.path.realpath(e.path)
+                if rp in seen or safe_resolve(thread, rp) is None:
+                    continue
+                seen.add(rp)
+                kind, _ = PREVIEW_TYPES[ext]
+                out.append({'rel': os.path.relpath(rp, base), 'name': e.name, 'ext': ext,
+                            'kind': kind, 'size': st.st_size, 'mtime': st.st_mtime})
+            except Exception:
+                continue
+    walk(base, 0)
+    out.sort(key=lambda x: x['mtime'], reverse=True)
+    return out[:ARTIFACT_CAP]
+
+# --------------------------------------------------------------------------- engine runners
+def _provider_env(provider):
+    env = dict(BASE_ENV)
+    key = None
+    if provider.get('api_key_env'):
+        key = CFG.get(provider['api_key_env']) or os.environ.get(provider['api_key_env'])
+        if key:
+            env[provider['api_key_env']] = key      # expose under its own name (Codex env_key)
+    # Claude-engine custom endpoint (Anthropic-compatible, e.g. GLM via Z.ai)
+    if provider.get('base_url') and provider.get('engine') != 'codex':
+        env['ANTHROPIC_BASE_URL'] = provider['base_url']
+        if key:
+            env['ANTHROPIC_AUTH_TOKEN'] = key
+            env['ANTHROPIC_API_KEY'] = key
+    return env
+
+def tool_summary(name, inp):
+    """One-line human summary of a tool call (the command / file / pattern)."""
+    if isinstance(inp, dict):
+        if name == 'Task':                       # subagent spawn -> "type — description"
+            st = inp.get('subagent_type') or 'agent'
+            desc = inp.get('description') or inp.get('prompt') or ''
+            return ('%s — %s' % (st, desc)).strip(' —').replace('\n', ' ')[:140]
+        for key in ('command', 'file_path', 'path', 'pattern', 'query', 'url', 'prompt', 'description', 'notebook_path'):
+            if inp.get(key):
+                return str(inp[key]).replace('\n', ' ')[:140]
+    return name
+
+def tool_detail(name, inp):
+    """Expandable detail for a tool call: a diff for edits, command for Bash, etc.
+    Lines starting '- '/'+ ' are rendered as a red/green diff by the app."""
+    if not isinstance(inp, dict):
+        return None
+    if name == 'Edit':
+        old = str(inp.get('old_string', ''))[:2000]; new = str(inp.get('new_string', ''))[:2000]
+        lines = ['- ' + l for l in old.split('\n')] + ['+ ' + l for l in new.split('\n')]
+        return '\n'.join(lines)[:1200] or None
+    if name == 'MultiEdit':
+        parts = []
+        for e in (inp.get('edits') or [])[:6]:
+            parts.append('- ' + str(e.get('old_string', ''))[:160])
+            parts.append('+ ' + str(e.get('new_string', ''))[:160])
+        return '\n'.join(parts)[:1200] or None
+    if name == 'Write':
+        body = str(inp.get('content', ''))
+        return '\n'.join('+ ' + l for l in body.split('\n')[:24])[:1200] or None
+    if name == 'TodoWrite':
+        todos = inp.get('todos') or []
+        return '\n'.join('• ' + str(t.get('content', '')) for t in todos)[:1200] or None
+    if name == 'Bash':
+        return str(inp.get('command', ''))[:1200] or None
+    if name == 'Task':                           # the subagent's instructions
+        return str(inp.get('prompt', ''))[:1500] or None
+    return None
+
+def normalize_questions(qs):
+    """Coerce AskUserQuestion input into a stable shape the app can always decode:
+    [{question, header, multiSelect, options:[{label, description}]}]. Drops junk."""
+    out = []
+    for q in (qs or []):
+        if not isinstance(q, dict):
+            continue
+        text = q.get('question') or q.get('header') or ''
+        if not text:
+            continue
+        opts = []
+        for o in (q.get('options') or []):
+            if isinstance(o, dict) and o.get('label'):
+                desc = o.get('description')
+                opts.append({'label': str(o['label'])[:200],
+                             'description': (str(desc)[:400] if desc else None)})
+            elif isinstance(o, str) and o:
+                opts.append({'label': o[:200], 'description': None})
+        out.append({'question': str(text)[:600],
+                    'header': (str(q.get('header'))[:60] if q.get('header') else None),
+                    'multiSelect': bool(q.get('multiSelect')),
+                    'options': opts})
+    return out
+
+def write_images(images):
+    """Decode base64 (or data-URL) images to temp files; returns list of paths."""
+    paths = []
+    for img in (images or [])[:8]:
+        try:
+            b = img
+            if isinstance(b, str) and b.startswith('data:') and ',' in b:
+                b = b.split(',', 1)[1]
+            data = base64.b64decode(b)
+        except Exception:
+            continue
+        if not data:
+            continue
+        ext = '.jpg' if data[:3] == b'\xff\xd8\xff' else '.png'
+        f = tempfile.NamedTemporaryFile(delete=False, suffix=ext, dir=IMG_DIR)
+        f.write(data); f.close()
+        paths.append(f.name)
+    return paths
+
+def run_claude_stream(thread, provider, text, images=None):
+    """Generator yielding SSE event dicts; reuses the bridge's proven parse."""
+    if images:
+        text = text + "\n\n[The user attached image(s) at: " + "; ".join(images) + \
+               " — use your Read tool to view them.]"
+    cmd = [CLAUDE_BIN, '-p', text, '--output-format', 'stream-json',
+           '--include-partial-messages', '--verbose',
+           '--append-system-prompt', HINT]
+    mode = thread.get('permission_mode') or 'bypass'
+    if mode == 'bypass':
+        cmd += ['--dangerously-skip-permissions']
+    else:                                   # plan | acceptEdits | default
+        cmd += ['--permission-mode', mode]
+    effort = thread.get('effort')
+    if effort and effort != 'default':
+        cmd += ['--effort', effort]
+    model = thread.get('model') or provider.get('model')
+    if model:
+        cmd += ['--model', model]
+    if thread.get('session_id'):
+        cmd += ['--resume', thread['session_id']]
+    proc = subprocess.Popen(cmd, cwd=thread.get('cwd') or HOME, env=_provider_env(provider),
+                            text=True, bufsize=1,
+                            stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+    reg_run(thread['id'], proc)
+    answer, session_id, final_result, saw_error = [], None, None, False
+    tool_blocks, tools, usage, thinking_buf, questions_buf = {}, [], None, [], []
+    err_buf, done = [], threading.Event()
+    timed = {'v': False}
+    def killer():
+        if not done.wait(JOB_TIMEOUT):
+            timed['v'] = True
+            try: proc.kill()
+            except Exception: pass
+    def drain_err():
+        try:
+            for l in proc.stderr:
+                err_buf.append(l)
+        except Exception:
+            pass
+    threading.Thread(target=killer, daemon=True).start()
+    threading.Thread(target=drain_err, daemon=True).start()
+    try:
+        for line in proc.stdout:
+            line = line.strip()
+            if not line or line[0] != '{':
+                continue
+            try:
+                d = json.loads(line)
+            except Exception:
+                continue
+            if d.get('session_id') and not session_id:
+                session_id = d['session_id']
+                yield {'type': 'session', 'id': session_id}
+            typ = d.get('type')
+            if typ == 'rate_limit_event':
+                record_rate_limit(d.get('rate_limit_info'))
+            elif typ == 'stream_event':
+                ev = d.get('event', {})
+                et = ev.get('type')
+                idx = ev.get('index')
+                if et == 'content_block_start':
+                    cb = ev.get('content_block', {})
+                    if cb.get('type') == 'tool_use':
+                        tool_blocks[idx] = {'name': cb.get('name', 'tool'), 'buf': ''}
+                elif et == 'content_block_delta':
+                    delta = ev.get('delta', {})
+                    dt = delta.get('type')
+                    if dt == 'text_delta':
+                        answer.append(delta.get('text', ''))
+                        yield {'type': 'text', 'delta': delta.get('text', '')}
+                    elif dt == 'thinking_delta':
+                        thinking_buf.append(delta.get('thinking', ''))
+                        yield {'type': 'thinking', 'delta': delta.get('thinking', '')}
+                    elif dt == 'input_json_delta' and idx in tool_blocks:
+                        tool_blocks[idx]['buf'] += delta.get('partial_json', '')
+                elif et == 'content_block_stop' and idx in tool_blocks:
+                    tb = tool_blocks.pop(idx)
+                    try:
+                        inp = json.loads(tb['buf']) if tb['buf'].strip() else {}
+                    except Exception:
+                        inp = {}
+                    if tb['name'] == 'AskUserQuestion':   # structured multiple-choice -> tappable chips
+                        qs = normalize_questions(inp.get('questions'))
+                        if qs:
+                            questions_buf.extend(qs)
+                            yield {'type': 'question', 'questions': qs}
+                        continue
+                    info = {'name': tb['name'], 'summary': tool_summary(tb['name'], inp)}
+                    detail = tool_detail(tb['name'], inp)
+                    if detail:
+                        info['detail'] = detail
+                    tools.append(info)
+                    yield {'type': 'tool', 'name': info['name'],
+                           'summary': info['summary'], 'detail': info.get('detail')}
+            elif typ == 'result':
+                if d.get('result') is not None:
+                    final_result = d['result']
+                if d.get('is_error'):
+                    saw_error = True
+                u = d.get('usage') or {}
+                usage = {'cost': d.get('total_cost_usd'),
+                         'input_tokens': u.get('input_tokens'),
+                         'output_tokens': u.get('output_tokens'),
+                         'duration_ms': d.get('duration_ms')}
+        try:
+            proc.wait(timeout=5)
+        except Exception:
+            pass
+    finally:
+        done.set()
+        unreg_run(thread['id'])
+    final = (final_result if final_result else ''.join(answer)).strip()
+    if timed['v']:
+        yield {'type': 'error', 'message': 'claude timed out after %ss' % JOB_TIMEOUT}; return
+    if not final and proc.returncode not in (0, None):
+        tail = ''.join(err_buf)[-800:]
+        yield {'type': 'error', 'message': 'claude exit %s: %s' % (proc.returncode, tail)}; return
+    yield {'type': 'done', 'text': ('⚠️ ' + final) if saw_error else (final or '(no output)'),
+           'session_id': session_id or thread.get('session_id'),
+           'tools': tools, 'usage': usage, 'thinking': ''.join(thinking_buf) or None,
+           'questions': questions_buf or None}
+
+# OpenAI/Codex API pricing, $ per 1M tokens (input, output) — verified Jun 2026.
+# Codex reports only tokens, so we estimate $ from these. (Claude prices itself.)
+OPENAI_PRICING = {
+    'gpt-5.5':              (5.00, 30.00),
+    'gpt-5.4-mini':         (0.75, 4.50),
+    'gpt-5.4':              (2.50, 15.00),
+    'gpt-5.3-codex-spark':  (1.75, 14.00),   # Spark rates not finalized; uses 5.3-codex
+    'gpt-5.3-codex':        (1.75, 14.00),
+}
+DEFAULT_CODEX_MODEL = 'gpt-5.5'   # ~/.codex/config.toml default
+
+def model_price(model):
+    m = (model or DEFAULT_CODEX_MODEL).lower()
+    if m in OPENAI_PRICING:
+        return OPENAI_PRICING[m]
+    for key in sorted(OPENAI_PRICING, key=len, reverse=True):   # most-specific first
+        if m.startswith(key) or key in m:
+            return OPENAI_PRICING[key]
+    return OPENAI_PRICING[DEFAULT_CODEX_MODEL]
+
+def codex_cost_estimate(u, model, provider):
+    """Estimate API-equivalent $ for a codex run from token counts + current rates.
+    Per-provider price_in/price_out (per 1M) override the table (e.g. OpenRouter)."""
+    if not u:
+        return None
+    pin, pout = model_price(model)
+    if provider.get('price_in') is not None:
+        pin = float(provider['price_in'])
+    if provider.get('price_out') is not None:
+        pout = float(provider['price_out'])
+    inp = u.get('input_tokens') or 0
+    cached = u.get('cached_input_tokens') or 0
+    out = u.get('output_tokens') or 0
+    eff_in = max(0, inp - cached) + cached * 0.1       # cached input ~10% (matches $0.50 on 5.5)
+    return eff_in / 1e6 * pin + out / 1e6 * pout
+
+def run_codex_stream(thread, provider, text, images=None):
+    """Stream codex exec line-by-line: reasoning summaries surface as `thinking`
+    events (so they show before the answer), then the final message as `text`."""
+    outfile = tempfile.NamedTemporaryFile(delete=False, suffix='.txt'); outfile.close()
+    resuming = bool(thread.get('session_id'))
+    opts = ['--json', '--skip-git-repo-check', '--dangerously-bypass-approvals-and-sandbox',
+            '-o', outfile.name]
+    model = thread.get('model') or provider.get('model')
+    if model:
+        opts += ['-m', model]
+    effort = thread.get('effort')
+    if effort == 'max':
+        effort = 'xhigh'                  # codex tops out at xhigh ("Extra High")
+    if effort and effort != 'default':
+        opts += ['-c', 'model_reasoning_effort=%s' % effort]
+    # Force reasoning summaries on so the thinking is actually visible/clickable.
+    opts += ['-c', 'model_reasoning_summary=detailed']
+    if provider.get('base_url'):              # custom OpenAI-compatible provider (e.g. OpenRouter)
+        pn = 'harness'
+        opts += ['-c', 'model_providers.%s.name=%s' % (pn, pn),
+                 '-c', 'model_providers.%s.base_url=%s' % (pn, provider['base_url']),
+                 '-c', 'model_providers.%s.wire_api=%s' % (pn, provider.get('wire_api', 'responses'))]
+        if provider.get('api_key_env'):
+            opts += ['-c', 'model_providers.%s.env_key=%s' % (pn, provider['api_key_env'])]
+        opts += ['-c', 'model_provider=%s' % pn]
+    for p in (images or []):
+        opts += ['-i', p]
+    # `codex exec resume` rejects -C/--color (it keeps the session's dir; Popen cwd covers it).
+    if resuming:
+        cmd = [CODEX_BIN, 'exec', 'resume'] + opts + [thread['session_id'], text]
+    else:
+        cmd = [CODEX_BIN, 'exec'] + opts + ['-C', thread.get('cwd') or HOME, '--color', 'never', text]
+    t0 = time.time()
+    proc = subprocess.Popen(cmd, cwd=thread.get('cwd') or HOME, env=_provider_env(provider),
+                            text=True, bufsize=1, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+    reg_run(thread['id'], proc)
+    # Watchdog kills the run past JOB_TIMEOUT; stderr drained off-thread to avoid pipe deadlock.
+    timed_out = {'v': False}
+    def _kill():
+        timed_out['v'] = True
+        try: proc.kill()
+        except Exception: pass
+    wd = threading.Timer(JOB_TIMEOUT, _kill); wd.daemon = True; wd.start()
+    err_lines = []
+    def _drain():
+        try:
+            for l in proc.stderr: err_lines.append(l)
+        except Exception: pass
+    dt = threading.Thread(target=_drain, daemon=True); dt.start()
+    new_sess, cusage, thinking_buf, stream_text = None, None, [], ''
+    try:
+        for line in proc.stdout:
+            line = line.strip()
+            if not line.startswith('{'):
+                continue
+            try:
+                d = json.loads(line)
+            except Exception:
+                continue
+            t = d.get('type')
+            if t == 'thread.started' and d.get('thread_id'):
+                new_sess = d['thread_id']
+                yield {'type': 'session', 'id': new_sess}
+            elif t == 'item.completed':
+                it = d.get('item', {})
+                itype = it.get('item_type') or it.get('type')
+                if itype == 'reasoning':
+                    rt = (it.get('text') or it.get('content') or '').strip()
+                    if rt:
+                        thinking_buf.append(rt)
+                        yield {'type': 'thinking', 'delta': rt + '\n\n'}
+                elif itype == 'agent_message':
+                    stream_text = it.get('text') or it.get('content') or stream_text
+            elif t == 'turn.completed' and d.get('usage'):
+                cusage = d['usage']
+        proc.wait()
+    finally:
+        wd.cancel(); unreg_run(thread['id'])
+    err = ''.join(err_lines)
+    if timed_out['v']:
+        try: os.unlink(outfile.name)
+        except Exception: pass
+        yield {'type': 'error', 'message': 'codex timed out after %ss' % JOB_TIMEOUT}; return
+    try:
+        result = open(outfile.name).read().strip()
+    except Exception:
+        result = ''
+    finally:
+        try: os.unlink(outfile.name)
+        except Exception: pass
+    result = result or stream_text
+    if proc.returncode != 0 and not result:
+        yield {'type': 'error', 'message': 'codex exit %s: %s' % (proc.returncode, (err or '')[-800:])}; return
+    if result:
+        # Codex hands back the whole answer at once. Emit it in chunks so the phone renders
+        # progressively instead of one giant block (the block render was a freeze suspect).
+        for i in range(0, len(result), 600):
+            yield {'type': 'text', 'delta': result[i:i + 600]}
+    cu = None
+    if cusage:
+        cu = {'cost': codex_cost_estimate(cusage, thread.get('model') or provider.get('model'), provider),
+              'input_tokens': cusage.get('input_tokens'),
+              'output_tokens': cusage.get('output_tokens'),
+              'duration_ms': (time.time() - t0) * 1000}
+    yield {'type': 'done', 'text': result or '(no output)',
+           'session_id': new_sess or thread.get('session_id'), 'usage': cu,
+           'thinking': '\n\n'.join(thinking_buf) or None}
+
+GEMINI_MODES = {'bypass': 'yolo', 'plan': 'plan', 'acceptEdits': 'auto_edit', 'default': 'default'}
+
+def run_gemini_stream(thread, provider, text, images=None):
+    """Gemini CLI (buffered text output). Continuity via transcript replay, since
+    `gemini --resume` is index-based; auth is the user's one-time Google login."""
+    hist = thread.get('messages') or []
+    convo = ''
+    for m in hist[-12:]:
+        who = 'User' if m.get('role') == 'user' else 'Assistant'
+        convo += '%s: %s\n\n' % (who, m.get('text', ''))
+    prompt = (convo + 'User: ' + text + '\n\nAssistant:') if convo else text
+    cmd = [GEMINI_BIN, '-p', prompt, '--skip-trust', '-o', 'text']
+    model = thread.get('model') or provider.get('model')
+    if model:
+        cmd += ['-m', model]
+    cmd += ['--approval-mode', GEMINI_MODES.get(thread.get('permission_mode') or 'bypass', 'yolo')]
+    proc = subprocess.Popen(cmd, cwd=thread.get('cwd') or HOME, env=_provider_env(provider),
+                            text=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+    reg_run(thread['id'], proc)
+    try:
+        out, err = proc.communicate(timeout=JOB_TIMEOUT)
+    except subprocess.TimeoutExpired:
+        proc.kill(); out, err = proc.communicate()
+        unreg_run(thread['id'])
+        yield {'type': 'error', 'message': 'gemini timed out after %ss' % JOB_TIMEOUT}; return
+    finally:
+        unreg_run(thread['id'])
+    result = (out or '').strip()
+    if proc.returncode != 0 and not result:
+        tail = (err or '')[-800:]
+        hint = '  (set a free Gemini API key from aistudio.google.com/apikey in Settings)' if ('auth' in tail.lower() or 'api' in tail.lower() or 'key' in tail.lower()) else ''
+        yield {'type': 'error', 'message': 'gemini exit %s: %s%s' % (proc.returncode, tail, hint)}; return
+    if result:
+        yield {'type': 'text', 'delta': result}
+    yield {'type': 'done', 'text': result or '(no output)', 'session_id': thread.get('session_id')}
+
+def run_thread(thread, provider, text, images=None):
+    eng = provider.get('engine')
+    if eng == 'codex':
+        yield from run_codex_stream(thread, provider, text, images)
+    elif eng == 'gemini':
+        yield from run_gemini_stream(thread, provider, text, images)
+    else:
+        yield from run_claude_stream(thread, provider, text, images)
+
+def start_job(t, prov, text, image_paths, thread_lock):
+    """Run an engine turn in a detached daemon thread. The caller already holds
+    `thread_lock`; the job OWNS it now and releases it only after persisting +
+    pushing, so the turn survives the client disconnecting. Returns the Job."""
+    tid = t['id']
+    job = Job(tid)
+
+    def work():
+        final_text, session_id = None, t.get('session_id')
+        final_tools = final_usage = final_thinking = final_questions = None
+        try:
+            for ev in run_thread(t, prov, text, image_paths):
+                typ = ev.get('type')
+                if typ == 'session':
+                    session_id = ev['id']
+                elif typ == 'done':
+                    final_text = ev.get('text')
+                    final_tools = ev.get('tools')
+                    final_usage = ev.get('usage')
+                    final_thinking = ev.get('thinking')
+                    final_questions = ev.get('questions')
+                job.publish(ev)
+        except Exception as e:
+            job.publish({'type': 'error', 'message': str(e)})
+        # persist under _persist_lock (serializes vs a concurrent rename's write-back);
+        # reload to merge a rename; bail if deleted mid-turn. PUSH happens AFTER we release
+        # the thread lock so the thread isn't reported 'busy' during slow APNs calls.
+        push_arg = None
+        try:
+            with _persist_lock:
+                cur = load_thread(tid)
+                if cur is not None:
+                    cur['session_id'] = session_id
+                    cur['provider'] = prov['id']
+                    cur['engine'] = prov['engine']
+                    cur['model'] = t.get('model') or prov.get('model')
+                    cur['cwd'] = t.get('cwd') or cur.get('cwd')
+                    cur['permission_mode'] = t.get('permission_mode') or cur.get('permission_mode')
+                    cur['effort'] = t.get('effort') or cur.get('effort')
+                    if not cur.get('title'):
+                        cur['title'] = text[:48]
+                    cur.setdefault('messages', [])
+                    umsg = {'role': 'user', 'text': text, 'ts': time.time()}
+                    if image_paths:
+                        umsg['images'] = len(image_paths)
+                    cur['messages'].append(umsg)
+                    if final_text is not None:
+                        amsg = {'role': 'assistant', 'text': final_text, 'ts': time.time()}
+                        if final_thinking:
+                            amsg['thinking'] = final_thinking
+                        if final_tools:
+                            amsg['tools'] = final_tools
+                        if final_questions:
+                            amsg['questions'] = final_questions
+                        if final_usage:
+                            amsg['usage'] = final_usage
+                            if final_usage.get('cost'):
+                                cur['total_cost'] = (cur.get('total_cost') or 0) + final_usage['cost']
+                        cur['messages'].append(amsg)
+                    cur['updated'] = time.time()
+                    try:
+                        save_thread(cur)
+                    except Exception as e:
+                        log('persist failed for thread %s: %s' % (tid, e))
+                    if final_text is not None:            # only ping on a real answer/question
+                        push_arg = (dict(cur), final_text, final_questions)
+        finally:
+            for p in image_paths:
+                try: os.unlink(p)
+                except Exception: pass
+            job.finish()
+            with _jobs_lock:
+                if JOBS.get(tid) is job:
+                    del JOBS[tid]
+            try: thread_lock.release()
+            except Exception: pass
+        if push_arg is not None:                          # outside the thread lock now
+            try:
+                notify_push(*push_arg)
+            except Exception as e:
+                log('push failed for thread %s: %s' % (tid, e))
+
+    thread = threading.Thread(target=work, daemon=True)
+    with _jobs_lock:
+        JOBS[tid] = job
+    try:
+        thread.start()
+    except Exception:
+        with _jobs_lock:
+            if JOBS.get(tid) is job:
+                del JOBS[tid]
+        job.finish()        # release any racing /stream subscriber (sentinel), don't leave it hung
+        raise               # caller releases thread_lock + returns 500
+    return job
+
+# --------------------------------------------------------------------------- automations
+def describe_schedule(d):
+    ci = d.get('StartCalendarInterval')
+    if ci:
+        parts = []
+        for c in (ci if isinstance(ci, list) else [ci]):
+            if isinstance(c, dict) and c.get('Hour') is not None:
+                parts.append('%02d:%02d' % (c.get('Hour'), c.get('Minute') or 0))
+        return ('daily ' + ', '.join(parts)) if parts else 'scheduled'
+    if d.get('StartInterval'):
+        s = int(d['StartInterval'])
+        return ('every %dm' % (s // 60)) if s >= 60 else ('every %ds' % s)
+    if d.get('KeepAlive'):
+        return 'always on'
+    if d.get('RunAtLoad'):
+        return 'at login'
+    return 'on demand'
+
+def list_automations():
+    """Read the user's launchd agents + cron jobs (read-only view for the app)."""
+    out = []
+    home = os.path.expanduser('~')
+    pids = {}
+    try:
+        res = subprocess.run(['launchctl', 'list'], capture_output=True, text=True, timeout=10, env=BASE_ENV)
+        for line in res.stdout.splitlines()[1:]:
+            cols = line.split('\t')
+            if len(cols) >= 3:
+                pids[cols[2].strip()] = cols[0].strip()
+    except Exception:
+        pass
+    for plist in sorted(glob.glob(os.path.join(home, 'Library/LaunchAgents/*.plist'))):
+        try:
+            with open(plist, 'rb') as f:
+                d = plistlib.load(f)
+        except Exception:
+            continue
+        label = d.get('Label') or os.path.basename(plist)[:-6]
+        prog = d.get('ProgramArguments') or ([d['Program']] if d.get('Program') else [])
+        pid = pids.get(label)
+        status = 'running' if (pid and pid not in ('-', '0')) else ('loaded' if label in pids else 'stopped')
+        out.append({'name': label, 'kind': 'launchd', 'schedule': describe_schedule(d),
+                    'status': status, 'detail': ' '.join(str(x) for x in prog)[:240]})
+    try:
+        res = subprocess.run(['crontab', '-l'], capture_output=True, text=True, timeout=5, env=BASE_ENV)
+        for line in res.stdout.splitlines():
+            line = line.strip()
+            if not line or line.startswith('#'):
+                continue
+            parts = line.split(None, 5)
+            if len(parts) >= 6:
+                out.append({'name': parts[5][:48], 'kind': 'cron', 'schedule': ' '.join(parts[:5]),
+                            'status': 'active', 'detail': parts[5][:240]})
+    except Exception:
+        pass
+    out.sort(key=lambda a: (a['kind'], a['name']))
+    return out
+
+# --------------------------------------------------------------------------- HTTP
+class Handler(BaseHTTPRequestHandler):
+    protocol_version = 'HTTP/1.1'
+
+    def log_message(self, *a):
+        pass
+
+    def _client_allowed(self):
+        try:
+            a = ipaddress.ip_address(self.client_address[0])
+        except Exception:
+            return False
+        return a.is_loopback or a in TAILNET
+
+    def _authed(self):
+        if not TOKEN:
+            return True
+        return hmac.compare_digest(self.headers.get('Authorization', ''), 'Bearer ' + TOKEN)
+
+    def _json(self, code, obj):
+        body = json.dumps(obj).encode()
+        self.send_response(code)
+        self.send_header('Content-Type', 'application/json')
+        self.send_header('Content-Length', str(len(body)))
+        self.end_headers()
+        self.wfile.write(body)
+
+    def _body(self):
+        n = int(self.headers.get('Content-Length', 0) or 0)
+        if n <= 0:
+            return {}
+        if n > MAX_BODY:
+            return None                       # signal "too large" to caller
+        try:
+            return json.loads(self.rfile.read(n).decode() or '{}')
+        except Exception:
+            return {}
+
+    # ---- routing
+    def do_GET(self):
+        if not self._client_allowed():
+            return self._json(403, {'error': 'forbidden'})
+        path = self.path.split('?')[0].rstrip('/')
+        if path == '/health':
+            return self._json(200, {'ok': True, 'version': VERSION,
+                                    'engines': ['claude', 'codex'],
+                                    'push_configured': apns_configured(),
+                                    'push_devices': len(load_push_tokens())})
+        if not self._authed():
+            return self._json(401, {'error': 'unauthorized'})
+        if path == '/providers':
+            return self._json(200, [_provider_public(p) for p in load_providers()])
+        if path == '/threads':
+            q = urllib.parse.parse_qs(urllib.parse.urlparse(self.path).query)
+            view = 'archived' if q.get('view', [''])[0] == 'archived' else 'active'
+            return self._json(200, list_threads(view))
+        if path == '/trash':
+            return self._json(200, list_threads('trash'))
+        if path == '/automations':
+            return self._json(200, list_automations())
+        if path == '/usage':
+            with _usage_lock:
+                return self._json(200, json.loads(json.dumps(RATE_LIMITS)))
+        if path.startswith('/threads/'):
+            parts = path.split('/')
+            tid = parts[2] if len(parts) > 2 else ''
+            if not valid_tid(tid):
+                return self._json(404, {'error': 'no such thread'})
+            if len(parts) >= 4 and parts[3] == 'stream':    # reconnect to an in-flight turn
+                job = job_for(tid)
+                if not job:
+                    return self._json(200, {'running': False})
+                return self._stream_job(job)
+            if len(parts) >= 4 and parts[3] == 'artifacts':
+                t = load_thread(tid)
+                if not t:
+                    return self._json(404, {'error': 'no such thread'})
+                return self._json(200, {'cwd': t.get('cwd'), 'artifacts': scan_artifacts(t)})
+            if len(parts) >= 4 and parts[3] == 'file':
+                t = load_thread(tid)
+                if not t:
+                    return self._json(404, {'error': 'no such thread'})
+                q = urllib.parse.parse_qs(urllib.parse.urlparse(self.path).query)
+                return self._serve_file(t, q.get('path', [''])[0])
+            t = load_thread(tid)
+            if not t:
+                return self._json(404, {'error': 'no such thread'})
+            t['running'] = job_for(tid) is not None
+            return self._json(200, t)
+        return self._json(404, {'error': 'not found'})
+
+    def _serve_file(self, thread, rel):
+        tgt = safe_resolve(thread, rel)
+        if not tgt:
+            return self._json(404, {'error': 'no such file'})
+        try:
+            size = os.path.getsize(tgt)
+        except Exception:
+            return self._json(404, {'error': 'no such file'})
+        if size > MAX_PREVIEW_BYTES:
+            return self._json(413, {'error': 'file too large to preview'})
+        ext = os.path.splitext(tgt)[1].lower()
+        kind, ctype = PREVIEW_TYPES.get(ext, ('binary', 'application/octet-stream'))
+        # text-ish: truncate to keep the phone responsive
+        if kind in _TEXTY and size > MAX_TEXT_BYTES:
+            try:
+                with open(tgt, 'rb') as f:
+                    body = f.read(MAX_TEXT_BYTES) + b'\n\xe2\x80\xa6[truncated]\n'
+            except Exception:
+                return self._json(500, {'error': 'read failed'})
+            self.send_response(200)
+            self.send_header('Content-Type', ctype)
+            self.send_header('Content-Length', str(len(body)))
+            self.send_header('X-Content-Type-Options', 'nosniff')
+            self.end_headers()
+            self.wfile.write(body)
+            return
+        # single-range support for pdf/image (PDFKit/large media seek)
+        rng = self.headers.get('Range')
+        start, end = 0, size - 1
+        partial = False
+        if rng and kind in ('pdf', 'image') and rng.startswith('bytes='):
+            try:
+                a, b = rng.split('=', 1)[1].split('-', 1)
+                start = int(a) if a else 0
+                end = int(b) if b else size - 1
+                if 0 <= start <= end < size:
+                    partial = True
+                else:
+                    start, end = 0, size - 1
+            except Exception:
+                start, end = 0, size - 1
+        length = end - start + 1
+        try:
+            f = open(tgt, 'rb')
+        except Exception:
+            return self._json(500, {'error': 'read failed'})
+        try:
+            self.send_response(206 if partial else 200)
+            self.send_header('Content-Type', ctype)
+            self.send_header('Content-Length', str(length))
+            self.send_header('X-Content-Type-Options', 'nosniff')
+            self.send_header('Accept-Ranges', 'bytes')
+            if partial:
+                self.send_header('Content-Range', 'bytes %d-%d/%d' % (start, end, size))
+            if kind == 'html':
+                # a generated page can't phone home / exfiltrate tailnet-reachable data
+                self.send_header('Content-Security-Policy',
+                                 "default-src 'self' data: blob: 'unsafe-inline'; connect-src 'none'; "
+                                 "img-src 'self' data: blob:; frame-src 'none'")
+            self.end_headers()
+            f.seek(start)
+            remaining = length
+            while remaining > 0:
+                chunk = f.read(min(65536, remaining))
+                if not chunk:
+                    break
+                try:
+                    self.wfile.write(chunk)
+                except (BrokenPipeError, ConnectionResetError):
+                    break
+                remaining -= len(chunk)
+        finally:
+            f.close()
+
+    def do_DELETE(self):
+        if not self._client_allowed():
+            return self._json(403, {'error': 'forbidden'})
+        if not self._authed():
+            return self._json(401, {'error': 'unauthorized'})
+        path = self.path.split('?')[0].rstrip('/')
+        parts = path.split('/')
+        if len(parts) >= 3 and parts[1] == 'trash':       # permanent delete from trash
+            tid = parts[2]
+            if not valid_tid(tid):
+                return self._json(404, {'error': 'no such thread'})
+            try:
+                os.remove(os.path.join(TRASH_DIR, '%s.json' % tid))
+            except FileNotFoundError:
+                return self._json(404, {'error': 'not in trash'})
+            return self._json(200, {'ok': True})
+        if path.startswith('/threads/'):                  # soft delete -> move to trash (restorable)
+            tid = parts[2]
+            if not valid_tid(tid):
+                return self._json(404, {'error': 'no such thread'})
+            lock = _lock_for(tid)
+            if not lock.acquire(blocking=False):          # don't delete mid-stream
+                return self._json(409, {'error': 'thread busy'})
+            try:
+                with _persist_lock:
+                    t = load_thread(tid)
+                    if t is None:
+                        return self._json(404, {'error': 'no such thread'})
+                    t['deleted_at'] = time.time()
+                    tmp = os.path.join(TRASH_DIR, '%s.json.tmp' % tid)
+                    with open(tmp, 'w') as f:
+                        json.dump(t, f, indent=2)
+                    os.replace(tmp, os.path.join(TRASH_DIR, '%s.json' % tid))
+                    try: os.remove(thread_path(tid))
+                    except FileNotFoundError: pass
+            finally:
+                lock.release()
+                with _store_lock:
+                    thread_locks.pop(tid, None)           # reclaim the lock entry
+            return self._json(200, {'ok': True})
+        return self._json(404, {'error': 'not found'})
+
+    def do_POST(self):
+        if not self._client_allowed():
+            return self._json(403, {'error': 'forbidden'})
+        if not self._authed():
+            return self._json(401, {'error': 'unauthorized'})
+        path = self.path.split('?')[0].rstrip('/')
+        body = self._body()
+        if body is None:
+            self.close_connection = True
+            return self._json(413, {'error': 'request body too large'})
+        if path == '/threads':
+            return self._create_thread(body)
+        if path == '/push/register':
+            tok = (body.get('token') or '').strip()
+            if not tok or not all(c in '0123456789abcdefABCDEF' for c in tok) or not (32 <= len(tok) <= 200):
+                log('push/register REJECTED bad token (len=%d) from %s' % (len(tok), self.client_address[0]))
+                return self._json(400, {'error': 'bad token'})
+            add_push_token(tok.lower())
+            log('push/register OK token=%s… (len=%d) from %s' % (tok[:8], len(tok), self.client_address[0]))
+            return self._json(200, {'ok': True, 'configured': apns_configured()})
+        if path == '/push/unregister':
+            tok = (body.get('token') or '').strip().lower()
+            if tok:
+                remove_push_tokens([tok])
+                log('push/unregister token=%s…' % tok[:8])
+            return self._json(200, {'ok': True})
+        if path == '/push/test':
+            toks = load_push_tokens()
+            if not apns_configured():
+                return self._json(200, {'ok': False, 'reason': 'apns not configured', 'tokens': len(toks)})
+            results = []
+            for t in toks:
+                ok, code, reason = apns_send(t, {'aps': {'alert': {
+                    'title': 'Harness', 'body': 'Push is working ✅'}, 'sound': 'default'}})
+                results.append({'token': t[:8], 'code': code, 'reason': reason, 'ok': ok})
+            return self._json(200, {'ok': True, 'sent': results})
+        if path.startswith('/providers/'):
+            return self._set_provider(path.split('/')[2], body)
+        parts = path.split('/')
+        if len(parts) >= 4 and parts[1] == 'threads':
+            tid, action = parts[2], parts[3]
+            if not valid_tid(tid):
+                return self._json(404, {'error': 'no such thread'})
+            if action == 'restore':                       # lives in trash, not the active store
+                return self._restore_thread(tid)
+            t = load_thread(tid)
+            if not t:
+                return self._json(404, {'error': 'no such thread'})
+            if action == 'rename':
+                # reload under the persist lock so we only change the title and never clobber
+                # messages a running job appended. 404 (don't resurrect) if it was deleted meanwhile.
+                with _persist_lock:
+                    cur = load_thread(tid)
+                    if cur is None:
+                        return self._json(404, {'error': 'no such thread'})
+                    cur['title'] = (body.get('title') or cur.get('title') or 'Untitled')[:80]
+                    cur['updated'] = time.time()
+                    save_thread(cur)
+                return self._json(200, cur)
+            if action == 'archive':
+                with _persist_lock:
+                    cur = load_thread(tid)
+                    if cur is None:
+                        return self._json(404, {'error': 'no such thread'})
+                    cur['archived'] = bool(body.get('archived', True))
+                    cur['updated'] = time.time()
+                    save_thread(cur)
+                return self._json(200, thread_summary(cur))
+            if action == 'stop':
+                p = get_run(tid)
+                if p and p.poll() is None:
+                    p.kill()
+                    return self._json(200, {'ok': True, 'stopped': True})
+                return self._json(200, {'ok': True, 'stopped': False})
+            if action == 'messages':
+                return self._send_message(t, body)
+        return self._json(404, {'error': 'not found'})
+
+    def _create_thread(self, body):
+        pid = body.get('provider') or 'claude'
+        prov = provider_by_id(pid)
+        if not prov:
+            return self._json(400, {'error': 'unknown provider: %s' % pid})
+        cwd = valid_cwd(body.get('cwd') or HOME)
+        if cwd is None:
+            return self._json(400, {'error': 'cwd must be a directory inside your home folder'})
+        mode = body.get('permission_mode') or 'bypass'
+        if mode not in ALLOWED_MODES:
+            mode = 'bypass'
+        effort = body.get('effort') or 'default'
+        if effort not in ALLOWED_EFFORTS:
+            effort = 'default'
+        now = time.time()
+        t = {'id': uuid.uuid4().hex, 'title': (body.get('title') or '').strip()[:80],
+             'engine': prov['engine'], 'provider': pid,
+             'model': (body.get('model') or prov.get('model')),
+             'cwd': cwd, 'permission_mode': mode, 'effort': effort, 'session_id': None,
+             'created': now, 'updated': now, 'messages': []}
+        save_thread(t)
+        return self._json(200, t)
+
+    def _restore_thread(self, tid):
+        src = os.path.join(TRASH_DIR, '%s.json' % tid)
+        if not os.path.exists(src):
+            return self._json(404, {'error': 'not in trash'})
+        with _persist_lock:
+            try:
+                with open(src) as f:
+                    t = json.load(f)
+            except Exception:
+                return self._json(500, {'error': 'unreadable'})
+            t.pop('deleted_at', None)
+            t['archived'] = False
+            t['updated'] = time.time()
+            save_thread(t)                 # back into the active store
+            try: os.remove(src)
+            except Exception: pass
+        return self._json(200, thread_summary(t))
+
+    def _set_provider(self, pid, body):
+        provs = load_providers()
+        prov = next((p for p in provs if p.get('id') == pid), None)
+        if not prov:
+            return self._json(404, {'error': 'no such provider'})
+        if 'api_key' in body and prov.get('api_key_env'):
+            key = (body.get('api_key') or '').strip()
+            env_name = prov['api_key_env']
+            if key:
+                CFG[env_name] = key
+                APP_KEYS[env_name] = key
+            else:
+                CFG.pop(env_name, None)
+                APP_KEYS.pop(env_name, None)
+            save_keys()
+        if 'enabled' in body:
+            for p in provs:
+                if p.get('id') == pid:
+                    p['enabled'] = bool(body['enabled'])
+            tmp = PROVIDERS_FILE + '.tmp'
+            with open(tmp, 'w') as f:
+                json.dump(provs, f, indent=2)
+            os.replace(tmp, PROVIDERS_FILE)
+            prov = next((p for p in provs if p.get('id') == pid), prov)
+        return self._json(200, _provider_public(prov))
+
+    def _send_message(self, t, body):
+        text = (body.get('text') or '').strip()
+        if not text:
+            return self._json(400, {'error': 'empty text'})
+        if len(text) > MAX_MSG:
+            return self._json(400, {'error': 'text too long'})
+        # resolve provider BEFORE committing to a 200 stream, so failure is a clean JSON error
+        prov = provider_by_id(body.get('provider') or t.get('provider')) or provider_by_id('claude')
+        if not prov:
+            return self._json(503, {'error': 'no provider available'})
+        # optional per-message cwd override — lets a thread "cd" into a repo.
+        # Changing dir = a new project, so start a fresh session there.
+        cwd_override = body.get('cwd')
+        if cwd_override:
+            np = valid_cwd(cwd_override)            # contained to HOME; ignore if invalid
+            if np and np != (t.get('cwd') or HOME):
+                t['cwd'] = np
+                t['session_id'] = None
+        pm = body.get('permission_mode')        # optional per-message mode override
+        if pm in ALLOWED_MODES:
+            t['permission_mode'] = pm
+        eff = body.get('effort')                # optional per-message effort override
+        if eff in ALLOWED_EFFORTS:
+            t['effort'] = eff
+        if 'model' in body:                     # free-form per-thread model override
+            t['model'] = body.get('model') or None
+        lock = _lock_for(t['id'])
+        if not lock.acquire(blocking=False):
+            return self._json(409, {'error': 'thread busy'})
+        image_paths = write_images(body.get('images'))
+        try:
+            job = start_job(t, prov, text, image_paths, lock)   # job now owns `lock`
+        except Exception as e:
+            for p in image_paths:
+                try: os.unlink(p)
+                except Exception: pass
+            lock.release()
+            return self._json(500, {'error': str(e)})
+        self._stream_job(job)
+
+    def _sse(self, ev):
+        try:
+            self.wfile.write(('data: ' + json.dumps(ev) + '\n\n').encode())
+            self.wfile.flush()
+            return True
+        except (BrokenPipeError, ConnectionResetError, OSError):
+            return False
+
+    def _stream_job(self, job):
+        """Relay a (possibly already-running) job's events to this SSE client.
+        Disconnecting only detaches us — the job keeps running and will push."""
+        self.send_response(200)
+        self.send_header('Content-Type', 'text/event-stream')
+        self.send_header('Cache-Control', 'no-cache')
+        self.send_header('Connection', 'close')
+        self.end_headers()
+        backlog, q = job.attach()
+        for ev in backlog:
+            if not self._sse(ev):
+                if q: job.detach(q)
+                return
+        if q is None:                       # job finished before/at attach
+            return
+        try:
+            idle = 0.0
+            while True:
+                try:
+                    ev = q.get(timeout=15)
+                    idle = 0.0
+                except queue.Empty:
+                    idle += 15
+                    if idle >= JOB_TIMEOUT + 60:
+                        break
+                    # SSE comment keepalive: long tool runs / thinking gaps go minutes without
+                    # events, and idle client timeouts were killing the stream mid-turn.
+                    try:
+                        self.wfile.write(b': ping\n\n'); self.wfile.flush()
+                    except (BrokenPipeError, ConnectionResetError, OSError):
+                        break
+                    continue
+                if ev is _SENTINEL:
+                    break
+                if not self._sse(ev):
+                    break
+        finally:
+            job.detach(q)
+
+def main():
+    if not TOKEN:
+        log('No HARNESS_TOKEN in config.env — refusing to start (set it first).')
+        # stay alive so launchd doesn't thrash
+        while True:
+            time.sleep(60)
+    load_providers()   # materialize default file on first run
+    purge_trash()      # drop soft-deleted threads older than the TTL
+    def _cleanup(signum, frame):
+        with _running_lock:
+            for proc in list(running.values()):
+                try:
+                    proc.kill()
+                except Exception:
+                    pass
+        sys.exit(0)
+    signal.signal(signal.SIGTERM, _cleanup)   # launchd stop / kill -> don't orphan CLIs
+    signal.signal(signal.SIGINT, _cleanup)
+    log('claude-harness %s on :%d  claude=%s codex=%s' % (VERSION, PORT, CLAUDE_BIN, CODEX_BIN))
+    srv = ThreadingHTTPServer(('0.0.0.0', PORT), Handler)
+    srv.daemon_threads = True
+    srv.serve_forever()
+
+if __name__ == '__main__':
+    main()

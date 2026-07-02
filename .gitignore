@@ -1,0 +1,6 @@
+ios/build/
+ios/ClaudeHarness.xcodeproj/
+*.ipa
+*.p8
+.DS_Store
+config.env
