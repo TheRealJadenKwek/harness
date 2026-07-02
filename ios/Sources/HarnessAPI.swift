@@ -91,8 +91,29 @@ struct HarnessAPI {
         _ = try await URLSession.shared.data(for: try makeRequest("/trash/\(id)", method: "DELETE"))
     }
 
-    func automations() async throws -> [Automation] {
-        try await decode(try makeRequest("/automations"), as: [Automation].self)
+    func automations() async throws -> AutomationsList {
+        try await decode(try makeRequest("/automations"), as: AutomationsList.self)
+    }
+
+    func createAutomation(_ body: [String: Any]) async throws -> ManagedAutomation {
+        try await decode(try makeRequest("/automations", method: "POST", json: body),
+                         as: ManagedAutomation.self)
+    }
+
+    func updateAutomation(_ id: String, _ body: [String: Any]) async throws -> ManagedAutomation {
+        try await decode(try makeRequest("/automations/\(id)", method: "POST", json: body),
+                         as: ManagedAutomation.self)
+    }
+
+    func deleteAutomation(_ id: String) async throws {
+        _ = try await URLSession.shared.data(for: try makeRequest("/automations/\(id)", method: "DELETE"))
+    }
+
+    private struct AutoRunResult: Decodable { let thread_id: String }
+    /// Fire an automation immediately; returns the thread id the run landed in.
+    func runAutomation(_ id: String) async throws -> String {
+        try await decode(try makeRequest("/automations/\(id)/run", method: "POST"),
+                         as: AutoRunResult.self).thread_id
     }
 
     func usage() async throws -> UsageInfo {

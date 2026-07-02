@@ -12,7 +12,8 @@ final class AppState: ObservableObject {
     @Published var archivedThreads: [ThreadSummary] = []
     @Published var trashedThreads: [ThreadSummary] = []
     @Published var providers: [Provider] = []
-    @Published var automations: [Automation] = []
+    @Published var automations: [Automation] = []              // system launchd/cron (read-only)
+    @Published var managedAutomations: [ManagedAutomation] = []  // phone-created agent jobs
     @Published var status: String = ""
     @Published var loading = false
     @Published var connected = false
@@ -236,7 +237,9 @@ final class AppState: ObservableObject {
     }
 
     func loadAutomations() async {
-        automations = (try? await api.automations()) ?? []
+        let l = try? await api.automations()
+        managedAutomations = l?.managed ?? []
+        automations = l?.system ?? []
     }
 
     // "New reply" dot: compare message counts (same source on both sides → no phone/Mac

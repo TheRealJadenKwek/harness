@@ -1476,6 +1476,147 @@ def list_automations(show_all=False):
     out.sort(key=lambda a: (a['kind'], a['name']))
     return out
 
+# --------------------------------------------------------------------------- managed automations
+# Phone-created scheduled agent jobs. The harness daemon ITSELF is the scheduler
+# (it's already always-on), so this works identically on macOS and Windows — no
+# launchd plists, no schtasks. Each automation owns a dedicated thread; results
+# land there like any other detached turn, completion push included.
+AUTOS_FILE = os.path.join(BASE, 'automations.json')
+_autos_lock = threading.Lock()
+
+def load_autos():
+    try:
+        with open(AUTOS_FILE) as f:
+            return json.load(f)
+    except Exception:
+        return []
+
+def save_autos(autos):
+    tmp = AUTOS_FILE + '.tmp'
+    with open(tmp, 'w') as f:
+        json.dump(autos, f, indent=1)
+    os.replace(tmp, AUTOS_FILE)
+
+def schedule_text(s):
+    if (s or {}).get('type') == 'interval':
+        m = int(s.get('minutes', 60))
+        return 'every %dh' % (m // 60) if m % 60 == 0 else 'every %dm' % m
+    return 'daily %02d:%02d' % (int((s or {}).get('hour', 0)), int((s or {}).get('minute', 0)))
+
+def auto_public(a):
+    d = {k: a.get(k) for k in ('id', 'name', 'prompt', 'provider', 'model', 'effort',
+                               'cwd', 'enabled', 'thread_id', 'last_run', 'last_status')}
+    d['schedule'] = a.get('schedule') or {}
+    d['schedule_text'] = schedule_text(d['schedule'])
+    return d
+
+def _validate_auto(body, existing=None):
+    """Returns (auto_dict, error). Merges onto `existing` for updates."""
+    a = dict(existing or {})
+    name = (body.get('name') if 'name' in body else a.get('name') or '').strip()
+    prompt = (body.get('prompt') if 'prompt' in body else a.get('prompt') or '').strip()
+    if not name or len(name) > 60:
+        return None, 'name required (max 60 chars)'
+    if not prompt or len(prompt) > MAX_MSG:
+        return None, 'prompt required'
+    pid = body.get('provider') or a.get('provider') or 'claude'
+    if not provider_by_id(pid):
+        return None, 'unknown provider: %s' % pid
+    s = body.get('schedule') or a.get('schedule') or {}
+    if s.get('type') == 'interval':
+        try:
+            s = {'type': 'interval', 'minutes': max(5, min(7 * 24 * 60, int(s.get('minutes', 60))))}
+        except Exception:
+            return None, 'bad interval'
+    else:
+        try:
+            s = {'type': 'daily', 'hour': min(23, max(0, int(s.get('hour', 9)))),
+                 'minute': min(59, max(0, int(s.get('minute', 0))))}
+        except Exception:
+            return None, 'bad time'
+    cwd = body.get('cwd') if 'cwd' in body else a.get('cwd')
+    if cwd:
+        cwd = valid_cwd(cwd)
+        if cwd is None:
+            return None, 'cwd must be a directory inside your home folder'
+    eff = body.get('effort') or a.get('effort') or 'default'
+    if eff not in ALLOWED_EFFORTS:
+        eff = 'default'
+    a.update({'name': name, 'prompt': prompt, 'provider': pid,
+              'model': (body.get('model') if 'model' in body else a.get('model')) or None,
+              'effort': eff, 'cwd': cwd, 'schedule': s,
+              'enabled': bool(body.get('enabled', a.get('enabled', True)))})
+    a.setdefault('id', uuid.uuid4().hex[:12])
+    return a, None
+
+def _auto_thread(a):
+    """The automation's dedicated thread — created on first run."""
+    t = load_thread(a.get('thread_id') or '')
+    if t is not None:
+        return t
+    prov = provider_by_id(a.get('provider') or 'claude') or provider_by_id('claude')
+    now = time.time()
+    t = {'id': uuid.uuid4().hex, 'title': ('⚡ ' + a['name'])[:80],
+         'engine': prov['engine'], 'provider': prov['id'],
+         'model': a.get('model') or prov.get('model'),
+         'cwd': (valid_cwd(a.get('cwd')) if a.get('cwd') else None) or HOME,
+         'permission_mode': 'bypass', 'effort': a.get('effort') or 'default',
+         'session_id': None, 'created': now, 'updated': now, 'messages': []}
+    save_thread(t)
+    return t
+
+def run_automation(aid):
+    """Fire one automation now. Returns (ok, thread_id_or_error)."""
+    with _autos_lock:
+        a = next((x for x in load_autos() if x['id'] == aid), None)
+    if not a:
+        return False, 'no such automation'
+    prov = provider_by_id(a.get('provider') or 'claude') or provider_by_id('claude')
+    if not prov:
+        return False, 'no provider available'
+    t = _auto_thread(a)
+    if a.get('model'):
+        t['model'] = a['model']
+    if a.get('effort'):
+        t['effort'] = a['effort']
+    lock = _lock_for(t['id'])
+    if not lock.acquire(blocking=False):
+        return False, 'previous run still going'
+    try:
+        start_job(t, prov, a['prompt'], [], lock)
+    except Exception as e:
+        lock.release()
+        return False, str(e)
+    with _autos_lock:
+        autos = load_autos()
+        for x in autos:
+            if x['id'] == aid:
+                x['thread_id'] = t['id']
+                x['last_run'] = time.time()
+        save_autos(autos)
+    log('automation RUN "%s" -> thread %s' % (a['name'], t['id'][:8]))
+    return True, t['id']
+
+def _autos_loop():
+    while True:
+        time.sleep(30)
+        try:
+            lt, nowts = time.localtime(), time.time()
+            with _autos_lock:
+                autos = load_autos()
+            for a in autos:
+                if not a.get('enabled', True):
+                    continue
+                s, last = a.get('schedule') or {}, a.get('last_run') or 0
+                if s.get('type') == 'interval':
+                    if nowts - last >= int(s.get('minutes', 60)) * 60:
+                        run_automation(a['id'])
+                elif lt.tm_hour == int(s.get('hour', -1)) and lt.tm_min == int(s.get('minute', -1)) \
+                        and nowts - last > 120:
+                    run_automation(a['id'])
+        except Exception as e:
+            log('automations loop error: %s' % e)
+
 # --------------------------------------------------------------------------- HTTP
 class Handler(BaseHTTPRequestHandler):
     protocol_version = 'HTTP/1.1'
@@ -1592,7 +1733,10 @@ class Handler(BaseHTTPRequestHandler):
             return self._json(200, list_threads('trash'))
         if path == '/automations':
             q = urllib.parse.parse_qs(urllib.parse.urlparse(self.path).query)
-            return self._json(200, list_automations(show_all=q.get('all', [''])[0] == '1'))
+            with _autos_lock:
+                managed = [auto_public(a) for a in load_autos()]
+            return self._json(200, {'managed': managed,
+                                    'system': list_automations(show_all=q.get('all', [''])[0] == '1')})
         if path == '/usage':
             with _usage_lock:
                 return self._json(200, json.loads(json.dumps(RATE_LIMITS)))
@@ -1707,6 +1851,14 @@ class Handler(BaseHTTPRequestHandler):
             return self._json(401, {'error': 'unauthorized'})
         path = self.path.split('?')[0].rstrip('/')
         parts = path.split('/')
+        if len(parts) == 3 and parts[1] == 'automations':  # delete a managed automation
+            with _autos_lock:
+                autos = load_autos()
+                keep = [x for x in autos if x['id'] != parts[2]]
+                if len(keep) == len(autos):
+                    return self._json(404, {'error': 'no such automation'})
+                save_autos(keep)
+            return self._json(200, {'ok': True})
         if len(parts) >= 3 and parts[1] == 'trash':       # permanent delete from trash
             tid = parts[2]
             if not valid_tid(tid):
@@ -1782,6 +1934,35 @@ class Handler(BaseHTTPRequestHandler):
             return self._json(200, {'ok': True, 'sent': results})
         if path.startswith('/providers/'):
             return self._set_provider(path.split('/')[2], body)
+        if path == '/automations':                       # create
+            a, err = _validate_auto(body)
+            if err:
+                return self._json(400, {'error': err})
+            with _autos_lock:
+                autos = load_autos()
+                autos.append(a)
+                save_autos(autos)
+            log('automation NEW "%s" (%s)' % (a['name'], schedule_text(a['schedule'])))
+            return self._json(200, auto_public(a))
+        if path.startswith('/automations/'):
+            parts_a = path.split('/')
+            aid = parts_a[2]
+            if len(parts_a) == 4 and parts_a[3] == 'run':   # run now
+                ok, res = run_automation(aid)
+                if not ok:
+                    return self._json(409 if 'still going' in res else 404, {'error': res})
+                return self._json(200, {'ok': True, 'thread_id': res})
+            with _autos_lock:                                # update
+                autos = load_autos()
+                cur = next((x for x in autos if x['id'] == aid), None)
+                if not cur:
+                    return self._json(404, {'error': 'no such automation'})
+                a, err = _validate_auto(body, existing=cur)
+                if err:
+                    return self._json(400, {'error': err})
+                autos = [a if x['id'] == aid else x for x in autos]
+                save_autos(autos)
+            return self._json(200, auto_public(a))
         parts = path.split('/')
         if len(parts) == 4 and parts[1] == 'threads' and parts[3] == 'activity':
             tok = (body.get('token') or '').strip().lower()
@@ -2005,6 +2186,7 @@ def main():
     purge_trash()      # drop soft-deleted threads older than the TTL
     rotate_logs()      # keep log files bounded (repeats every 6h)
     threading.Thread(target=_rotate_loop, daemon=True).start()
+    threading.Thread(target=_autos_loop, daemon=True).start()   # managed automations scheduler
     def _cleanup(signum, frame):
         with _running_lock:
             for proc in list(running.values()):

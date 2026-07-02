@@ -77,6 +77,34 @@ struct Automation: Codable, Identifiable, Hashable {
     var id: String { name + "|" + kind }
 }
 
+// A phone-managed scheduled agent job (the harness daemon is the scheduler).
+struct AutoSchedule: Codable, Hashable {
+    var type: String            // "daily" | "interval"
+    var hour: Int?
+    var minute: Int?
+    var minutes: Int?
+}
+
+struct ManagedAutomation: Codable, Identifiable, Hashable {
+    let id: String
+    var name: String
+    var prompt: String
+    var provider: String?
+    var model: String?
+    var effort: String?
+    var cwd: String?
+    var enabled: Bool
+    var thread_id: String?
+    var last_run: Double?
+    var schedule: AutoSchedule
+    var schedule_text: String?
+}
+
+struct AutomationsList: Codable {
+    var managed: [ManagedAutomation]
+    var system: [Automation]
+}
+
 struct ToolInfo: Codable, Hashable {
     let name: String
     let summary: String?
