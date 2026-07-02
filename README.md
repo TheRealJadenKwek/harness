@@ -76,6 +76,16 @@ No Mac handy? The app ships with a fully offline **demo mode** ("Explore the dem
 - The app stores your server URL and token locally on-device only.
 - No analytics, no telemetry, no third-party services. [Privacy policy](https://harness-site.vercel.app/privacy).
 
+## Roadmap / ideas
+
+Contributions welcome — these are good places to start. Open an issue or PR if you want to take one on.
+
+- **Home-screen widget.** A WidgetKit target already exists (it powers the Live Activity). A widget showing running threads, the last automation result, or your usage-window status is mostly a new view against the same `/threads` and `/usage` endpoints.
+- **iPad / Mac Catalyst layout.** The app is iPhone-only today (`TARGETED_DEVICE_FAMILY: "1"`). A split-view layout — thread list beside the open thread — would make it a first-class iPad and desktop client.
+- **HMR tunnel reconnect.** The WebSocket dev-server tunnel works; it could auto-reconnect if the dev server restarts, instead of needing a manual reload.
+- **Codex phone-side approval.** Ask-mode approvals are Claude-only, because `codex exec` has no `--permission-prompt-tool` equivalent yet. Wire it up if/when the Codex CLI grows a permission hook.
+- **Android client.** The server is a plain HTTP+SSE API — nothing iOS-specific about it. A Kotlin/Compose client could talk to the same harness.
+
 ## License
 
 MIT — see [LICENSE](LICENSE).
