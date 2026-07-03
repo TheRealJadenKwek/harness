@@ -1,6 +1,6 @@
 # Harness
 
-**Your Mac's AI coding CLIs, as a native iPhone app.**
+**Your computer's AI coding CLIs, as a native iPhone app.**
 
 Harness turns Claude Code and Codex running on your own Mac or Windows PC into a phone-first experience: start threads, watch replies stream with full markdown, read reasoning summaries, review the diffs and files your agents produce, answer their questions with a tap, and get a push notification when a long task finishes — from anywhere, over your own private [Tailscale](https://tailscale.com) network.
 
