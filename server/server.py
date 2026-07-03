@@ -1615,9 +1615,31 @@ def proxy_request(port, subpath, query, method, body, in_headers):
 # session id, and the next message resumes it with the CLI's full context intact.
 CLAUDE_SESS_DIR = os.path.expanduser('~/.claude/projects')
 CODEX_SESS_DIR = os.path.expanduser('~/.codex/sessions')
+# Claude Code desktop keeps each chat's sidebar TITLE (incl. user renames) in per-session
+# metadata JSONs keyed by cliSessionId. Codex desktop persists titles only for cloud
+# threads, so codex sessions fall back to their first user message.
+CLAUDE_TITLE_DIRS = [os.path.expanduser('~/Library/Application Support/Claude/claude-code-sessions'),
+                     os.path.join(os.environ.get('APPDATA', ''), 'Claude', 'claude-code-sessions')]
+
+def claude_title_map():
+    """cliSessionId -> desktop sidebar title. Re-read per scan so renames show up live."""
+    m = {}
+    for base in CLAUDE_TITLE_DIRS:
+        if not base or not os.path.isdir(base):
+            continue
+        for p in glob.glob(os.path.join(base, '*', '*', '*.json')):
+            try:
+                with open(p, encoding='utf-8', errors='replace') as f:
+                    d = json.load(f)
+                cid, title = d.get('cliSessionId'), (d.get('title') or '').strip()
+                if cid and title:
+                    m[cid] = title[:70]
+            except Exception:
+                pass
+    return m
 _SKIP_TITLE = ('this session is being continued', '<command-', '<environment_context',
                '<permissions', 'caveat:', '[request interrupted', '<task-notification',
-               '<system-reminder', '<local-command')
+               '<system-reminder', '<local-command', '<codex_delegation', '<user_instructions')
 
 def _clean_title(s):
     s = (s or '').strip()
@@ -1721,6 +1743,7 @@ def _session_files():
 
 def list_desktop_sessions():
     out = []
+    titles = claude_title_map()
     for engine, path in _session_files():
         s = _parse_claude_session(path) if engine == 'claude' else _parse_codex_session(path)
         if not s or s['turns'] == 0:
@@ -1730,6 +1753,8 @@ def list_desktop_sessions():
         # and fail with "No conversation found" — don't offer those.
         if engine == 'claude' and valid_cwd(s['cwd']) is None:
             continue
+        if s['id'] in titles:                     # desktop sidebar name (incl. renames) wins
+            s['title'] = titles[s['id']]
         out.append(s)
     return out[:40]
 
@@ -1750,6 +1775,9 @@ def import_desktop_session(sid, engine):
     parsed = (_parse_claude_session if engine == 'claude' else _parse_codex_session)(path, full=True)
     if not parsed:
         return None, 'could not parse session'
+    dt = claude_title_map().get(sid)
+    if dt:
+        parsed['title'] = dt                      # keep the desktop name on the imported thread
     prov = provider_by_id(engine) or provider_by_id('claude')
     cwd = valid_cwd(parsed['cwd'])
     if engine == 'claude' and cwd is None:
