@@ -8,7 +8,6 @@ struct ThreadListView: View {
     @State private var renameTarget: ThreadSummary?
     @State private var renameText = ""
     @State private var showArchived = false
-    @State private var showImport = false
     @State private var showTrash = false
     @State private var showUsage = false
 
@@ -93,7 +92,6 @@ struct ThreadListView: View {
                         }
                         Divider()
                     }
-                    Button { showImport = true } label: { Label("Continue from desktop", systemImage: "desktopcomputer.and.arrow.down") }
                     Button { showUsage = true } label: { Label("Usage limits", systemImage: "gauge.with.dots.needle.bottom.50percent") }
                     Button { showArchived = true } label: { Label("Archived", systemImage: "archivebox") }
                     Button { showTrash = true } label: { Label("Recently Deleted", systemImage: "trash") }
@@ -106,7 +104,6 @@ struct ThreadListView: View {
         .sheet(isPresented: $showNew) {
             NewThreadSheet().environmentObject(app)
         }
-        .sheet(isPresented: $showImport) { DesktopImportView().environmentObject(app) }
         .sheet(isPresented: $showArchived) { ArchivedThreadsView().environmentObject(app) }
         .sheet(isPresented: $showTrash) { TrashView().environmentObject(app) }
         .sheet(isPresented: $showUsage) { UsageView().environmentObject(app) }

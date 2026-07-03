@@ -42,6 +42,15 @@ struct NewThreadSheet: View {
     var body: some View {
         NavigationStack {
             Form {
+                Section {
+                    NavigationLink {
+                        DesktopImportView().environmentObject(app)
+                    } label: {
+                        Label("Continue from desktop", systemImage: "desktopcomputer.and.arrow.down")
+                    }
+                } footer: {
+                    Text("Pick up a Claude Code or Codex session you started on your computer.")
+                }
                 Section("Engine") {
                     Picker("Engine", selection: $provider) {
                         ForEach(app.enabledProviders) { p in

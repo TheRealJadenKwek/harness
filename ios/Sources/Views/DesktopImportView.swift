@@ -10,10 +10,18 @@ struct DesktopImportView: View {
     @State private var loading = true
     @State private var importing: String?
     @State private var errorText: String?
+    /// Reached via the New-thread sheet's NavigationLink (pushed), so it must NOT wrap
+    /// itself in another NavigationStack — that would nest a second nav bar.
+    var pushed = true
 
     var body: some View {
-        NavigationStack {
-            List {
+        Group {
+            if pushed { content } else { NavigationStack { content } }
+        }
+    }
+
+    private var content: some View {
+        List {
                 ForEach(sessions) { s in
                     Button { importSession(s) } label: {
                         VStack(alignment: .leading, spacing: 4) {
@@ -54,7 +62,9 @@ struct DesktopImportView: View {
             .toolbarBackground(Color.appBG, for: .navigationBar)
             .toolbarBackground(.visible, for: .navigationBar)
             .toolbar {
-                ToolbarItem(placement: .confirmationAction) { Button("Done") { dismiss() } }
+                if !pushed {
+                    ToolbarItem(placement: .confirmationAction) { Button("Done") { dismiss() } }
+                }
             }
             .overlay {
                 if sessions.isEmpty {
@@ -69,7 +79,6 @@ struct DesktopImportView: View {
             } message: { Text(errorText ?? "") }
             .task { await load() }
             .refreshable { await load() }
-        }
     }
 
     private func load() async {
