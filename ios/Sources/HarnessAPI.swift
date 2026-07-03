@@ -184,6 +184,17 @@ struct HarnessAPI {
         _ = try await URLSession.shared.data(for: try makeRequest("/threads/\(id)/stop", method: "POST"))
     }
 
+    func desktopSessions() async throws -> [DesktopSession] {
+        try await decode(try makeRequest("/desktop/sessions"), as: [DesktopSession].self)
+    }
+
+    /// Bind a desktop CLI session to a new harness thread; the next message resumes it.
+    func importDesktopSession(_ id: String, engine: String) async throws -> ThreadSummary {
+        try await decode(try makeRequest("/desktop/import", method: "POST",
+                                         json: ["id": id, "engine": engine]),
+                         as: ThreadSummary.self)
+    }
+
     func registerActivity(_ id: String, token: String) async throws {
         _ = try await URLSession.shared.data(for: try makeRequest(
             "/threads/\(id)/activity", method: "POST", json: ["token": token]))

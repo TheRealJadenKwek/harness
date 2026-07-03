@@ -1607,6 +1607,166 @@ def proxy_request(port, subpath, query, method, body, in_headers):
         return 502, {'Content-Type': 'application/json'}, \
                json.dumps({'error': 'dev server not reachable on :%d (%s)' % (port, e)}).encode()
 
+# --------------------------------------------------------------------------- desktop session import
+# Both CLIs keep resumable transcripts on disk (Claude: ~/.claude/projects/**/<id>.jsonl,
+# the stem IS the --resume id; Codex: ~/.codex/sessions/YYYY/MM/DD/rollout-*-<id>.jsonl,
+# resumed via `exec resume <id>`). We surface the recent ones so a thread you started on
+# the desktop can be continued from the phone — importing binds a harness thread to that
+# session id, and the next message resumes it with the CLI's full context intact.
+CLAUDE_SESS_DIR = os.path.expanduser('~/.claude/projects')
+CODEX_SESS_DIR = os.path.expanduser('~/.codex/sessions')
+_SKIP_TITLE = ('this session is being continued', '<command-', '<environment_context',
+               '<permissions', 'caveat:', '[request interrupted', '<task-notification',
+               '<system-reminder', '<local-command')
+
+def _clean_title(s):
+    s = (s or '').strip()
+    low = s.lower()
+    if not s or any(low.startswith(p) for p in _SKIP_TITLE):
+        return None
+    return s.replace('\n', ' ').strip()[:70]
+
+def _parse_claude_session(path, full=False):
+    """-> {id, engine, cwd, title, updated, turns[, messages]}. Bounded read for listing."""
+    sid = os.path.basename(path)[:-6]
+    cwd, title, turns, messages = None, None, 0, []
+    limit = 4000 if full else 400
+    try:
+        with open(path, encoding='utf-8', errors='replace') as f:
+            for i, line in enumerate(f):
+                if i > limit:
+                    break
+                try:
+                    d = json.loads(line)
+                except Exception:
+                    continue
+                if d.get('isSidechain'):
+                    continue
+                if not cwd and d.get('cwd'):
+                    cwd = d['cwd']
+                typ = d.get('type')
+                if typ not in ('user', 'assistant'):
+                    continue
+                m = d.get('message', {})
+                c = m.get('content')
+                if isinstance(c, list):
+                    c = ' '.join(b.get('text', '') for b in c if isinstance(b, dict) and b.get('type') == 'text')
+                if not isinstance(c, str) or not c.strip():
+                    continue
+                turns += 1
+                if typ == 'user' and not title:
+                    title = _clean_title(c)
+                if full:
+                    messages.append({'role': typ, 'text': c[:6000], 'ts': None})
+    except Exception:
+        return None
+    out = {'id': sid, 'engine': 'claude', 'cwd': cwd or HOME,
+           'title': title or ('Claude session ' + sid[:8]),
+           'updated': os.path.getmtime(path), 'turns': turns}
+    if full:
+        out['messages'] = messages[-120:]
+    return out
+
+def _parse_codex_session(path, full=False):
+    sid, cwd, title, turns, messages = None, None, None, 0, []
+    limit = 6000 if full else 500
+    try:
+        with open(path, encoding='utf-8', errors='replace') as f:
+            for i, line in enumerate(f):
+                if i > limit:
+                    break
+                try:
+                    d = json.loads(line)
+                except Exception:
+                    continue
+                p = d.get('payload', {}) or {}
+                if d.get('type') == 'session_meta' or p.get('type') == 'session_meta':
+                    sid = sid or p.get('session_id') or p.get('id')
+                    cwd = cwd or p.get('cwd')
+                if p.get('type') == 'turn_context' and not cwd:
+                    cwd = p.get('cwd')
+                if d.get('type') == 'response_item' and p.get('type') == 'message':
+                    role = p.get('role')
+                    if role not in ('user', 'assistant'):
+                        continue
+                    txt = ' '.join(b.get('text', '') for b in (p.get('content') or [])
+                                   if isinstance(b, dict) and b.get('type') in ('input_text', 'output_text', 'text'))
+                    if not txt.strip():
+                        continue
+                    turns += 1
+                    if role == 'user' and not title:
+                        title = _clean_title(txt)
+                    if full:
+                        messages.append({'role': role, 'text': txt[:6000], 'ts': None})
+    except Exception:
+        return None
+    if not sid:
+        sid = os.path.basename(path).split('-')[-1][:-6]
+    out = {'id': sid, 'engine': 'codex', 'cwd': cwd or HOME,
+           'title': title or ('Codex session ' + sid[:8]),
+           'updated': os.path.getmtime(path), 'turns': turns}
+    if full:
+        out['messages'] = messages[-120:]
+    return out
+
+def _session_files():
+    """(engine, path) for recent desktop sessions, newest first, capped."""
+    files = []
+    for p in glob.glob(os.path.join(CLAUDE_SESS_DIR, '*', '*.jsonl')):
+        files.append(('claude', p))
+    for p in glob.glob(os.path.join(CODEX_SESS_DIR, '*', '*', '*', 'rollout-*.jsonl')):
+        files.append(('codex', p))
+    files.sort(key=lambda ep: os.path.getmtime(ep[1]) if os.path.exists(ep[1]) else 0, reverse=True)
+    return files[:60]
+
+def list_desktop_sessions():
+    out = []
+    for engine, path in _session_files():
+        s = _parse_claude_session(path) if engine == 'claude' else _parse_codex_session(path)
+        if not s or s['turns'] == 0:
+            continue
+        # Claude resolves --resume per PROJECT DIR (derived from cwd): if the session's cwd
+        # can't be the thread cwd (outside home), resume would launch in the wrong project
+        # and fail with "No conversation found" — don't offer those.
+        if engine == 'claude' and valid_cwd(s['cwd']) is None:
+            continue
+        out.append(s)
+    return out[:40]
+
+def _find_session_path(sid, engine):
+    if engine == 'claude':
+        hits = glob.glob(os.path.join(CLAUDE_SESS_DIR, '*', sid + '.jsonl'))
+        return hits[0] if hits else None
+    hits = glob.glob(os.path.join(CODEX_SESS_DIR, '*', '*', '*', 'rollout-*-%s.jsonl' % sid))
+    return hits[0] if hits else None
+
+def import_desktop_session(sid, engine):
+    """Create a harness thread bound to a desktop session id; the next message resumes it."""
+    if engine not in ('claude', 'codex'):
+        return None, 'unknown engine'
+    path = _find_session_path(sid, engine)
+    if not path:
+        return None, 'session not found'
+    parsed = (_parse_claude_session if engine == 'claude' else _parse_codex_session)(path, full=True)
+    if not parsed:
+        return None, 'could not parse session'
+    prov = provider_by_id(engine) or provider_by_id('claude')
+    cwd = valid_cwd(parsed['cwd'])
+    if engine == 'claude' and cwd is None:
+        return None, 'session cwd is outside your home folder — continue it on the desktop'
+    cwd = cwd or HOME
+    now = time.time()
+    t = {'id': uuid.uuid4().hex, 'title': ('📥 ' + parsed['title'])[:80],
+         'engine': prov['engine'], 'provider': prov['id'], 'model': prov.get('model'),
+         'cwd': cwd, 'permission_mode': 'bypass', 'effort': 'default',
+         'session_id': sid,                       # <- the resume key; continuation just works
+         'created': now, 'updated': now,
+         'messages': parsed.get('messages', [])}
+    save_thread(t)
+    log('imported %s desktop session %s -> thread %s (%d msgs)'
+        % (engine, sid[:8], t['id'][:8], len(t['messages'])))
+    return t, None
+
 # --------------------------------------------------------------------------- managed automations
 # Phone-created scheduled agent jobs. The harness daemon ITSELF is the scheduler
 # (it's already always-on), so this works identically on macOS and Windows — no
@@ -2012,6 +2172,8 @@ class Handler(BaseHTTPRequestHandler):
                 managed = [auto_public(a) for a in load_autos()]
             return self._json(200, {'managed': managed,
                                     'system': list_automations(show_all=q.get('all', [''])[0] == '1')})
+        if path == '/desktop/sessions':
+            return self._json(200, list_desktop_sessions())
         if path == '/usage':
             with _usage_lock:
                 return self._json(200, json.loads(json.dumps(RATE_LIMITS)))
@@ -2219,6 +2381,15 @@ class Handler(BaseHTTPRequestHandler):
             return self._json(200, {'ok': True, 'sent': results})
         if path.startswith('/providers/'):
             return self._set_provider(path.split('/')[2], body)
+        if path == '/desktop/import':                    # continue a desktop CLI session
+            sid = (body.get('id') or '').strip()
+            engine = (body.get('engine') or '').strip()
+            if not sid:
+                return self._json(400, {'error': 'id required'})
+            t, err = import_desktop_session(sid, engine)
+            if err:
+                return self._json(404, {'error': err})
+            return self._json(200, thread_summary(t))
         if path == '/automations':                       # create
             a, err = _validate_auto(body)
             if err:

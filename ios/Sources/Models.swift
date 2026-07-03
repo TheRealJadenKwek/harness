@@ -107,6 +107,16 @@ struct AutomationsList: Codable {
     var system: [Automation]
 }
 
+// A resumable CLI session found on the computer (Claude Code / Codex desktop or terminal).
+struct DesktopSession: Codable, Identifiable, Hashable {
+    let id: String
+    let engine: String
+    let cwd: String
+    let title: String
+    let updated: Double
+    let turns: Int
+}
+
 // A dev server (vite/next/flask…) listening on the Mac, browsable via the proxy.
 struct DevServer: Codable, Identifiable, Hashable {
     let port: Int
