@@ -1623,6 +1623,26 @@ CODEX_SESS_DIR = os.path.expanduser('~/.codex/sessions')
 CLAUDE_TITLE_DIRS = [os.path.expanduser('~/Library/Application Support/Claude/claude-code-sessions'),
                      os.path.join(os.environ.get('APPDATA', ''), 'Claude', 'claude-code-sessions')]
 
+CODEX_INDEX = os.path.expanduser('~/.codex/session_index.jsonl')
+
+def codex_title_map():
+    """session id -> Codex desktop thread_name (its AI-generated/renamed title).
+    The index is append-style; the LAST entry for an id is current."""
+    m = {}
+    try:
+        with open(CODEX_INDEX, encoding='utf-8', errors='replace') as f:
+            for line in f:
+                try:
+                    d = json.loads(line)
+                except Exception:
+                    continue
+                sid, name = d.get('id'), (d.get('thread_name') or '').strip()
+                if sid and name:
+                    m[sid] = name[:70]        # later lines overwrite -> newest name wins
+    except Exception:
+        pass
+    return m
+
 def claude_title_map():
     """cliSessionId -> desktop sidebar title. Re-read per scan so renames show up live."""
     m = {}
@@ -1819,7 +1839,7 @@ def _session_files():
 
 def list_desktop_sessions():
     out = []
-    titles = claude_title_map()
+    ctitles, xtitles = claude_title_map(), codex_title_map()
     for engine, path in _session_files():
         s = _parse_claude_session(path) if engine == 'claude' else _parse_codex_session(path)
         if not s or s['turns'] == 0:
@@ -1829,8 +1849,9 @@ def list_desktop_sessions():
         # and fail with "No conversation found" — don't offer those.
         if engine == 'claude' and valid_cwd(s['cwd']) is None:
             continue
-        if s['id'] in titles:                     # desktop sidebar name (incl. renames) wins
-            s['title'] = titles[s['id']]
+        desktop = (ctitles if engine == 'claude' else xtitles).get(s['id'])
+        if desktop:                               # desktop sidebar name (incl. renames) wins
+            s['title'] = desktop
         out.append(s)
     return out[:40]
 
@@ -1851,7 +1872,7 @@ def import_desktop_session(sid, engine):
     parsed = (_parse_claude_session if engine == 'claude' else _parse_codex_session)(path, full=True)
     if not parsed:
         return None, 'could not parse session'
-    dt = claude_title_map().get(sid)
+    dt = (claude_title_map() if engine == 'claude' else codex_title_map()).get(sid)
     if dt:
         parsed['title'] = dt                      # keep the desktop name on the imported thread
     prov = provider_by_id(engine) or provider_by_id('claude')
