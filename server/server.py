@@ -1430,6 +1430,8 @@ def start_job(t, prov, text, image_paths, thread_lock):
                         log('persist failed for thread %s: %s' % (tid, e))
                     if final_text is not None:            # only ping on a real answer/question
                         push_arg = (dict(cur), final_text, final_questions)
+            if cur is not None and prov.get('engine') == 'claude':
+                sync_desktop_sidebar(cur)             # phone-born chats appear on the desktop
         finally:
             for p in image_paths:
                 try: os.unlink(p)
@@ -1647,6 +1649,80 @@ def _clean_title(s):
     if not s or any(low.startswith(p) for p in _SKIP_TITLE):
         return None
     return s.replace('\n', ' ').strip()[:70]
+
+# --- reverse direction: surface HARNESS-born claude threads in the desktop sidebar.
+# The desktop app lists chats from its claude-code-sessions store, so a thread created on
+# the phone is invisible there even though its CLI session lives on this machine. We write
+# one metadata entry per harness thread (deterministic uuid5 filename -> updated in place
+# each turn, tracking the current session id). PRIVATE schema — best-effort by design:
+# every write is wrapped, and an app update changing the format just means entries stop
+# appearing, never breakage of the harness itself.
+def _sidebar_store_dir():
+    """The desktop app's active workspace store = the dir whose entries are freshest."""
+    best, best_m = None, -1.0
+    for base in CLAUDE_TITLE_DIRS:
+        if not base or not os.path.isdir(base):
+            continue
+        for d in glob.glob(os.path.join(base, '*', '*')):
+            files = glob.glob(os.path.join(d, 'local_*.json'))
+            if not files:
+                continue
+            m = max(os.path.getmtime(f) for f in files)
+            if m > best_m:
+                best, best_m = d, m
+    return best
+
+_SIDEBAR_MODES = {'bypass': 'bypassPermissions', 'default': 'default',
+                  'acceptEdits': 'acceptEdits', 'plan': 'plan'}
+
+def sync_desktop_sidebar(t):
+    """Mirror a claude harness thread into the desktop app's sidebar store."""
+    try:
+        if t.get('engine') != 'claude' or not t.get('session_id'):
+            return
+        d = _sidebar_store_dir()
+        if not d:
+            return
+        sid = t['session_id']
+        marker = str(uuid.uuid5(uuid.NAMESPACE_URL, 'harness-thread:' + t['id']))
+        ours = os.path.join(d, 'local_%s.json' % marker)
+        # If the app (or an import source) already tracks this cli session, don't duplicate.
+        for p in glob.glob(os.path.join(d, 'local_*.json')):
+            if p == ours:
+                continue
+            try:
+                with open(p, encoding='utf-8', errors='replace') as f:
+                    if json.load(f).get('cliSessionId') == sid:
+                        return
+            except Exception:
+                continue
+        title = (t.get('title') or '').strip()
+        if not title:
+            for m in t.get('messages', []):
+                if m.get('role') == 'user' and (m.get('text') or '').strip():
+                    title = m['text'].strip()[:60]
+                    break
+        entry = {'sessionId': 'local_' + marker,
+                 'cliSessionId': sid,
+                 'cwd': t.get('cwd') or HOME,
+                 'originCwd': t.get('cwd') or HOME,
+                 'createdAt': int((t.get('created') or time.time()) * 1000),
+                 'lastActivityAt': int((t.get('updated') or time.time()) * 1000),
+                 'lastFocusedAt': int((t.get('updated') or time.time()) * 1000),
+                 'model': t.get('model') or '',
+                 'sessionSettings': {},
+                 'isArchived': bool(t.get('archived')),
+                 'title': title or 'Harness thread',
+                 'titleSource': 'auto',
+                 'permissionMode': _SIDEBAR_MODES.get(t.get('permission_mode') or 'bypass',
+                                                      'bypassPermissions'),
+                 'enabledMcpTools': {}}
+        tmp = ours + '.tmp'
+        with open(tmp, 'w') as f:
+            json.dump(entry, f, indent=1)
+        os.replace(tmp, ours)
+    except Exception as e:
+        log('sidebar sync skipped: %s' % e)
 
 def _parse_claude_session(path, full=False):
     """-> {id, engine, cwd, title, updated, turns[, messages]}. Bounded read for listing."""
