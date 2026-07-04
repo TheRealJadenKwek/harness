@@ -50,6 +50,12 @@ struct DesktopImportView: View {
                         .padding(.vertical, 3)
                     }
                     .disabled(importing != nil)
+                    .swipeActions(edge: .trailing, allowsFullSwipe: false) {
+                        Button { handoff(s) } label: {
+                            Label(s.engine == "codex" ? "→ Claude" : "→ Codex",
+                                  systemImage: "arrow.left.arrow.right")
+                        }.tint(.purple)
+                    }
                     .listRowBackground(Color.appBG)
                     .listRowSeparatorTint(Color.appBorder)
                 }
@@ -94,6 +100,24 @@ struct DesktopImportView: View {
                 let t = try await app.api.importDesktopSession(s.id, engine: s.engine)
                 await app.refresh()
                 app.pendingOpenThread = t.id
+                dismiss()
+            } catch {
+                errorText = error.localizedDescription
+            }
+            importing = nil
+        }
+    }
+
+    /// Cross-engine continue: create the handoff thread, stage the transcript-feeding
+    /// message as the composer draft, and open it — the user reviews and taps send.
+    private func handoff(_ s: DesktopSession) {
+        importing = s.id
+        Task {
+            do {
+                let r = try await app.api.handoffDesktopSession(s.id, engine: s.engine)
+                UserDefaults.standard.set(r.draft, forKey: "draft_\(r.thread.id)")
+                await app.refresh()
+                app.pendingOpenThread = r.thread.id
                 dismiss()
             } catch {
                 errorText = error.localizedDescription

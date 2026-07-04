@@ -195,6 +195,18 @@ struct HarnessAPI {
                          as: ThreadSummary.self)
     }
 
+    struct HandoffResult: Decodable {
+        let thread: ThreadSummary
+        let draft: String
+    }
+    /// Continue a desktop session on the OTHER engine: new thread + a staged draft that
+    /// feeds the source transcript in as context (nothing is sent until the user taps send).
+    func handoffDesktopSession(_ id: String, engine: String) async throws -> HandoffResult {
+        try await decode(try makeRequest("/desktop/handoff", method: "POST",
+                                         json: ["id": id, "engine": engine]),
+                         as: HandoffResult.self)
+    }
+
     func registerActivity(_ id: String, token: String) async throws {
         _ = try await URLSession.shared.data(for: try makeRequest(
             "/threads/\(id)/activity", method: "POST", json: ["token": token]))

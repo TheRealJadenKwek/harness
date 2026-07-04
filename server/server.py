@@ -2506,6 +2506,39 @@ class Handler(BaseHTTPRequestHandler):
             return self._json(200, {'ok': True, 'sent': results})
         if path.startswith('/providers/'):
             return self._set_provider(path.split('/')[2], body)
+        if path == '/desktop/handoff':                   # continue a session ON THE OTHER ENGINE
+            sid = (body.get('id') or '').strip()
+            engine = (body.get('engine') or '').strip()
+            if engine not in ('claude', 'codex') or not sid:
+                return self._json(400, {'error': 'id and engine required'})
+            target = 'codex' if engine == 'claude' else 'claude'
+            spath = _find_session_path(sid, engine)
+            if not spath:
+                return self._json(404, {'error': 'session not found'})
+            parsed = (_parse_claude_session if engine == 'claude' else _parse_codex_session)(spath, full=True)
+            if not parsed:
+                return self._json(404, {'error': 'could not parse session'})
+            title = (claude_title_map() if engine == 'claude' else codex_title_map()).get(sid) or parsed['title']
+            hdir = os.path.join(BASE, 'handoffs')
+            os.makedirs(hdir, exist_ok=True)
+            hpath = os.path.join(hdir, '%s.md' % sid[:12])
+            with open(hpath, 'w') as f:
+                f.write('# %s\n(handoff from a %s conversation)\n\n' % (title, engine))
+                for m in parsed.get('messages', []):
+                    f.write('## %s\n\n%s\n\n' % (m['role'].upper(), m['text']))
+            prov = provider_by_id(target)
+            now = time.time()
+            t = {'id': uuid.uuid4().hex, 'title': ('⇄ ' + title)[:80],
+                 'engine': prov['engine'], 'provider': prov['id'], 'model': prov.get('model'),
+                 'cwd': valid_cwd(parsed['cwd']) or HOME, 'permission_mode': 'bypass',
+                 'effort': 'default', 'session_id': None,
+                 'created': now, 'updated': now, 'messages': []}
+            save_thread(t)
+            draft = ('Read %s — it is the full transcript of a conversation I had with %s. '
+                     'Absorb it as if it were our own history, briefly confirm where things '
+                     'left off, and continue from there.' % (hpath, 'Claude' if engine == 'claude' else 'Codex'))
+            log('handoff %s(%s) -> %s thread %s' % (engine, sid[:8], target, t['id'][:8]))
+            return self._json(200, {'thread': thread_summary(t), 'draft': draft})
         if path == '/desktop/import':                    # continue a desktop CLI session
             sid = (body.get('id') or '').strip()
             engine = (body.get('engine') or '').strip()
@@ -2799,5 +2832,35 @@ def main():
     srv.daemon_threads = True
     srv.serve_forever()
 
+def export_session_cli(query):
+    """`server.py --export "<title or id fragment>"` — find a desktop session from EITHER
+    engine by title/id and print its transcript as markdown. This is what lets a chat in
+    one desktop app say "go read my <other app> chat about X and continue" — the agent
+    runs this, gets the whole conversation, and picks up where it left off."""
+    q = query.lower().strip()
+    sessions = list_desktop_sessions()
+    hit = None
+    for s in sessions:
+        if q in s['title'].lower() or s['id'].lower().startswith(q):
+            hit = s
+            break
+    if not hit:
+        print('No desktop session matching %r. Recent sessions:' % query)
+        for s in sessions[:15]:
+            print('  [%s] %s  (%s)' % (s['engine'], s['title'], s['id'][:8]))
+        return 1
+    path = _find_session_path(hit['id'], hit['engine'])
+    full = (_parse_claude_session if hit['engine'] == 'claude' else _parse_codex_session)(path, full=True)
+    print('# %s\n(engine: %s · session %s · cwd %s)\n' % (hit['title'], hit['engine'], hit['id'], full['cwd']))
+    for m in full.get('messages', []):
+        print('## %s\n\n%s\n' % (m['role'].upper(), m['text']))
+    return 0
+
 if __name__ == '__main__':
+    if len(sys.argv) >= 3 and sys.argv[1] == '--export':
+        sys.exit(export_session_cli(' '.join(sys.argv[2:])))
+    if len(sys.argv) >= 2 and sys.argv[1] == '--sessions':
+        for s in list_desktop_sessions():
+            print('[%s] %s  (%s, %d msgs)' % (s['engine'], s['title'], s['id'][:8], s['turns']))
+        sys.exit(0)
     main()
