@@ -1462,14 +1462,24 @@ def start_job(t, prov, text, image_paths, thread_lock):
     return job
 
 # --------------------------------------------------------------------------- automations
+_WDAYS = ['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat']
+
 def describe_schedule(d):
     ci = d.get('StartCalendarInterval')
     if ci:
         parts = []
         for c in (ci if isinstance(ci, list) else [ci]):
-            if isinstance(c, dict) and c.get('Hour') is not None:
-                parts.append('%02d:%02d' % (c.get('Hour'), c.get('Minute') or 0))
-        return ('daily ' + ', '.join(parts)) if parts else 'scheduled'
+            if not isinstance(c, dict):
+                continue
+            hm = '%02d:%02d' % (c.get('Hour') or 0, c.get('Minute') or 0) if c.get('Hour') is not None else ''
+            wd = c.get('Weekday')
+            if wd is not None:                     # weekly (launchd: 0 and 7 both = Sunday)
+                parts.append(('%s %s' % (_WDAYS[int(wd) % 7], hm)).strip())
+            elif c.get('Day') is not None:         # monthly
+                parts.append(('day %d %s' % (int(c['Day']), hm)).strip())
+            elif hm:
+                parts.append('daily ' + hm)
+        return ', '.join(parts) if parts else 'scheduled'
     if d.get('StartInterval'):
         s = int(d['StartInterval'])
         return ('every %dm' % (s // 60)) if s >= 60 else ('every %ds' % s)
@@ -1480,23 +1490,30 @@ def describe_schedule(d):
     return 'on demand'
 
 _LLM_MARK = re.compile(r'(claude|codex|gemini|anthropic|openai|gpt-?\d|\bllm\b)', re.I)
+# Absolute or ~ paths embedded ANYWHERE in a command — incl. inside a `zsh -lc "a; b"`
+# wrapper where the scripts aren't standalone tokens.
+_PATH_RE = re.compile(r"""(?:~|/)[^\s;&|"'`<>()]+""")
 
 def _touches_llm(cmd_tokens):
-    """True if a job's command — or a script file it runs — mentions an LLM CLI.
-    Jobs like a daily brief bury the `claude -p` inside a shell script, so any
-    referenced file is scanned too (bounded read)."""
+    """True if a job's command — or any script file it runs — mentions an LLM CLI.
+    Jobs bury `claude -p` / codex backups inside shell scripts, and frequently behind a
+    `zsh -lc "scriptA; scriptB"` wrapper, so we scan every path found ANYWHERE in the
+    command (not just whole-token paths) with a bounded read."""
     text = ' '.join(str(x) for x in cmd_tokens)
     if _LLM_MARK.search(text):
         return True
-    for tok in cmd_tokens:
-        p = os.path.expanduser(str(tok))
-        if os.path.isabs(p) and os.path.isfile(p):
-            try:
-                if os.path.getsize(p) <= 256 * 1024 and \
-                   _LLM_MARK.search(open(p, encoding='utf-8', errors='replace').read()):
-                    return True
-            except Exception:
-                pass
+    seen = set()
+    for frag in _PATH_RE.findall(text):
+        p = os.path.expanduser(frag.rstrip(';,'))
+        if p in seen or not os.path.isfile(p):
+            continue
+        seen.add(p)
+        try:
+            if os.path.getsize(p) <= 256 * 1024 and \
+               _LLM_MARK.search(open(p, encoding='utf-8', errors='replace').read()):
+                return True
+        except Exception:
+            pass
     return False
 
 def list_automations(show_all=False):
