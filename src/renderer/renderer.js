@@ -8,6 +8,7 @@ const S = {
   order: [],            // session ids, most recent first (sidebar order)
   active: null,         // active session id
   models: [],
+  skills: [],
   showingApproval: null,
   panel: null,           // null | 'changes' | 'files' | 'tasks' | 'preview'
   selGitFile: null,
@@ -326,19 +327,19 @@ function endTurn(rec) {
   renderSidebar();
   if (rec.queued.length) {
     const next = rec.queued.shift();
-    setTimeout(() => sendText(rec, next.text, next.images), 80);
+    setTimeout(() => sendText(rec, next.text, next.images, next.modelText), 80);
   }
 }
 
 H.onSessionsUpdated(() => refreshSessions());
 
 // ---------------------------------------------------------------- send / stop
-async function sendText(rec, text, images) {
-  if (rec.streaming) { rec.queued.push({ text, images }); updateComposer(); return; }
+async function sendText(rec, text, images, modelText) {
+  if (rec.streaming) { rec.queued.push({ text, images, modelText }); updateComposer(); return; }
   rec.streaming = true; rec.cur = null;
-  const r = await H.sessionSend(rec.meta.id, text, images && images.length ? images : undefined);
+  const r = await H.sessionSend(rec.meta.id, text, images && images.length ? images : undefined, modelText);
   if (r.ok) addUser(rec, text, images ? images.length : 0);
-  else if (r.error === 'busy') rec.queued.push({ text, images });
+  else if (r.error === 'busy') rec.queued.push({ text, images, modelText });
   else rec.streaming = false;
   updateComposer(); renderSidebar();
 }
@@ -367,6 +368,9 @@ const SLASH = [
   { cmd: '/dir', desc: 'Change the working directory' },
   { cmd: '/diff', desc: 'Toggle the changes panel' },
   { cmd: '/rename <title>', desc: 'Rename this chat' },
+  { cmd: '/fork', desc: 'Duplicate this chat into a new session' },
+  { cmd: '/goal <text>', desc: 'Set a standing goal (empty = clear)' },
+  { cmd: '/loop <min> <prompt>', desc: 'Re-send a prompt on an interval · /loop stop' },
   { cmd: '/help', desc: 'Show available commands' },
 ];
 function runSlash(rec, text) {
@@ -388,7 +392,43 @@ function runSlash(rec, text) {
   if (cmd === '/dir') { pickDir(); return true; }
   if (cmd === '/diff') { toggleDiff(); return true; }
   if (cmd === '/rename') { if (arg) H.sessionRename(rec.meta.id, arg); return true; }
-  if (cmd === '/help') { addLine(rec, 'done', SLASH.map((s) => s.cmd + ' — ' + s.desc).join('\n')); return true; }
+  if (cmd === '/fork') {
+    H.sessionFork(rec.meta.id).then(async (m) => { if (m) { await refreshSessions(); activate(m.id); } });
+    return true;
+  }
+  if (cmd === '/goal') {
+    H.sessionGoal(rec.meta.id, arg || null);
+    rec.meta.goal = arg || null;
+    addLine(rec, 'done', arg ? '◎ standing goal set: ' + arg : '◎ standing goal cleared');
+    return true;
+  }
+  if (cmd === '/loop') {
+    if (arg === 'stop' || !arg) {
+      if (rec.loopTimer) { clearInterval(rec.loopTimer); rec.loopTimer = null; addLine(rec, 'done', '↻ loop stopped'); }
+      else addLine(rec, 'err', 'usage: /loop <minutes> <prompt> · /loop stop');
+      return true;
+    }
+    const m = arg.match(/^(\d+)\s+([\s\S]+)$/);
+    if (!m) { addLine(rec, 'err', 'usage: /loop <minutes> <prompt>'); return true; }
+    const mins = Math.max(1, +m[1]), prompt = m[2];
+    if (rec.loopTimer) clearInterval(rec.loopTimer);
+    rec.loopTimer = setInterval(() => { if (!rec.streaming) sendText(rec, prompt); }, mins * 60000);
+    addLine(rec, 'done', '↻ looping every ' + mins + 'm: "' + prompt.slice(0, 60) + '" — /loop stop to end');
+    sendText(rec, prompt);
+    return true;
+  }
+  if (cmd === '/help') {
+    addLine(rec, 'done', SLASH.map((s) => s.cmd + ' — ' + s.desc).join('\n') +
+      (S.skills.length ? '\n\nskills: ' + S.skills.map((s) => '/' + s.name).join(' ') : ''));
+    return true;
+  }
+  // skills: /name [task] expands the skill content for the model
+  const skill = S.skills.find((s) => cmd === '/' + s.name);
+  if (skill) {
+    sendText(rec, text, null,
+      'Follow this skill/playbook:\n\n' + skill.content + '\n\n---\nTask: ' + (arg || 'apply the skill to the current context'));
+    return true;
+  }
   return false;   // not a command → send as a normal message
 }
 
@@ -427,9 +467,10 @@ async function updatePopup() {
   }
   if (i.value.startsWith('/') && !i.value.includes('\n')) {
     const q = i.value.toLowerCase();
-    const list = SLASH.filter((s) => s.cmd.startsWith(q) || q === '/');
+    const all = [...SLASH, ...S.skills.map((s) => ({ cmd: '/' + s.name, desc: 'skill — ' + (s.description || '') }))];
+    const list = all.filter((s) => s.cmd.startsWith(q) || q === '/');
     pop.mode = 'slash'; pop.sel = 0;
-    pop.items = list.map((s) => ({ main: s.cmd, hint: s.desc, insert: s.cmd.replace(' <title>', ' ') }));
+    pop.items = list.map((s) => ({ main: s.cmd, hint: s.desc, insert: s.cmd.replace(/ <.*$/, ' ') }));
     renderPopup();
     return;
   }
@@ -918,15 +959,87 @@ async function chooseModel(v) {
   $('modelSheet').style.display = 'none';
 }
 
-// ---------------------------------------------------------------- settings
-$('settingsBtn').onclick = () => { $('settingsSheet').style.display = 'flex'; $('keyInput').value = ''; };
+// ---------------------------------------------------------------- settings page
+$('settingsBtn').onclick = () => {
+  $('settingsSheet').style.display = 'flex';
+  $('keyInput').value = '';
+  renderMcpList(); renderSkillsList();
+};
 $('settingsClose').onclick = () => { $('settingsSheet').style.display = 'none'; };
 $('sessionsFolderBtn').onclick = () => H.openSessionsFolder();
 $('keySave').onclick = async () => {
   const k = $('keyInput').value.trim();
-  if (k) { await H.setConfig({ apiKey: k }); S.models = []; }
-  $('settingsSheet').style.display = 'none';
+  if (k) { await H.setConfig({ apiKey: k }); S.models = []; $('keyInput').value = ''; }
 };
+for (const b of document.querySelectorAll('.snav')) {
+  b.onclick = () => {
+    for (const x of document.querySelectorAll('.snav')) x.classList.toggle('on', x === b);
+    for (const sec of document.querySelectorAll('.ssec')) sec.style.display = 'none';
+    $('sec-' + b.dataset.sec).style.display = '';
+  };
+}
+
+// MCP servers section
+async function renderMcpList() {
+  const list = await H.mcpList();
+  const box = $('mcpList'); box.innerHTML = '';
+  if (!list.length) { box.innerHTML = '<div class="muted">No servers yet — add one below.</div>'; return; }
+  for (const s of list) {
+    const row = document.createElement('div'); row.className = 'sl-row';
+    const dot = s.status === 'running' ? '<span class="dot ok">●</span>' : s.status === 'starting' ? '<span class="dot run">●</span>' : '<span class="dot bad">●</span>';
+    row.innerHTML = dot + '<div class="sl-main"><b>' + esc(s.name) + '</b> <span class="mi-hint">' + esc(s.status) +
+      (s.status === 'running' ? ' · ' + s.tools.length + ' tools' : '') + (s.error ? ' · ' + esc(s.error.slice(0, 80)) : '') + '</span>' +
+      '<div class="mi-hint mono">' + esc(s.command) + '</div>' +
+      (s.tools.length ? '<div class="mi-hint">' + esc(s.tools.slice(0, 8).join(', ')) + (s.tools.length > 8 ? '…' : '') + '</div>' : '') + '</div>' +
+      '<button class="mini-btn" data-a="toggle">' + (s.enabled ? 'Disable' : 'Enable') + '</button>' +
+      '<button class="mini-btn" data-a="restart">⟳</button>' +
+      '<button class="mini-btn" data-a="remove">✕</button>';
+    row.querySelector('[data-a=toggle]').onclick = async () => { await H.mcpToggle(s.name, !s.enabled); renderMcpList(); };
+    row.querySelector('[data-a=restart]').onclick = async () => { await H.mcpRestart(s.name); renderMcpList(); };
+    row.querySelector('[data-a=remove]').onclick = async () => { if (confirm('Remove MCP server "' + s.name + '"?')) { await H.mcpRemove(s.name); renderMcpList(); } };
+    box.appendChild(row);
+  }
+}
+$('mcpAddBtn').onclick = async () => {
+  const r = await H.mcpAdd($('mcpName').value.trim(), $('mcpCmd').value.trim());
+  if (r.error) alert(r.error);
+  else { $('mcpName').value = ''; $('mcpCmd').value = ''; }
+  renderMcpList();
+};
+H.onMcpUpdated(() => { if ($('settingsSheet').style.display === 'flex') renderMcpList(); });
+
+// Skills section
+async function loadSkills() { S.skills = await H.skillsList(); }
+async function renderSkillsList() {
+  await loadSkills();
+  const box = $('skillsListEl'); box.innerHTML = '';
+  if (!S.skills.length) { box.innerHTML = '<div class="muted">No skills yet — add one below, then type /name in the composer.</div>'; return; }
+  for (const s of S.skills) {
+    const row = document.createElement('div'); row.className = 'sl-row';
+    row.innerHTML = '<div class="sl-main"><b>/' + esc(s.name) + '</b> <span class="mi-hint">' + esc(s.description || '') + '</span></div>' +
+      '<button class="mini-btn" data-a="edit">Edit</button><button class="mini-btn" data-a="remove">✕</button>';
+    row.querySelector('[data-a=edit]').onclick = () => { $('skillName').value = s.name; $('skillContent').value = s.content; };
+    row.querySelector('[data-a=remove]').onclick = async () => { if (confirm('Delete skill /' + s.name + '?')) { await H.skillDelete(s.name); renderSkillsList(); } };
+    box.appendChild(row);
+  }
+}
+$('skillSaveBtn').onclick = async () => {
+  const r = await H.skillSave($('skillName').value.trim(), $('skillContent').value);
+  if (r.error) alert(r.error);
+  else { $('skillName').value = ''; $('skillContent').value = ''; }
+  renderSkillsList();
+};
+
+// ---------------------------------------------------------------- appshot + agent-driven browser
+H.onAppshot((a) => {
+  const rec = active(); if (!rec) return;
+  rec.attachments = rec.attachments || [];
+  rec.attachments.push({ name: a.name, dataUrl: a.dataUrl });
+  renderAttachRow();
+  addLine(rec, 'done', '📸 appshot attached — describe what you want done with it');
+  $('input').focus();
+});
+H.onPreviewOpen(({ url }) => setPreview(url, true));
 
 // ---------------------------------------------------------------- global keys
 document.addEventListener('keydown', (e) => {
@@ -961,5 +1074,6 @@ document.addEventListener('keydown', (e) => {
   if (S.order.length) activate(S.order[0]);
   const cfg = await H.getConfig();
   if (!cfg.hasKey) $('settingsSheet').style.display = 'flex';
+  loadSkills();
   setInterval(renderSidebar, 60000);   // keep "2m ago" labels fresh
 })();

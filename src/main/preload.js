@@ -14,7 +14,7 @@ contextBridge.exposeInMainWorld('harness', {
   sessionGet: (id) => ipcRenderer.invoke('session-get', id),
   sessionRename: (id, title) => ipcRenderer.invoke('session-rename', { id, title }),
   sessionConfig: (id, patch) => ipcRenderer.invoke('session-config', { id, patch }),
-  sessionSend: (id, text, images) => ipcRenderer.invoke('session-send', { id, text, images }),
+  sessionSend: (id, text, images, modelText) => ipcRenderer.invoke('session-send', { id, text, images, modelText }),
   sessionAbort: (id) => ipcRenderer.invoke('session-abort', id),
   sessionClear: (id) => ipcRenderer.invoke('session-clear', id),
   sessionCompact: (id) => ipcRenderer.invoke('session-compact', id),
@@ -36,6 +36,21 @@ contextBridge.exposeInMainWorld('harness', {
   taskLog: (id) => ipcRenderer.invoke('task-log', id),
   projectScripts: (id) => ipcRenderer.invoke('project-scripts', id),
   onTaskEvent: (cb) => ipcRenderer.on('task-event', (_e, ev) => cb(ev)),
+
+  // fork / goal / mcp / skills
+  sessionFork: (id) => ipcRenderer.invoke('session-fork', id),
+  sessionGoal: (id, goal) => ipcRenderer.invoke('session-goal', { id, goal }),
+  mcpList: () => ipcRenderer.invoke('mcp-list'),
+  mcpAdd: (name, command) => ipcRenderer.invoke('mcp-add', { name, command }),
+  mcpRemove: (name) => ipcRenderer.invoke('mcp-remove', name),
+  mcpToggle: (name, enabled) => ipcRenderer.invoke('mcp-toggle', { name, enabled }),
+  mcpRestart: (name) => ipcRenderer.invoke('mcp-restart', name),
+  onMcpUpdated: (cb) => ipcRenderer.on('mcp-updated', () => cb()),
+  skillsList: () => ipcRenderer.invoke('skills-list'),
+  skillSave: (name, content) => ipcRenderer.invoke('skill-save', { name, content }),
+  skillDelete: (name) => ipcRenderer.invoke('skill-delete', name),
+  onAppshot: (cb) => ipcRenderer.on('appshot', (_e, a) => cb(a)),
+  onPreviewOpen: (cb) => ipcRenderer.on('preview-open', (_e, a) => cb(a)),
 
   // usage + attachments
   credits: () => ipcRenderer.invoke('credits'),

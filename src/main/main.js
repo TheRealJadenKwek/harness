@@ -2,13 +2,18 @@
 // Electron main process: owns MANY agent Sessions (one per chat in the sidebar),
 // persists each to disk, and bridges them to the renderer over IPC — including the
 // approval round-trip that gates mutating tool calls.
-const { app, BrowserWindow, ipcMain, dialog, shell, nativeTheme } = require('electron');
+const { app, BrowserWindow, ipcMain, dialog, shell, nativeTheme, globalShortcut } = require('electron');
 const path = require('path');
 const fs = require('fs');
 const https = require('https');
 const http = require('http');
 const { execFile, spawn } = require('child_process');
 const { Session } = require('../agent/agent');
+const { McpClient } = require('../agent/mcp');
+
+// Use the OS resolver instead of Chromium's built-in async DNS — the built-in one
+// fails (ERR_NAME_NOT_RESOLVED) under split-tunnel VPNs, which breaks the webview.
+app.commandLine.appendSwitch('disable-features', 'AsyncDns');
 
 let win;
 const sessions = new Map();           // id -> rec (see sessionCreate for shape)
@@ -35,7 +40,9 @@ function loadConfig() {
   cfg.model = cfg.model || 'deepseek/deepseek-v4-pro';
   cfg.mode = cfg.mode || 'ask';
   cfg.cwd = cfg.cwd || app.getPath('home');
-  cfg.modeByModel = cfg.modeByModel || {};   // remembered trust level per model
+  cfg.modeByModel = cfg.modeByModel || {};     // remembered trust level per model
+  cfg.effortByModel = cfg.effortByModel || {}; // remembered reasoning effort per model
+  cfg.mcpServers = cfg.mcpServers || [];       // [{name, command, enabled}]
   return cfg;
 }
 function saveConfig(cfg) {
@@ -48,7 +55,7 @@ function newId() { return Date.now().toString(36) + Math.random().toString(36).s
 function metaOf(rec) {
   return {
     id: rec.id, title: rec.title, cwd: rec.cwd, model: rec.model, mode: rec.mode,
-    effort: rec.effort || null,
+    effort: rec.effort || null, goal: rec.goal || null,
     createdAt: rec.createdAt, updatedAt: rec.updatedAt, usage: rec.usage,
     streaming: !!rec.abort,
   };
@@ -60,7 +67,7 @@ function saveSession(rec) {
     fs.writeFileSync(sessionFile(rec.id), JSON.stringify({
       meta: {
         id: rec.id, title: rec.title, cwd: rec.cwd, model: rec.model, mode: rec.mode,
-        effort: rec.effort || null,
+        effort: rec.effort || null, goal: rec.goal || null,
         createdAt: rec.createdAt, updatedAt: rec.updatedAt, usage: rec.usage,
       },
       messages: rec.agent ? rec.agent.messages : (rec.savedMessages || []),
@@ -186,6 +193,8 @@ function ensureAgent(rec) {
   if (!rec.agent) {
     rec.agent = new Session({
       apiKey: cfg.apiKey, model: rec.model, cwd: rec.cwd, mode: rec.mode, effort: rec.effort || null,
+      goal: rec.goal || null,
+      extraTools: makeExtraTools(),
       emit: (e) => onAgentEvent(rec, e),
       approve: (kind, detail, opts = {}) => new Promise((resolve) => {
         const aid = ++approvalSeq;
@@ -212,12 +221,21 @@ function createWindow() {
 }
 
 app.whenReady().then(() => {
+  // Route Chromium DNS through the OS (getaddrinfo) — the built-in resolver queries
+  // the configured nameserver directly, which fails under Tailscale MagicDNS / VPNs.
+  try { app.configureHostResolver({ enableBuiltInResolver: false, secureDnsMode: 'off' }); } catch {}
   if (process.platform === 'darwin' && app.dock) {
     try { app.dock.setIcon(path.join(__dirname, '../../assets/icon.png')); } catch {}
   }
   loadSessionsFromDisk();
   getModels(false);   // warm the catalog cache in the background
+  syncMcpFromConfig();
+  try { globalShortcut.register('CommandOrControl+Shift+H', doAppshot); } catch {}
   createWindow();
+});
+app.on('will-quit', () => {
+  globalShortcut.unregisterAll();
+  for (const c of mcpClients.values()) c.stop();
 });
 app.on('window-all-closed', () => { if (process.platform !== 'darwin') app.quit(); });
 app.on('activate', () => { if (BrowserWindow.getAllWindows().length === 0) createWindow(); });
@@ -341,6 +359,245 @@ ipcMain.handle('file-read', (_e, { id, rel }) => {
     return { content: buf.toString('utf8').slice(0, 120000), bytes: st.size };
   } catch (e) { return { error: String((e && e.message) || e) }; }
 });
+
+// ---- MCP servers (connectors) ------------------------------------------------------
+const mcpClients = new Map();   // name -> McpClient
+function sanitizeToolName(s) { return String(s).replace(/[^a-zA-Z0-9_]/g, '_').slice(0, 40); }
+function syncMcpFromConfig() {
+  const cfg = loadConfig();
+  const want = new Map(cfg.mcpServers.filter((s) => s.enabled).map((s) => [s.name, s.command]));
+  for (const [name, client] of mcpClients) {
+    if (!want.has(name) || want.get(name) !== client.command) { client.stop(); mcpClients.delete(name); }
+  }
+  const starts = [];
+  for (const [name, command] of want) {
+    if (!mcpClients.has(name)) {
+      const c = new McpClient(name, command);
+      mcpClients.set(name, c);
+      starts.push(c.start().then(() => sendToUI('mcp-updated', {})));
+    }
+  }
+  return Promise.all(starts);
+}
+function mcpStatuses() {
+  const cfg = loadConfig();
+  return cfg.mcpServers.map((s) => {
+    const c = mcpClients.get(s.name);
+    return { name: s.name, command: s.command, enabled: !!s.enabled,
+      status: c ? c.status : 'stopped', error: c ? c.error : null,
+      tools: c ? c.tools.map((t) => t.name) : [] };
+  });
+}
+ipcMain.handle('mcp-list', () => mcpStatuses());
+ipcMain.handle('mcp-add', async (_e, { name, command }) => {
+  name = sanitizeToolName(name || '');
+  if (!name || !command) return { ok: false, error: 'name and command required' };
+  const cfg = loadConfig();
+  if (cfg.mcpServers.some((s) => s.name === name)) return { ok: false, error: 'name already exists' };
+  cfg.mcpServers.push({ name, command, enabled: true });
+  saveConfig(cfg);
+  await syncMcpFromConfig();
+  return { ok: true };
+});
+ipcMain.handle('mcp-remove', async (_e, name) => {
+  const cfg = loadConfig();
+  cfg.mcpServers = cfg.mcpServers.filter((s) => s.name !== name);
+  saveConfig(cfg);
+  await syncMcpFromConfig();
+  return { ok: true };
+});
+ipcMain.handle('mcp-toggle', async (_e, { name, enabled }) => {
+  const cfg = loadConfig();
+  const s = cfg.mcpServers.find((x) => x.name === name);
+  if (s) { s.enabled = !!enabled; saveConfig(cfg); await syncMcpFromConfig(); }
+  return { ok: true };
+});
+ipcMain.handle('mcp-restart', async (_e, name) => {
+  const c = mcpClients.get(name);
+  if (c) { c.stop(); await c.start(); sendToUI('mcp-updated', {}); }
+  return { ok: true };
+});
+
+// ---- extra tools for the agent: every MCP tool + the built-in browser ----------------
+// Browser tools drive the Preview webview, so the user literally watches the agent browse.
+let previewWC = null;
+app.on('web-contents-created', (_e, wc) => {
+  if (wc.getType() === 'webview') {
+    previewWC = wc;
+    wc.on('destroyed', () => { if (previewWC === wc) previewWC = null; });
+  }
+});
+const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+async function browserReady() {
+  for (let i = 0; i < 40; i++) { if (previewWC && !previewWC.isLoading()) return true; await sleep(250); }
+  return !!previewWC;
+}
+const BROWSER_TOOLS = {
+  browser_open: {
+    schema: { name: 'browser_open', description: 'Open a URL in the built-in browser (the Preview panel the user can see). Returns the page title.', parameters: { type: 'object', properties: { url: { type: 'string' } }, required: ['url'] } },
+    gate: (a) => ({ kind: 'browser', detail: 'open ' + (a.url || ''), danger: false }),
+    run: async (a) => {
+      let url = String(a.url || '');
+      if (!/^https?:\/\//i.test(url)) url = 'https://' + url;
+      sendToUI('preview-open', { url });
+      await sleep(600);
+      if (!(await browserReady())) return { error: 'browser did not load' };
+      for (let i = 0; i < 20; i++) { if (previewWC && !previewWC.isLoading() && previewWC.getURL() !== 'about:blank') break; await sleep(300); }
+      await sleep(500);
+      return { ok: true, url: previewWC.getURL(), title: previewWC.getTitle() };
+    },
+  },
+  browser_read: {
+    schema: { name: 'browser_read', description: 'Read the visible text of the page currently open in the built-in browser.', parameters: { type: 'object', properties: {} } },
+    gate: () => null,
+    run: async () => {
+      if (!previewWC) return { error: 'no page is open — use browser_open first' };
+      let text = '';
+      for (let i = 0; i < 12; i++) {   // the page may still be loading — retry until text appears
+        try { text = await previewWC.executeJavaScript('document.body ? document.body.innerText.slice(0, 30000) : ""', true); } catch {}
+        if (text && text.trim()) break;
+        await sleep(400);
+      }
+      return { url: previewWC.getURL(), title: previewWC.getTitle(), text };
+    },
+  },
+  browser_click: {
+    schema: { name: 'browser_click', description: 'Click an element in the built-in browser by CSS selector.', parameters: { type: 'object', properties: { selector: { type: 'string' } }, required: ['selector'] } },
+    gate: (a) => ({ kind: 'browser', detail: 'click ' + (a.selector || ''), danger: false }),
+    run: async (a) => {
+      if (!previewWC) return { error: 'no page is open' };
+      return await previewWC.executeJavaScript(
+        '(() => { const el = document.querySelector(' + JSON.stringify(String(a.selector || '')) + '); if (!el) return { error: "no element matches" }; el.click(); return { clicked: true }; })()', true);
+    },
+  },
+  browser_fill: {
+    schema: { name: 'browser_fill', description: 'Fill an input in the built-in browser by CSS selector.', parameters: { type: 'object', properties: { selector: { type: 'string' }, value: { type: 'string' } }, required: ['selector', 'value'] } },
+    gate: (a) => ({ kind: 'browser', detail: 'fill ' + (a.selector || ''), danger: false }),
+    run: async (a) => {
+      if (!previewWC) return { error: 'no page is open' };
+      return await previewWC.executeJavaScript(
+        '(() => { const el = document.querySelector(' + JSON.stringify(String(a.selector || '')) + '); if (!el) return { error: "no element matches" }; el.value = ' + JSON.stringify(String(a.value || '')) + '; el.dispatchEvent(new Event("input", { bubbles: true })); el.dispatchEvent(new Event("change", { bubbles: true })); return { filled: true }; })()', true);
+    },
+  },
+  browser_eval: {
+    schema: { name: 'browser_eval', description: 'Evaluate JavaScript in the built-in browser page and return the JSON-serializable result.', parameters: { type: 'object', properties: { js: { type: 'string' } }, required: ['js'] } },
+    gate: (a) => ({ kind: 'browser', detail: 'eval: ' + String(a.js || '').slice(0, 120), danger: false }),
+    run: async (a) => {
+      if (!previewWC) return { error: 'no page is open' };
+      try { const v = await previewWC.executeJavaScript(String(a.js || ''), true); return { result: v === undefined ? null : v }; }
+      catch (e) { return { error: String((e && e.message) || e) }; }
+    },
+  },
+};
+function makeExtraTools() {
+  return {
+    get schemas() {
+      const out = Object.values(BROWSER_TOOLS).map((t) => ({ type: 'function', function: t.schema }));
+      for (const [srv, client] of mcpClients) {
+        if (client.status !== 'running') continue;
+        for (const t of client.tools) {
+          out.push({ type: 'function', function: {
+            name: 'mcp__' + sanitizeToolName(srv) + '__' + sanitizeToolName(t.name),
+            description: ('[' + srv + '] ' + (t.description || t.name)).slice(0, 1024),
+            parameters: t.inputSchema || { type: 'object', properties: {} },
+          } });
+        }
+      }
+      return out;
+    },
+    has(name) {
+      if (BROWSER_TOOLS[name]) return true;
+      return name.startsWith('mcp__') && this._route(name) !== null;
+    },
+    gate(name, args) {
+      if (BROWSER_TOOLS[name]) return BROWSER_TOOLS[name].gate(args || {});
+      return { kind: 'mcp', detail: name.replace(/^mcp__/, '').replace('__', ' → ') + ' ' + JSON.stringify(args || {}).slice(0, 160), danger: false };
+    },
+    _route(name) {
+      if (!name.startsWith('mcp__')) return null;
+      for (const [srv, client] of mcpClients) {
+        const pre = 'mcp__' + sanitizeToolName(srv) + '__';
+        if (!name.startsWith(pre)) continue;
+        const tn = name.slice(pre.length);
+        const tool = client.tools.find((t) => sanitizeToolName(t.name) === tn);
+        if (tool) return { client, tool: tool.name };
+      }
+      return null;
+    },
+    run(name, args) {
+      if (BROWSER_TOOLS[name]) return BROWSER_TOOLS[name].run(args || {});
+      const r = this._route(name);
+      if (!r) return Promise.resolve({ error: 'unknown MCP tool: ' + name });
+      return r.client.call(r.tool, args || {});
+    },
+  };
+}
+
+// ---- skills: markdown playbooks in ~/.harness-code/skills, invoked as /name ---------
+const skillsDir = () => path.join(app.getPath('home'), '.harness-code', 'skills');
+ipcMain.handle('skills-list', () => {
+  let files = [];
+  try { files = fs.readdirSync(skillsDir()); } catch { return []; }
+  return files.filter((f) => f.endsWith('.md')).map((f) => {
+    let content = '';
+    try { content = fs.readFileSync(path.join(skillsDir(), f), 'utf8'); } catch {}
+    const name = f.replace(/\.md$/, '');
+    const firstLine = (content.split('\n').find((l) => l.trim()) || '').replace(/^#+\s*/, '').slice(0, 100);
+    return { name, description: firstLine, content };
+  });
+});
+ipcMain.handle('skill-save', (_e, { name, content }) => {
+  name = sanitizeToolName(name || '');
+  if (!name || !content) return { ok: false, error: 'name and content required' };
+  try {
+    fs.mkdirSync(skillsDir(), { recursive: true });
+    fs.writeFileSync(path.join(skillsDir(), name + '.md'), content);
+    return { ok: true };
+  } catch (e) { return { ok: false, error: String(e.message || e) }; }
+});
+ipcMain.handle('skill-delete', (_e, name) => {
+  try { fs.unlinkSync(path.join(skillsDir(), sanitizeToolName(name) + '.md')); } catch {}
+  return { ok: true };
+});
+
+// ---- session fork + standing goal ----------------------------------------------------
+ipcMain.handle('session-fork', (_e, id) => {
+  const src = sessions.get(id);
+  if (!src) return null;
+  const rec = {
+    id: newId(), title: (src.title + ' (fork)').slice(0, 60),
+    cwd: src.cwd, model: src.model, mode: src.mode, effort: src.effort || null, goal: src.goal || null,
+    createdAt: Date.now(), updatedAt: Date.now(),
+    usage: { prompt_tokens: 0, completion_tokens: 0, cost: 0 },
+    agent: null,
+    savedMessages: JSON.parse(JSON.stringify(src.agent ? src.agent.messages : (src.savedMessages || []))),
+    transcript: JSON.parse(JSON.stringify(src.transcript)),
+    abort: null, cur: null,
+  };
+  sessions.set(rec.id, rec);
+  saveSession(rec);
+  return metaOf(rec);
+});
+ipcMain.handle('session-goal', (_e, { id, goal }) => {
+  const rec = sessions.get(id);
+  if (!rec) return { ok: false };
+  rec.goal = goal || null;
+  if (rec.agent) rec.agent.setGoal(rec.goal);
+  saveSession(rec);
+  return { ok: true };
+});
+
+// ---- Appshot: ⌘⇧H captures the screen and attaches it to the active chat -------------
+async function doAppshot() {
+  const tmp = path.join(app.getPath('temp'), 'harness-appshot.png');
+  await new Promise((res) => execFile('screencapture', ['-x', tmp], res));
+  await new Promise((res) => execFile('sips', ['--resampleWidth', '1600', tmp], res));
+  let buf;
+  try { buf = fs.readFileSync(tmp); } catch { return; }
+  if (buf.length < 1000) return;   // screen-recording permission not granted
+  sendToUI('appshot', { name: 'appshot.png', dataUrl: 'data:image/png;base64,' + buf.toString('base64') });
+  if (win) { win.show(); win.focus(); }
+}
 
 // ---- OpenRouter credits (for the usage popover), cached 60s -----------------------
 let creditsCache = { at: 0, data: null };
@@ -475,21 +732,23 @@ ipcMain.handle('session-config', (_e, { id, patch }) => {
   if (patch.model) {
     rec.model = patch.model; cfg.model = patch.model;
     if (!patch.mode && cfg.modeByModel[patch.model]) rec.mode = cfg.modeByModel[patch.model];
+    // effort follows the model too: restore what you last used with this model
+    if (patch.effort === undefined) rec.effort = cfg.effortByModel[patch.model] || null;
   }
   if (patch.cwd) { rec.cwd = patch.cwd; cfg.cwd = patch.cwd; }
-  if (patch.effort !== undefined) rec.effort = patch.effort || null;
+  if (patch.effort !== undefined) { rec.effort = patch.effort || null; cfg.effortByModel[rec.model] = rec.effort; }
   saveConfig(cfg);
   if (rec.agent) {
     if (patch.model) rec.agent.setModel(rec.model);
     rec.agent.setMode(rec.mode);
     if (patch.cwd) rec.agent.setCwd(rec.cwd);
-    if (patch.effort !== undefined) rec.agent.setEffort(rec.effort);
+    rec.agent.setEffort(rec.effort || null);
   }
   saveSession(rec);
   return metaOf(rec);
 });
 
-ipcMain.handle('session-send', (_e, { id, text, images }) => {
+ipcMain.handle('session-send', (_e, { id, text, images, modelText }) => {
   const rec = sessions.get(id);
   if (!rec) return { ok: false, error: 'no such session' };
   const cfg = loadConfig();
@@ -507,7 +766,8 @@ ipcMain.handle('session-send', (_e, { id, text, images }) => {
   const agent = ensureAgent(rec);
   rec.abort = new AbortController();
   sessionsChanged();
-  const payload = images && images.length ? { text, images } : text;
+  const sendText = modelText || text;   // skills expand for the model; the transcript shows what was typed
+  const payload = images && images.length ? { text: sendText, images } : sendText;
   (async () => {
     try { await agent.send(payload, rec.abort.signal); }
     catch (err) { onAgentEvent(rec, { type: 'error', message: String((err && err.message) || err) }); }

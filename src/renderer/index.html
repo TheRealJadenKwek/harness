@@ -161,19 +161,82 @@
     </div>
   </div>
 
-  <!-- Settings overlay -->
+  <!-- Settings overlay: full page with sections -->
   <div id="settingsSheet" class="sheet" style="display:none">
-    <div class="sheet-inner">
-      <h3>Settings</h3>
-      <label>OpenRouter API key</label>
-      <input id="keyInput" type="password" placeholder="sk-or-…" autocomplete="off">
-      <p class="muted">Stored locally on this Mac. Bootstrapped from your harness key if present.</p>
-      <div class="row" style="justify-content:space-between">
-        <button id="sessionsFolderBtn" class="sheet-close">Open sessions folder</button>
-        <div class="row">
-          <button id="keySave" class="primary">Save</button>
-          <button id="settingsClose" class="sheet-close">Close</button>
+    <div class="sheet-inner settings-inner">
+      <div class="settings-nav">
+        <div class="snav-title">Settings</div>
+        <button class="snav on" data-sec="general">General</button>
+        <button class="snav" data-sec="mcp">Connectors · MCP</button>
+        <button class="snav" data-sec="skills">Skills</button>
+        <button class="snav" data-sec="shortcuts">Shortcuts</button>
+        <div class="spacer"></div>
+        <button id="settingsClose" class="sheet-close">Close</button>
+      </div>
+      <div class="settings-body">
+
+        <div id="sec-general" class="ssec">
+          <h3>General</h3>
+          <label>OpenRouter API key</label>
+          <input id="keyInput" type="password" placeholder="sk-or-…" autocomplete="off">
+          <p class="muted">Stored locally on this Mac. Bootstrapped from your harness key if present.</p>
+          <div class="row" style="justify-content:flex-start">
+            <button id="keySave" class="primary">Save key</button>
+            <button id="sessionsFolderBtn" class="sheet-close">Open sessions folder</button>
+          </div>
+          <div class="menu-sep"></div>
+          <h3>Appshots</h3>
+          <p class="muted">Press <b>⌘⇧H</b> anywhere on your Mac to capture the screen and attach it to the active chat — Harness comes to the front with the shot ready to send. Requires Screen Recording permission for Harness Code (System Settings → Privacy).</p>
         </div>
+
+        <div id="sec-mcp" class="ssec" style="display:none">
+          <h3>Connectors — MCP servers</h3>
+          <p class="muted">Stdio MCP servers. Their tools are advertised to every model as <code>mcp__server__tool</code> and are approval-gated like any other tool.</p>
+          <div id="mcpList" class="settings-list"></div>
+          <div class="menu-sep"></div>
+          <label>Add a server</label>
+          <input id="mcpName" placeholder="name (e.g. filesystem)" autocomplete="off">
+          <input id="mcpCmd" placeholder="command (e.g. npx -y @modelcontextprotocol/server-filesystem ~/proj)" autocomplete="off">
+          <div class="row" style="justify-content:flex-start"><button id="mcpAddBtn" class="primary">Add & start</button></div>
+        </div>
+
+        <div id="sec-skills" class="ssec" style="display:none">
+          <h3>Skills</h3>
+          <p class="muted">Markdown playbooks in <code>~/.harness-code/skills/</code>. Invoke one by typing <b>/name</b> in the composer — its instructions are sent to the model with your task.</p>
+          <div id="skillsListEl" class="settings-list"></div>
+          <div class="menu-sep"></div>
+          <label>New / edit skill</label>
+          <input id="skillName" placeholder="name (e.g. deploy-checklist)" autocomplete="off">
+          <textarea id="skillContent" rows="6" placeholder="# What this skill does&#10;Step-by-step instructions for the model…"></textarea>
+          <div class="row" style="justify-content:flex-start"><button id="skillSaveBtn" class="primary">Save skill</button></div>
+        </div>
+
+        <div id="sec-shortcuts" class="ssec" style="display:none">
+          <h3>Shortcuts</h3>
+          <div class="sc-grid">
+            <span>⌘N</span><span>New chat</span>
+            <span>⌘K</span><span>Model picker</span>
+            <span>⌘B</span><span>Toggle sidebar</span>
+            <span>⌘D</span><span>Changes panel</span>
+            <span>⇧⌘F</span><span>Files panel</span>
+            <span>⌘U</span><span>Attach files/photos</span>
+            <span>⌘⇧H</span><span>Appshot (global)</span>
+            <span>⌘1–9</span><span>Switch session</span>
+            <span>⇧Tab</span><span>Cycle permission mode</span>
+            <span>Esc</span><span>Stop the agent / deny</span>
+            <span>⏎</span><span>Send / approve</span>
+          </div>
+          <div class="menu-sep"></div>
+          <h3>Commands</h3>
+          <div class="sc-grid">
+            <span>/fork</span><span>Duplicate this chat (full history) into a new session</span>
+            <span>/goal</span><span>Set a standing goal the model keeps in its system prompt</span>
+            <span>/loop</span><span>/loop &lt;minutes&gt; &lt;prompt&gt; — re-send on an interval · /loop stop</span>
+            <span>/compact</span><span>Summarize & compress the context</span>
+            <span>/&lt;skill&gt;</span><span>Run a skill from ~/.harness-code/skills</span>
+          </div>
+        </div>
+
       </div>
     </div>
   </div>

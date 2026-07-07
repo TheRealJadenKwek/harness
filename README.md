@@ -23,6 +23,12 @@ Built from scratch (a real agent loop, not a wrapper). Electron GUI + a zero-dep
 - **＋ attach menu** (⌘U) — add photos (sent to vision models as real image input), files (inserted as @mentions), or a folder; jump to slash commands.
 - **Reasoning effort selector** — faster ↔ smarter per session (OpenRouter unified `reasoning.effort`).
 - **Context & usage popover** — click the token meter: context-window fill bar for the current model, session cost, and your live OpenRouter credit balance.
+- **MCP connectors** — add stdio MCP servers in Settings; their tools are advertised to every model as `mcp__server__tool`, approval-gated like everything else.
+- **Skills** — markdown playbooks in `~/.harness-code/skills/`, invoked as `/name` from the composer.
+- **Agent browser** — `browser_open/read/click/fill/eval` tools drive the visible Preview panel, so you watch the model browse.
+- **Computer use** — an `applescript` tool lets the model control other Mac apps; always requires explicit approval, even in Auto.
+- **Appshots** — press ⌘⇧H anywhere to capture the screen and attach it to the active chat (needs Screen Recording permission).
+- **/fork · /goal · /loop** — duplicate a session with full history, pin a standing goal into the system prompt, or re-run a prompt on an interval.
 - **Monochrome UI, light & dark** — follows the system theme.
 - **Keyboard-first** — ⌘N new chat, ⌘K models, ⌘B sidebar, ⌘D changes panel, ⌘1–9 switch session, ⇧Tab cycle mode, Enter/Esc approve/deny, Esc stop.
 

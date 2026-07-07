@@ -16,24 +16,38 @@ class Session {
     this.cwd = opts.cwd;
     this.mode = opts.mode || 'ask';           // 'plan' | 'ask' | 'edits' | 'auto' | 'bypass'
     this.effort = opts.effort || null;        // null (model default) | 'low' | 'medium' | 'high'
+    this.goal = opts.goal || null;            // standing goal appended to the system prompt
     this.emit = opts.emit || (() => {});      // (event) => void
     this.approve = opts.approve || (async () => true);
-    this.messages = [{ role: 'system', content: systemPrompt(this.cwd, this.mode) }];
+    // extraTools: host-provided tools (MCP servers, browser). Shape:
+    //   { schemas: [openai fn schemas], has(name), run(name,args)->Promise<result>,
+    //     gate(name,args) -> {kind,detail,danger} | null (null = no approval needed) }
+    this.extraTools = opts.extraTools || null;
+    this.messages = [this._sys()];
+  }
+
+  _sys() {
+    return {
+      role: 'system',
+      content: systemPrompt(this.cwd, this.mode) +
+        (this.goal ? '\n\nSTANDING GOAL from the user (keep working toward it across turns): ' + this.goal : ''),
+    };
   }
 
   setModel(m) { this.model = m; }
   setEffort(e) { this.effort = e || null; }
-  setMode(m) { this.mode = m; this.messages[0] = { role: 'system', content: systemPrompt(this.cwd, this.mode) }; }
-  setCwd(d) { this.cwd = d; this.messages[0] = { role: 'system', content: systemPrompt(this.cwd, this.mode) }; }
+  setMode(m) { this.mode = m; this.messages[0] = this._sys(); }
+  setCwd(d) { this.cwd = d; this.messages[0] = this._sys(); }
+  setGoal(g) { this.goal = g || null; this.messages[0] = this._sys(); }
 
   // Restore a persisted conversation (message history saved to disk by the host).
   loadMessages(msgs) {
     if (Array.isArray(msgs) && msgs.length) this.messages = msgs;
-    this.messages[0] = { role: 'system', content: systemPrompt(this.cwd, this.mode) };
+    this.messages[0] = this._sys();
   }
 
   // Clear the conversation back to a fresh system prompt.
-  reset() { this.messages = [{ role: 'system', content: systemPrompt(this.cwd, this.mode) }]; }
+  reset() { this.messages = [this._sys()]; }
 
   // Compact: ask the model to summarize the session, then replace the history with
   // that summary so long sessions keep fitting in context (like /compact in Claude Code).
@@ -49,7 +63,7 @@ class Session {
     });
     const summary = res.content || '';
     this.messages = [
-      { role: 'system', content: systemPrompt(this.cwd, this.mode) },
+      this._sys(),
       { role: 'user', content: '[Context was compacted. Summary of the session so far:]\n\n' + summary },
       { role: 'assistant', content: 'Understood — I have the full context from that summary and will continue from there.' },
     ];
@@ -67,32 +81,35 @@ class Session {
         : (userInput.text || '');
     }
     this.messages.push({ role: 'user', content });
+    // Trust ladder: bypass auto-approves EVERYTHING (including destructive);
+    // auto approves routine work but destructive always asks; edits approves
+    // only file writes/edits (bash + destructive still ask); ask approves nothing.
+    const gatedApprove = (kind, detail, opts = {}) => {
+      if (this.mode === 'plan') return Promise.resolve(false);   // plan = read-only
+      const danger = !!opts.danger;
+      const autoOk =
+        this.mode === 'bypass' ? true
+        : this.mode === 'auto' ? !danger
+        : this.mode === 'edits' ? (!danger && (kind === 'write' || kind === 'edit'))
+        : false;
+      if (autoOk) {
+        this.emit({ type: 'auto_approved', kind, detail });
+        return Promise.resolve(true);
+      }
+      this.emit({ type: 'approval_request', kind, detail, danger });
+      return this.approve(kind, detail, opts);
+    };
     const { tools, schemas } = makeTools({
       cwd: this.cwd,
-      approve: (kind, detail, opts = {}) => {
-        if (this.mode === 'plan') return Promise.resolve(false);   // plan = read-only
-        // Trust ladder: bypass auto-approves EVERYTHING (including destructive);
-        // auto approves routine work but destructive always asks; edits approves
-        // only file writes/edits (bash + destructive still ask); ask approves nothing.
-        const danger = !!opts.danger;
-        const autoOk =
-          this.mode === 'bypass' ? true
-          : this.mode === 'auto' ? !danger
-          : this.mode === 'edits' ? (!danger && (kind === 'write' || kind === 'edit'))
-          : false;
-        if (autoOk) {
-          this.emit({ type: 'auto_approved', kind, detail });
-          return Promise.resolve(true);
-        }
-        this.emit({ type: 'approval_request', kind, detail, danger });
-        return this.approve(kind, detail, opts);
-      },
+      approve: gatedApprove,
       onDiff: (file, before, after) => this.emit({ type: 'diff', file, before, after }),
     });
-    // Plan mode advertises only read tools.
+    // Plan mode advertises only read tools (browser_read is the one read-only extra).
+    const extraSchemas = this.extraTools ? this.extraTools.schemas : [];
     const advertised = this.mode === 'plan'
-      ? schemas.filter((s) => ['read_file', 'list_dir', 'glob', 'grep'].includes(s.function.name))
-      : schemas;
+      ? [...schemas.filter((s) => ['read_file', 'list_dir', 'glob', 'grep'].includes(s.function.name)),
+         ...extraSchemas.filter((s) => s.function.name === 'browser_read')]
+      : [...schemas, ...extraSchemas];
 
     let usageTotal = { prompt_tokens: 0, completion_tokens: 0, last_prompt: 0 };
     for (let step = 0; step < MAX_STEPS; step++) {
@@ -134,11 +151,18 @@ class Session {
         this.emit({ type: 'tool_call', name: tc.function.name, args });
         const tool = tools[tc.function.name];
         let result;
-        if (!tool) result = { error: 'unknown tool: ' + tc.function.name };
-        else {
+        if (tool) {
           try { result = await tool.run(args); }
           catch (e) { result = { error: String(e.message || e) }; }
-        }
+        } else if (this.extraTools && this.extraTools.has(tc.function.name)) {
+          const gate = this.extraTools.gate ? this.extraTools.gate(tc.function.name, args) : null;
+          const ok = gate ? await gatedApprove(gate.kind, gate.detail, { danger: !!gate.danger }) : true;
+          if (!ok) result = { error: 'denied by user' };
+          else {
+            try { result = await this.extraTools.run(tc.function.name, args); }
+            catch (e) { result = { error: String(e.message || e) }; }
+          }
+        } else result = { error: 'unknown tool: ' + tc.function.name };
         this.emit({ type: 'tool_result', name: tc.function.name, result });
         this.messages.push({
           role: 'tool', tool_call_id: tc.id, name: tc.function.name,

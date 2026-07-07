@@ -180,6 +180,31 @@ function makeTools(ctx) {
       },
     },
 
+    applescript: {
+      schema: {
+        name: 'applescript',
+        description: 'Run AppleScript on the user\'s Mac to control other applications (open apps, read/set window state, send keystrokes, query Finder/Music/Calendar, etc). This is computer use — it ALWAYS requires explicit user approval.',
+        parameters: { type: 'object', properties: {
+          script: { type: 'string', description: 'The AppleScript source to execute.' },
+        }, required: ['script'] },
+      },
+      run: async ({ script }) => {
+        // Controlling other apps can do anything the user can — always danger-gated.
+        const ok = await ctx.approve('applescript', script, { danger: true });
+        if (!ok) return { error: 'denied by user' };
+        return await new Promise((resolve) => {
+          execFile('osascript', ['-e', script], { timeout: 60000, maxBuffer: 2 * 1024 * 1024 },
+            (err, stdout, stderr) => {
+              resolve({
+                exit_code: err ? (err.code == null ? 1 : err.code) : 0,
+                stdout: (stdout || '').slice(0, 20000),
+                stderr: (stderr || '').slice(0, 8000),
+              });
+            });
+        });
+      },
+    },
+
     bash: {
       schema: {
         name: 'bash',
