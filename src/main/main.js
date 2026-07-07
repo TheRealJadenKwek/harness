@@ -617,10 +617,12 @@ async function getCursorPos() {
 
 // ---- takeover UI: click-through overlay + user-movement / Esc abort ------------------
 let overlayWin = null;
+let overlayReady = false;
 function showOverlay() {
   if (overlayWin) { overlayWin.showInactive(); return; }
   const { screen } = require('electron');
   const b = screen.getPrimaryDisplay().bounds;
+  overlayReady = false;
   overlayWin = new BrowserWindow({
     x: b.x, y: b.y, width: b.width, height: b.height,
     transparent: true, frame: false, alwaysOnTop: true, hasShadow: false,
@@ -629,38 +631,29 @@ function showOverlay() {
   overlayWin.setAlwaysOnTop(true, 'screen-saver');
   overlayWin.setIgnoreMouseEvents(true);
   overlayWin.loadFile(path.join(__dirname, '../renderer/overlay.html'));
-  overlayWin.on('closed', () => { overlayWin = null; });
+  overlayWin.webContents.on('did-finish-load', () => { overlayReady = true; });
+  overlayWin.on('closed', () => { overlayWin = null; overlayReady = false; });
 }
-function hideOverlay() { if (overlayWin) { try { overlayWin.close(); } catch {} overlayWin = null; } }
-function overlayRipple(x, y) {
-  if (overlayWin) overlayWin.webContents.executeJavaScript('ripple(' + Math.round(x) + ',' + Math.round(y) + ')').catch(() => {});
+function hideOverlay() { if (overlayWin) { try { overlayWin.close(); } catch {} overlayWin = null; overlayReady = false; } }
+async function overlayJS(code) {
+  for (let i = 0; i < 20 && !(overlayWin && overlayReady); i++) await sleep(150);
+  if (overlayWin && overlayReady) return overlayWin.webContents.executeJavaScript(code).catch(() => {});
 }
 
-let control = null;   // { rec, expected: {x,y}|null, busy: false, watcher: child, startedAt }
+// Ghost-cursor mode: the agent drives a SECOND cursor rendered on the overlay —
+// the user's physical cursor is never moved, so both can work at once. Clicks are
+// posted directly at coordinates (hc-cursor tap). Esc hands control back.
+let control = null;   // { rec, busy: false, startedAt }
 function startControl(rec) {
   if (control && control.rec === rec) return;
   endControl();
-  control = { rec, expected: null, busy: false, watcher: null, startedAt: Date.now() };
+  control = { rec, busy: false, startedAt: Date.now() };
   showOverlay();
+  overlayJS('showGhost()');
   try { globalShortcut.register('Escape', () => abortControl('Esc pressed')); } catch {}
-  // Event-tap watcher: our synthetic events are tagged, so ANY untagged mouse event
-  // is the human — hand control back instantly, even mid-glide.
-  if (hasCursorHelper()) {
-    try {
-      const w = spawn(HC_CURSOR, ['watch'], { stdio: ['ignore', 'pipe', 'ignore'] });
-      control.watcher = w;
-      w.stdout.on('data', () => {
-        if (control && control.watcher === w && Date.now() - control.startedAt > 700) {
-          abortControl('you moved the mouse');
-        }
-      });
-      w.on('error', () => {});
-    } catch {}
-  }
 }
 function endControl() {
   if (!control) return;
-  if (control.watcher) { try { control.watcher.kill(); } catch {} }
   try { globalShortcut.unregister('Escape'); } catch {}
   hideOverlay();
   control = null;
@@ -688,16 +681,18 @@ let shotScale = 1;
 const SHOT_MAX_W = 1512;
 const COMPUTER_TOOLS = {
   computer_screenshot: {
-    schema: { name: 'computer_screenshot', description: 'Capture the primary screen. The image is attached in the next message, sized in screen POINTS — a coordinate you read off the image is exactly the coordinate to click. Always take a fresh screenshot after each action to see the result.', parameters: { type: 'object', properties: {} } },
+    schema: { name: 'computer_screenshot', description: 'Capture the primary screen. The image is attached in the next message — a coordinate you read off it is exactly the coordinate to click. Your ORANGE "AI" cursor is visible in the shot: use it to verify your aim (move → screenshot → adjust → click). Always take a fresh screenshot after each action.', parameters: { type: 'object', properties: {} } },
     gate: () => ({ kind: 'computer', detail: 'take a screenshot of the screen', danger: false }),
     run: async (a, rec) => {
       const { screen } = require('electron');
       const d = screen.getPrimaryDisplay();
       const tmp = path.join(app.getPath('temp'), 'hc-screen.png');
       if (rec) { startControl(rec); control.busy = true; }
-      if (overlayWin) overlayWin.hide();   // the takeover banner must not appear in the shot
-      await new Promise((res) => execFile('screencapture', ['-x', '-m', '-C', tmp], res));   // -C: cursor visible for aim-verification
-      if (overlayWin) overlayWin.showInactive();
+      // banner/frame out of the shot, but the AI ghost cursor STAYS visible —
+      // that's how the model verifies its aim before clicking
+      await overlayJS('setShotMode(true)');
+      await new Promise((res) => execFile('screencapture', ['-x', '-m', tmp], res));
+      await overlayJS('setShotMode(false)');
       if (control) control.busy = false;
       const imgW = Math.min(SHOT_MAX_W, d.size.width);
       shotScale = d.size.width / imgW;
@@ -710,20 +705,21 @@ const COMPUTER_TOOLS = {
     },
   },
   computer_move: {
-    schema: { name: 'computer_move', description: 'Move the mouse cursor to coordinates from the latest screenshot WITHOUT clicking. Best practice for accuracy: move, take a screenshot (the cursor is visible in it) to verify you are on the target, adjust if needed, THEN click.', parameters: { type: 'object', properties: {
+    schema: { name: 'computer_move', description: 'Glide your orange AI cursor to coordinates from the latest screenshot WITHOUT clicking. This is a SECOND cursor — the user keeps theirs. Best practice: move, screenshot to verify the AI cursor is on the target, adjust, THEN click.', parameters: { type: 'object', properties: {
       x: { type: 'integer' }, y: { type: 'integer' },
     }, required: ['x', 'y'] } },
-    gate: (a) => ({ kind: 'computer', detail: 'move cursor to (' + a.x + ', ' + a.y + ')', danger: false }),
+    gate: (a) => ({ kind: 'computer', detail: 'move AI cursor to (' + a.x + ', ' + a.y + ')', danger: false }),
     run: async (a, rec) => {
       const sx = Math.round(a.x * shotScale), sy = Math.round(a.y * shotScale);
       if (rec) { startControl(rec); control.busy = true; }
-      const r = hasCursorHelper() ? await cursorCmd(['move', sx, sy, 450]) : await cli(['m:' + sx + ',' + sy]);
-      if (control) { control.expected = { x: sx, y: sy }; control.busy = false; }
-      return r;
+      await overlayJS('moveGhost(' + sx + ',' + sy + ',450)');
+      await sleep(500);
+      if (control) control.busy = false;
+      return { ok: true, cursor_at: { x: a.x, y: a.y } };
     },
   },
   computer_click: {
-    schema: { name: 'computer_click', description: 'Click at screen-point coordinates from the latest screenshot. For accuracy, prefer computer_move → screenshot (verify the visible cursor is on the target) → click at the same coordinates.', parameters: { type: 'object', properties: {
+    schema: { name: 'computer_click', description: 'Click with your AI cursor at coordinates from the latest screenshot (the user\'s own cursor is not moved). For accuracy, prefer computer_move → screenshot (verify the AI cursor is on target) → click the same coordinates.', parameters: { type: 'object', properties: {
       x: { type: 'integer' }, y: { type: 'integer' },
       double: { type: 'boolean' }, right: { type: 'boolean' },
     }, required: ['x', 'y'] } },
@@ -731,11 +727,14 @@ const COMPUTER_TOOLS = {
     run: async (a, rec) => {
       const sx = Math.round(a.x * shotScale), sy = Math.round(a.y * shotScale);
       if (rec) { startControl(rec); control.busy = true; }
+      await overlayJS('moveGhost(' + sx + ',' + sy + ',450)');
+      await sleep(500);
+      const kind = a.double ? 'double' : a.right ? 'right' : 'left';
       let r;
-      if (hasCursorHelper()) r = await cursorCmd(['click', sx, sy, a.double ? 'double' : a.right ? 'right' : 'left', 450]);
-      else r = await cli([(a.double ? 'dc:' : a.right ? 'rc:' : 'c:') + sx + ',' + sy]);
-      overlayRipple(sx, sy);
-      if (control) { control.expected = { x: sx, y: sy }; control.busy = false; }
+      if (hasCursorHelper()) r = await cursorCmd(['tap', sx, sy, kind]);
+      else r = await cli([(a.double ? 'dc:' : a.right ? 'rc:' : 'c:') + sx + ',' + sy]);   // fallback moves the real cursor
+      await overlayJS('clickGhost()');
+      if (control) control.busy = false;
       return r;
     },
   },

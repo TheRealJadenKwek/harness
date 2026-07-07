@@ -25,17 +25,66 @@ html, body { margin: 0; height: 100%; background: transparent; overflow: hidden;
   animation: rip .7s ease-out forwards;
 }
 @keyframes rip { to { width: 70px; height: 70px; opacity: 0; } }
+
+/* the AI ghost cursor — orange arrow with a badge, glides at 60fps */
+#ghost { position: fixed; left: 0; top: 0; width: 30px; height: 38px; display: none; filter: drop-shadow(0 2px 5px rgba(0,0,0,.45)); z-index: 10; }
+#ghost .tag {
+  position: absolute; left: 18px; top: 22px;
+  background: #e0902f; color: #17130c; font: 700 9px -apple-system, sans-serif;
+  padding: 1.5px 5px; border-radius: 7px; letter-spacing: .4px; white-space: nowrap;
+}
+#ghost.clicking svg { transform: scale(.82); }
+#ghost svg { transition: transform .12s; transform-origin: 4px 3px; }
 </style></head>
 <body>
-  <div class="frame"></div>
-  <div class="banner"><span class="dot"></span> Harness Code is controlling your computer — move the mouse or press Esc to take back control</div>
+  <div class="frame" id="frame"></div>
+  <div class="banner" id="banner"><span class="dot"></span> AI cursor active — Harness is using a second cursor; yours is untouched · press Esc to stop</div>
+  <div id="ghost">
+    <svg width="26" height="30" viewBox="0 0 26 30" xmlns="http://www.w3.org/2000/svg">
+      <path d="M4 2 L4 24 L9.5 19.5 L13 28 L16.5 26.4 L13 18 L20 17.5 Z"
+            fill="#e0902f" stroke="#1a1408" stroke-width="1.6" stroke-linejoin="round"/>
+    </svg>
+    <span class="tag">AI</span>
+  </div>
   <script>
+    const ghost = document.getElementById('ghost');
+    let gx = innerWidth / 2, gy = innerHeight / 2;
+    let anim = null;
+    function place(x, y) { ghost.style.transform = 'translate(' + (x - 4) + 'px,' + (y - 3) + 'px)'; }
+    function showGhost() { ghost.style.display = 'block'; place(gx, gy); }
+    function hideGhost() { ghost.style.display = 'none'; }
+    // eased 60fps glide — same easeInOutQuad feel as Codex's cursor
+    function moveGhost(x, y, ms) {
+      showGhost();
+      if (anim) cancelAnimationFrame(anim);
+      const sx = gx, sy = gy, t0 = performance.now();
+      ms = ms || 450;
+      function step(now) {
+        const t = Math.min(1, (now - t0) / ms);
+        const e = t < 0.5 ? 2 * t * t : 1 - Math.pow(-2 * t + 2, 2) / 2;
+        gx = sx + (x - sx) * e; gy = sy + (y - sy) * e;
+        place(gx, gy);
+        if (t < 1) anim = requestAnimationFrame(step);
+      }
+      anim = requestAnimationFrame(step);
+    }
+    function clickGhost() {
+      ghost.classList.add('clicking');
+      setTimeout(() => ghost.classList.remove('clicking'), 140);
+      ripple(gx, gy);
+    }
     function ripple(x, y) {
       const d = document.createElement('div');
       d.className = 'rip';
       d.style.left = x + 'px'; d.style.top = y + 'px';
       document.body.appendChild(d);
       setTimeout(() => d.remove(), 800);
+    }
+    // shot mode: hide the banner/frame so the model's screenshot is clean,
+    // but KEEP the ghost visible — that's how the model verifies its aim.
+    function setShotMode(on) {
+      document.getElementById('banner').style.display = on ? 'none' : '';
+      document.getElementById('frame').style.display = on ? 'none' : '';
     }
   </script>
 </body>

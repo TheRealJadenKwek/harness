@@ -6,6 +6,8 @@
 //   hc-cursor pos                          → prints "x,y"
 //   hc-cursor move <x> <y> [ms]            → glide to point
 //   hc-cursor click <x> <y> [left|right|double] [ms]
+//   hc-cursor tap <x> <y> [left|right|double]  → click AT coords WITHOUT moving the
+//        visible cursor (ghost-cursor mode: the event carries its own location)
 //   hc-cursor watch                        → stream "USER" lines on human mouse input
 // Requires Accessibility permission (same grant cliclick uses).
 import Foundation
@@ -63,6 +65,29 @@ case "click":
         post(u)
         usleep(90000)
     }
+case "tap":
+    // Click at coords while the USER keeps their cursor: posting a click warps the
+    // real pointer, so we save its position and warp straight back after the click —
+    // CGWarpMouseCursorPosition emits no move events, so the blip is ~50ms.
+    guard a.count >= 4, let x = Double(a[2]), let y = Double(a[3]) else { exit(1) }
+    let kind = a.count > 4 ? a[4] : "left"
+    let original = cur()
+    let p = CGPoint(x: x, y: y)
+    let btn: CGMouseButton = kind == "right" ? .right : .left
+    let downT: CGEventType = kind == "right" ? .rightMouseDown : .leftMouseDown
+    let upT: CGEventType = kind == "right" ? .rightMouseUp : .leftMouseUp
+    let clicks = kind == "double" ? 2 : 1
+    for i in 1...Int64(clicks) {
+        let d = CGEvent(mouseEventSource: nil, mouseType: downT, mouseCursorPosition: p, mouseButton: btn)
+        d?.setIntegerValueField(.mouseEventClickState, value: i)
+        post(d)
+        usleep(25000)
+        let u = CGEvent(mouseEventSource: nil, mouseType: upT, mouseCursorPosition: p, mouseButton: btn)
+        u?.setIntegerValueField(.mouseEventClickState, value: i)
+        post(u)
+        usleep(30000)
+    }
+    CGWarpMouseCursorPosition(original)
 case "watch":
     let mask: CGEventMask =
         (1 << CGEventType.mouseMoved.rawValue) |
