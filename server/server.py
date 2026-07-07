@@ -296,6 +296,48 @@ def default_effort_label(p):
     raw = _codex_default_effort() if eng == 'codex' else None   # claude has no settable default
     return EFFORT_LABELS.get(str(raw).lower(), str(raw)) if raw else None
 
+_MODELS_CACHE = {}                 # provider id -> (fetched_at, [{label,value}])
+_models_lock = threading.Lock()
+
+def fetch_provider_models(p):
+    """Live model catalog for an OpenAI-compatible provider (base_url + /models), so the
+    app can search ANY model the key unlocks (e.g. all of OpenRouter). Cached 1h; falls
+    back to the static providers.json list on failure or for the built-in claude/codex."""
+    pid, static = p.get('id'), (p.get('models') or [])
+    base = p.get('base_url')
+    if not base:
+        return static
+    with _models_lock:
+        c = _MODELS_CACHE.get(pid)
+        if c and time.time() - c[0] < 3600:
+            return c[1]
+    req = urllib.request.Request(base.rstrip('/') + '/models',
+                                 headers={'Accept': 'application/json', 'User-Agent': 'harness'})
+    key = CFG.get(p.get('api_key_env') or '') or ''
+    if key:
+        req.add_header('Authorization', 'Bearer ' + key)
+    try:
+        with urllib.request.urlopen(req, timeout=15) as r:
+            data = json.load(r)
+        items = data.get('data') if isinstance(data, dict) else data
+        models, seen = [], set()
+        for it in (items or []):
+            mid = (it.get('id') if isinstance(it, dict) else str(it) or '').strip()
+            if not mid or mid in seen:
+                continue
+            seen.add(mid)
+            name = (it.get('name') if isinstance(it, dict) else '') or mid
+            models.append({'label': str(name)[:70], 'value': mid})
+        models.sort(key=lambda m: m['value'])
+        if models:
+            with _models_lock:
+                _MODELS_CACHE[pid] = (time.time(), models)
+            log('fetched %d models for %s' % (len(models), pid))
+            return models
+    except Exception as e:
+        log('model fetch failed for %s: %s' % (pid, e))
+    return static
+
 def _provider_public(p):
     """Projection sent to the app — never the key value, just whether one is set."""
     return {'id': p.get('id'), 'label': p.get('label'), 'engine': p.get('engine'),
@@ -2302,6 +2344,12 @@ class Handler(BaseHTTPRequestHandler):
             return self._json(401, {'error': 'unauthorized'})
         if path == '/providers':
             return self._json(200, [_provider_public(p) for p in load_providers()])
+        if path.startswith('/providers/') and path.endswith('/models'):
+            pid = path.split('/')[2]
+            p = provider_by_id(pid)
+            if not p:
+                return self._json(404, {'error': 'unknown provider'})
+            return self._json(200, fetch_provider_models(p))
         if path == '/threads':
             q = urllib.parse.parse_qs(urllib.parse.urlparse(self.path).query)
             view = 'archived' if q.get('view', [''])[0] == 'archived' else 'active'

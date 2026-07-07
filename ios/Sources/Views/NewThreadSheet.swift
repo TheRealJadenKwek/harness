@@ -9,20 +9,11 @@ struct NewThreadSheet: View {
     @State private var permissionMode = "bypass"
     @State private var effort = "default"
     @State private var model = ""
-    @State private var showModelCustom = false
-    @State private var modelCustomText = ""
     @State private var creating = false
     @State private var error: String?
 
     private var engine: String {
         app.providers.first { $0.id == provider }?.engine ?? "claude"
-    }
-    private func providerModels() -> [ModelOption] {
-        if let p = app.providers.first(where: { $0.id == provider }) {
-            if let m = p.models, !m.isEmpty { return m }
-            return ModelCatalog.options(for: p.engine)
-        }
-        return ModelCatalog.options(for: engine)
     }
     private var defaultModelText: String {
         if let dm = app.providers.first(where: { $0.id == provider })?.default_model, !dm.isEmpty { return "Default (\(dm))" }
@@ -59,19 +50,8 @@ struct NewThreadSheet: View {
                     }
                 }
                 Section("Model") {
-                    Picker("Model", selection: $model) {
-                        Text(defaultModelText).tag("")
-                        ForEach(providerModels(), id: \.value) { o in
-                            Text(o.label).tag(o.value)
-                        }
-                        if !model.isEmpty && !providerModels().contains(where: { $0.value == model }) {
-                            Text(model).tag(model)
-                        }
-                    }
-                    Button("Custom model…") {
-                        modelCustomText = model
-                        showModelCustom = true
-                    }
+                    ModelField(providerId: provider, defaultLabel: defaultModelText, model: $model)
+                        .environmentObject(app)
                 }
                 Section("Permissions") {
                     Picker("Mode", selection: $permissionMode) {
@@ -116,16 +96,7 @@ struct NewThreadSheet: View {
                 effort = app.defaultEffort
                 coerceEffort()
             }
-            .onChange(of: provider) { _, _ in coerceEffort() }
-            .alert("Custom model", isPresented: $showModelCustom) {
-                TextField("model id", text: $modelCustomText)
-                    .autocorrectionDisabled()
-                    .textInputAutocapitalization(.never)
-                Button("Set") { model = modelCustomText.trimmingCharacters(in: .whitespaces) }
-                Button("Cancel", role: .cancel) {}
-            } message: {
-                Text("Type any model id the CLI supports — including new releases.")
-            }
+            .onChange(of: provider) { _, _ in model = ""; coerceEffort() }   // reset model when engine changes
         }
     }
 

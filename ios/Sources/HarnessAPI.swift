@@ -70,6 +70,12 @@ struct HarnessAPI {
         try await decode(try makeRequest("/providers"), as: [Provider].self)
     }
 
+    /// Live, searchable model catalog for a provider (all of OpenRouter, etc.); falls back
+    /// to the provider's static list server-side.
+    func providerModels(_ id: String) async throws -> [ModelOption] {
+        try await decode(try makeRequest("/providers/\(id)/models"), as: [ModelOption].self)
+    }
+
     func threads(view: String? = nil) async throws -> [ThreadSummary] {
         let path = (view == nil) ? "/threads" : "/threads?view=\(view!)"
         return try await decode(try makeRequest(path), as: [ThreadSummary].self)
