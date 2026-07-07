@@ -13,6 +13,19 @@ function inside(root, p) {
   return !rel.startsWith('..') && !path.isAbsolute(rel) ? abs : null;
 }
 
+// Shell commands that can destroy work — these ALWAYS require approval, even for a
+// trusted model in Auto mode. This is the "don't let it mess up my good files" net.
+const DESTRUCTIVE = [
+  /\brm\s+/i, /\b(rmdir|shred|unlink)\b/i,
+  /\bgit\s+reset\s+--hard/i, /\bgit\s+clean\s+-[a-z]*f/i,
+  /\bgit\s+checkout\s+(--\s+)?[.\s]/i, /\bgit\s+restore\b/i,
+  /\bfind\b[^|]*-delete/i, /\bxargs\b[^|]*\brm\b/i,
+  /\b(mkfs|dd|truncate)\b/i, /\bsudo\b/i,
+  /:\s*\(\s*\)\s*\{/, /\bchmod\s+-R/i, /\bchown\s+-R/i,
+  /\bmv\s+.+\s+\//i,          // moving onto an absolute path
+];
+function isDestructiveShell(cmd) { return DESTRUCTIVE.some((re) => re.test(cmd || '')); }
+
 function makeTools(ctx) {
   // ctx: { cwd, approve(kind, detail)->Promise<bool>, onDiff(file, before, after) }
   const R = () => ctx.cwd;
@@ -129,7 +142,9 @@ function makeTools(ctx) {
         const abs = inside(R(), p);
         if (!abs) return { error: 'path escapes the working directory' };
         const before = fs.existsSync(abs) ? fs.readFileSync(abs, 'utf8') : '';
-        const ok = await ctx.approve('write', p);
+        // Overwriting an existing non-empty file is the "messing up a good file" case.
+        const danger = before.trim().length > 0;
+        const ok = await ctx.approve('write', p + (danger ? '  (overwrites existing file)' : ''), { danger });
         if (!ok) return { error: 'denied by user' };
         fs.mkdirSync(path.dirname(abs), { recursive: true });
         fs.writeFileSync(abs, content);
@@ -174,7 +189,8 @@ function makeTools(ctx) {
         }, required: ['command'] },
       },
       run: async ({ command }) => {
-        const ok = await ctx.approve('bash', command);
+        const danger = isDestructiveShell(command);
+        const ok = await ctx.approve('bash', command, { danger });
         if (!ok) return { error: 'denied by user' };
         return await new Promise((resolve) => {
           execFile('/bin/bash', ['-lc', command], { cwd: R(), timeout: 120000, maxBuffer: 4 * 1024 * 1024 },

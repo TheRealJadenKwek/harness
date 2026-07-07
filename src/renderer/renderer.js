@@ -20,12 +20,13 @@ async function refreshConfig() {
   $('dirLabel').textContent = shortDir(c.cwd || '~');
   $('modelLabel').textContent = c.model;
   const mb = $('modeBtn');
-  mb.textContent = c.mode === 'plan' ? '📋 Plan' : '🔨 Build';
-  mb.classList.toggle('build', c.mode === 'build');
+  mb.textContent = c.mode === 'plan' ? '📋 Plan' : c.mode === 'auto' ? '⚡ Auto' : '🔨 Ask';
+  mb.className = 'chip mode ' + c.mode;
 }
+const MODE_CYCLE = { ask: 'auto', auto: 'plan', plan: 'ask' };
 
 $('dirBtn').onclick = async () => { const d = await H.pickDir(); if (d) refreshConfig(); };
-$('modeBtn').onclick = async () => { const next = cfg.mode === 'build' ? 'plan' : 'build'; await H.setConfig({ mode: next }); refreshConfig(); };
+$('modeBtn').onclick = async () => { await H.setConfig({ mode: MODE_CYCLE[cfg.mode] || 'ask' }); refreshConfig(); };
 $('newBtn').onclick = async () => { await H.newSession(); log.innerHTML = ''; addLine('done', 'New session.'); };
 
 // ---- rendering
@@ -74,6 +75,7 @@ H.onEvent((e) => {
     const last = log.querySelector('.tool:last-child');
     if (last) { const r = document.createElement('div'); const err = e.result && e.result.error; r.className = 'res' + (err ? ' err' : ''); r.textContent = err ? ('✗ ' + err) : ('✓ ' + summarizeResult(e.name, e.result)); last.appendChild(r); }
   }
+  else if (e.type === 'auto_approved') { addLine('done', `⚡ auto-approved ${e.kind}: ${(e.detail || '').slice(0, 80)}`); }
   else if (e.type === 'diff') { renderDiff(e.file, e.before, e.after); }
   else if (e.type === 'done') { finishTurn(); if (e.usage) addLine('done', `done · ~${(e.usage.prompt_tokens + e.usage.completion_tokens).toLocaleString()} tokens`); }
   else if (e.type === 'error') { finishTurn(); addLine('err', '⚠︎ ' + e.message); }
@@ -98,6 +100,9 @@ H.onApproval((a) => {
   pendingApprovalId = a.id;
   $('apKind').textContent = a.kind;
   $('apDetail').textContent = a.detail;
+  const modal = $('approvalModal').querySelector('.modal-inner');
+  modal.classList.toggle('danger-modal', !!a.danger);
+  $('apWarn').style.display = a.danger ? 'block' : 'none';
   $('approvalModal').style.display = 'flex';
 });
 function respond(ok) { $('approvalModal').style.display = 'none'; if (pendingApprovalId != null) H.respondApproval(pendingApprovalId, ok); pendingApprovalId = null; }

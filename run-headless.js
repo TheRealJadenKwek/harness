@@ -17,14 +17,15 @@ async function main() {
   const [model, cwd, task] = process.argv.slice(2);
   const yes = process.argv.includes('--yes');
   const plan = process.argv.includes('--plan');
+  const auto = process.argv.includes('--auto');
   const apiKey = loadKey();
   if (!apiKey) { console.error('no OPENROUTER_API_KEY'); process.exit(1); }
   if (!model || !cwd || !task) { console.error('usage: node run-headless.js <model> <cwd> <task> [--yes] [--plan]'); process.exit(1); }
 
   const s = new Session({
-    apiKey, model, cwd, mode: plan ? 'plan' : 'build',
-    approve: async (kind, detail) => {
-      console.log(`\n  ⚠️  APPROVE ${kind}: ${detail.slice(0, 120)} -> ${yes ? 'auto-yes' : 'auto-yes(test)'}`);
+    apiKey, model, cwd, mode: plan ? 'plan' : auto ? 'auto' : 'ask',
+    approve: async (kind, detail, opts = {}) => {
+      console.log(`\n  ${opts.danger ? '🛑 DANGER' : '⚠️ '} APPROVE ${kind}: ${detail.slice(0, 120)} -> ${yes ? 'yes' : 'yes(test)'}`);
       return true;
     },
     emit: (e) => {

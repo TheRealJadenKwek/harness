@@ -26,8 +26,9 @@ function loadConfig() {
     } catch {}
   }
   cfg.model = cfg.model || 'z-ai/glm-4.6';
-  cfg.mode = cfg.mode || 'build';
+  cfg.mode = cfg.mode || 'ask';
   cfg.cwd = cfg.cwd || app.getPath('home');
+  cfg.modeByModel = cfg.modeByModel || {};   // remembered trust level per model
   return cfg;
 }
 function saveConfig(cfg) {
@@ -53,10 +54,10 @@ function ensureSession() {
     session = new Session({
       apiKey: cfg.apiKey, model: cfg.model, cwd: cfg.cwd, mode: cfg.mode,
       emit: (e) => win && win.webContents.send('agent-event', e),
-      approve: (kind, detail) => new Promise((resolve) => {
+      approve: (kind, detail, opts = {}) => new Promise((resolve) => {
         const id = ++approvalSeq;
         pendingApprovals.set(id, resolve);
-        win && win.webContents.send('approval', { id, kind, detail });
+        win && win.webContents.send('approval', { id, kind, detail, danger: !!opts.danger });
       }),
     });
   } else {
@@ -74,14 +75,21 @@ ipcMain.handle('get-config', () => {
 ipcMain.handle('set-config', (_e, patch) => {
   const c = loadConfig();
   const next = { ...c, ...patch };
+  // Trust memory: switching models restores the mode you last used with that model;
+  // changing mode records it for the current model. So "new models → Auto, old → Ask" sticks.
+  if (patch.mode) next.modeByModel = { ...c.modeByModel, [next.model]: patch.mode };
+  if (patch.model && patch.mode === undefined) {
+    const remembered = c.modeByModel && c.modeByModel[patch.model];
+    if (remembered) next.mode = remembered;
+  }
   saveConfig(next);
   if (session) {
     if (patch.model) session.setModel(patch.model);
-    if (patch.mode) session.setMode(patch.mode);
+    if (next.mode !== c.mode || patch.mode) session.setMode(next.mode);
     if (patch.cwd) session.setCwd(patch.cwd);
     if (patch.apiKey) session.apiKey = patch.apiKey;
   }
-  return { ok: true };
+  return { ok: true, mode: next.mode };
 });
 
 ipcMain.handle('pick-dir', async () => {

@@ -14,7 +14,7 @@ class Session {
     this.baseUrl = opts.baseUrl;
     this.model = opts.model;
     this.cwd = opts.cwd;
-    this.mode = opts.mode || 'build';         // 'build' | 'plan'
+    this.mode = opts.mode || 'ask';           // 'plan' (read-only) | 'ask' (approve) | 'auto' (bypass)
     this.emit = opts.emit || (() => {});      // (event) => void
     this.approve = opts.approve || (async () => true);
     this.messages = [{ role: 'system', content: systemPrompt(this.cwd, this.mode) }];
@@ -28,10 +28,16 @@ class Session {
     this.messages.push({ role: 'user', content: userText });
     const { tools, schemas } = makeTools({
       cwd: this.cwd,
-      approve: (kind, detail) => {
-        if (this.mode === 'plan') return Promise.resolve(false);   // plan mode = read-only
-        this.emit({ type: 'approval_request', kind, detail });
-        return this.approve(kind, detail);
+      approve: (kind, detail, opts = {}) => {
+        if (this.mode === 'plan') return Promise.resolve(false);   // plan = read-only
+        // Auto (bypass) auto-approves routine work — but destructive actions ALWAYS
+        // stop and ask, so a trusted model still can't wreck your good files.
+        if (this.mode === 'auto' && !opts.danger) {
+          this.emit({ type: 'auto_approved', kind, detail });
+          return Promise.resolve(true);
+        }
+        this.emit({ type: 'approval_request', kind, detail, danger: !!opts.danger });
+        return this.approve(kind, detail, opts);
       },
       onDiff: (file, before, after) => this.emit({ type: 'diff', file, before, after }),
     });

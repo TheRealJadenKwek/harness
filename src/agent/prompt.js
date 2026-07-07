@@ -3,7 +3,9 @@
 function systemPrompt(cwd, mode) {
   const permission = mode === 'plan'
     ? 'You are in PLAN mode: do NOT write files or run commands — investigate and propose a plan only.'
-    : 'You are in BUILD mode: you may edit files and run commands. Mutating actions are gated by user approval.';
+    : mode === 'auto'
+    ? 'You are in AUTO mode: routine edits and commands run without prompting, but destructive actions (deleting/overwriting files, resets, sudo) still require the user’s approval. Be careful and deliberate.'
+    : 'You are in ASK mode: you may edit files and run commands, but EVERY change is gated by user approval.';
   return `You are Harness Code, an agentic coding assistant working in the user's project.
 
 Working directory: ${cwd}
