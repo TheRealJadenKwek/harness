@@ -27,8 +27,6 @@
         <button id="sideToggle" class="icon-btn" title="Toggle sidebar (⌘B)">☰</button>
         <div class="ctx">
           <button id="dirBtn" class="chip" title="Working directory">📁 <span id="dirLabel">…</span></button>
-          <button id="modelBtn" class="chip" title="Model (⌘K)">◆ <span id="modelLabel">…</span></button>
-          <button id="modeBtn" class="chip mode" title="Permission mode (⇧Tab)">🔨 Ask</button>
         </div>
         <div class="spacer"></div>
         <span id="usageLabel" class="usage" title="Session tokens · estimated cost"></span>
@@ -41,9 +39,16 @@
         <div id="queueNote" class="queue-note" style="display:none"></div>
         <div id="popup" class="popup" style="display:none"></div>
         <div class="composer">
-          <textarea id="input" rows="1" placeholder="Ask anything — @ to mention a file, / for commands…"></textarea>
-          <button id="sendBtn" class="send" title="Send (Enter)">↑</button>
-          <button id="stopBtn" class="send stop" style="display:none" title="Stop (Esc)">■</button>
+          <div class="composer-box">
+            <textarea id="input" rows="1" placeholder="Ask anything — @ to mention a file, / for commands…"></textarea>
+            <div class="composer-foot">
+              <button id="modeBtn" class="chip mode" title="Permission mode (⇧Tab)">🔨 Ask</button>
+              <div class="spacer"></div>
+              <button id="modelBtn" class="chip model-chip" title="Model (⌘K)">◆ <span id="modelLabel">…</span></button>
+              <button id="sendBtn" class="send" title="Send (Enter)">↑</button>
+              <button id="stopBtn" class="send stop" style="display:none" title="Stop (Esc)">■</button>
+            </div>
+          </div>
         </div>
       </footer>
     </div>
