@@ -10,6 +10,7 @@ const http = require('http');
 const { execFile, spawn } = require('child_process');
 const { Session } = require('../agent/agent');
 const { McpClient } = require('../agent/mcp');
+const { streamChat } = require('../agent/provider');
 
 // Use the OS resolver instead of Chromium's built-in async DNS — the built-in one
 // fails (ERR_NAME_NOT_RESOLVED) under split-tunnel VPNs, which breaks the webview.
@@ -226,6 +227,7 @@ function foldEvent(rec, e) {
     }
     rec.updatedAt = Date.now();
     saveSession(rec);
+    generateSuggestion(rec);   // fire-and-forget: ghost-text next-message suggestion
   }
   else if (e.type === 'error') { flushAssistant(rec); rec.transcript.push({ t: 'err', text: e.message }); saveSession(rec); }
   else if (e.type === 'aborted') { flushAssistant(rec); rec.transcript.push({ t: 'note', text: 'stopped.' }); saveSession(rec); }
@@ -979,6 +981,28 @@ async function doAppshot() {
   if (win) { win.show(); win.focus(); }
 }
 
+// ---- ghost-text suggestions: after each turn, a cheap model drafts the user's
+// likely next message; the composer shows it as placeholder text, Tab accepts it.
+async function generateSuggestion(rec) {
+  const cfg = loadConfig();
+  if (!cfg.apiKey || cfg.suggestions === false) return;
+  const tail = rec.transcript.slice(-6)
+    .map((i) => i.t === 'user' ? 'USER: ' + i.text : i.t === 'assistant' ? 'ASSISTANT: ' + (i.text || '').slice(0, 600) : '')
+    .filter(Boolean).join('\n').slice(-2500);
+  if (!tail) return;
+  try {
+    const res = await streamChat({
+      apiKey: cfg.apiKey, model: 'deepseek/deepseek-v4-flash', tools: null,
+      messages: [
+        { role: 'system', content: 'You draft the user\'s most likely NEXT message in this coding-assistant conversation: one short, actionable instruction that continues the work (a natural follow-up, verification step, or next feature). Reply with ONLY that message. Max 12 words. No quotes, no explanations.' },
+        { role: 'user', content: tail },
+      ],
+    });
+    const text = (res.content || '').trim().replace(/^["'`]+|["'`]+$/g, '').split('\n')[0].slice(0, 120);
+    if (text) sendToUI('suggest', { sessionId: rec.id, text });
+  } catch {}
+}
+
 // ---- local AI-spend ledger: one number per local day, written on every turn -------
 const spendPath = () => path.join(app.getPath('userData'), 'spend.json');
 function localDay(dt) {
@@ -1109,7 +1133,7 @@ ipcMain.handle('open-in', (_e, { id, target }) => {
 // ---- IPC: config ---------------------------------------------------------------
 ipcMain.handle('get-config', () => {
   const c = loadConfig();
-  return { hasKey: !!c.apiKey, model: c.model, mode: c.mode, cwd: c.cwd, sandboxBash: c.sandboxBash !== false };
+  return { hasKey: !!c.apiKey, model: c.model, mode: c.mode, cwd: c.cwd, sandboxBash: c.sandboxBash !== false, suggestions: c.suggestions !== false };
 });
 ipcMain.handle('set-config', (_e, patch) => {
   const c = loadConfig();

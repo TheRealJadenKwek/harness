@@ -398,6 +398,7 @@ async function activate(id) {
   maybeShowApproval();
   if (S.panel === 'changes') refreshGit();
   else if (S.panel === 'files') refreshFiles();
+  showSuggestion(rec);
   $('input').focus();
 }
 
@@ -519,6 +520,7 @@ async function onSend() {
   const images = (rec.attachments || []).map((a) => a.dataUrl).filter(Boolean);
   if (!text && !images.length) return;
   $('input').value = ''; $('input').style.height = 'auto'; hidePopup();
+  rec.suggestion = null; showSuggestion(rec);
   if (text.startsWith('/') && runSlash(rec, text)) return;
   rec.attachments = []; renderAttachRow();
   sendText(rec, text || 'See the attached image(s).', images);
@@ -661,8 +663,22 @@ function choosePopup(idx) {
   hidePopup(); i.focus();
 }
 
-// ---------------------------------------------------------------- composer keys
+// ---------------------------------------------------------------- ghost-text suggestions (Tab to accept)
 const input = $('input');
+const DEFAULT_PLACEHOLDER = input.placeholder;
+function showSuggestion(rec) {
+  input.placeholder = (rec && rec.suggestion && !input.value)
+    ? rec.suggestion + '   ⇥ tab'
+    : DEFAULT_PLACEHOLDER;
+}
+H.onSuggest(({ sessionId, text }) => {
+  const rec = S.recs.get(sessionId);
+  if (!rec) return;
+  rec.suggestion = text;
+  if (sessionId === S.active) showSuggestion(rec);
+});
+
+// ---------------------------------------------------------------- composer keys
 // paste an image straight from the clipboard (⌘V) → attaches like the + menu does
 input.addEventListener('paste', (e) => {
   const rec = active(); if (!rec) return;
@@ -690,6 +706,19 @@ input.addEventListener('keydown', (ev) => {
     if (ev.key === 'ArrowUp') { ev.preventDefault(); pop.sel = Math.max(pop.sel - 1, 0); renderPopup(); return; }
     if (ev.key === 'Tab' || ev.key === 'Enter') { ev.preventDefault(); choosePopup(pop.sel); return; }
     if (ev.key === 'Escape') { ev.preventDefault(); hidePopup(); return; }
+  }
+  // Tab accepts the ghost-text suggestion when the composer is empty
+  if (ev.key === 'Tab' && !ev.shiftKey && !pop.mode) {
+    const rec = active();
+    if (rec && rec.suggestion && !input.value) {
+      ev.preventDefault();
+      input.value = rec.suggestion;
+      rec.suggestion = null;
+      showSuggestion(rec);
+      input.dispatchEvent(new Event('input'));
+      input.setSelectionRange(input.value.length, input.value.length);
+      return;
+    }
   }
   if (ev.key === 'Enter' && !ev.shiftKey) { ev.preventDefault(); onSend(); return; }
   if (ev.key === 'Escape') {
@@ -1222,9 +1251,10 @@ $('settingsBtn').onclick = () => {
   $('settingsSheet').style.display = 'flex';
   $('keyInput').value = '';
   renderMcpList(); renderSkillsList(); renderPluginsList(); renderSpend(); renderRules();
-  H.getConfig().then((c) => { $('sandboxToggle').checked = !!c.sandboxBash; });
+  H.getConfig().then((c) => { $('sandboxToggle').checked = !!c.sandboxBash; $('suggestToggle').checked = !!c.suggestions; });
 };
 $('sandboxToggle').onchange = () => H.setConfig({ sandboxBash: $('sandboxToggle').checked });
+$('suggestToggle').onchange = () => H.setConfig({ suggestions: $('suggestToggle').checked });
 async function renderRules() {
   const rules = await H.rulesList();
   const box = $('rulesList'); box.innerHTML = '';

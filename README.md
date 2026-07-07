@@ -23,6 +23,7 @@ Built from scratch (a real agent loop, not a wrapper). Electron GUI + a zero-dep
 - **Project memory** — `HARNESS.md` (or `AGENTS.md`/`CLAUDE.md`) in the working directory loads into the system prompt every turn.
 - **Works with non-tool-calling models** — a ReAct text protocol kicks in automatically for models without native function calling (detected from the catalog), so old/nostalgic models can still drive the full agent loop.
 - **Paste images** — ⌘V an image straight into the composer.
+- **Suggested replies** — after each turn a ghost-text draft of your likely next message appears in the composer; **⇥ Tab** accepts it (toggle in Settings).
 - **Message queueing** — type while the agent is working; messages send when the turn ends.
 - **Model picker** (⌘K) — the full OpenRouter catalog (300+), searchable, with pricing and context length, cached for instant open. Type any model id, including ones not in the list.
 - **＋ attach menu** (⌘U) — add photos (sent to vision models as real image input), files (inserted as @mentions), or a folder; jump to slash commands.

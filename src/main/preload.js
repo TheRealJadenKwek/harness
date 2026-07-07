@@ -56,6 +56,7 @@ contextBridge.exposeInMainWorld('harness', {
   skillSave: (name, content) => ipcRenderer.invoke('skill-save', { name, content }),
   skillDelete: (name) => ipcRenderer.invoke('skill-delete', name),
   onAppshot: (cb) => ipcRenderer.on('appshot', (_e, a) => cb(a)),
+  onSuggest: (cb) => ipcRenderer.on('suggest', (_e, a) => cb(a)),
   onPreviewOpen: (cb) => ipcRenderer.on('preview-open', (_e, a) => cb(a)),
 
   // usage + attachments
