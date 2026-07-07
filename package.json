@@ -1,6 +1,6 @@
 {
   "name": "harness-code",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "description": "Your own OpenRouter coding agent, on the desktop.",
   "main": "src/main/main.js",
   "author": "Jaden Kwek",

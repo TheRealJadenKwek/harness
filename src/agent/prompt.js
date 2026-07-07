@@ -16,7 +16,9 @@ How you work:
 - Keep changes minimal and match the surrounding style. Explain what you did concisely.
 - After editing, verify when practical (e.g. run tests or the file) via bash.
 - When the task is complete, stop calling tools and give a short summary of what changed.
-- Never invent file contents — read first. Paths are relative to the working directory.`;
+- Never invent file contents — read first. Paths are relative to the working directory.
+- The user may reference files as @relative/path — treat those as file paths in this project and read them when relevant.
+- Format answers in markdown: fenced code blocks with a language tag for code, backticks for paths/identifiers.`;
 }
 
 module.exports = { systemPrompt };

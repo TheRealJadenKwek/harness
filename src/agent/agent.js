@@ -24,6 +24,37 @@ class Session {
   setMode(m) { this.mode = m; this.messages[0] = { role: 'system', content: systemPrompt(this.cwd, this.mode) }; }
   setCwd(d) { this.cwd = d; this.messages[0] = { role: 'system', content: systemPrompt(this.cwd, this.mode) }; }
 
+  // Restore a persisted conversation (message history saved to disk by the host).
+  loadMessages(msgs) {
+    if (Array.isArray(msgs) && msgs.length) this.messages = msgs;
+    this.messages[0] = { role: 'system', content: systemPrompt(this.cwd, this.mode) };
+  }
+
+  // Clear the conversation back to a fresh system prompt.
+  reset() { this.messages = [{ role: 'system', content: systemPrompt(this.cwd, this.mode) }]; }
+
+  // Compact: ask the model to summarize the session, then replace the history with
+  // that summary so long sessions keep fitting in context (like /compact in Claude Code).
+  async compact(signal) {
+    const req = [...this.messages, {
+      role: 'user',
+      content: 'Summarize this entire session so far for your own future reference: the task(s), every file read or changed (with paths), key decisions, current state, and what remains. Be complete but concise. Reply with ONLY the summary.',
+    }];
+    const res = await streamChat({
+      apiKey: this.apiKey, baseUrl: this.baseUrl, model: this.model,
+      messages: req, tools: null, signal,
+      onText: (d) => this.emit({ type: 'text', delta: d }),
+    });
+    const summary = res.content || '';
+    this.messages = [
+      { role: 'system', content: systemPrompt(this.cwd, this.mode) },
+      { role: 'user', content: '[Context was compacted. Summary of the session so far:]\n\n' + summary },
+      { role: 'assistant', content: 'Understood — I have the full context from that summary and will continue from there.' },
+    ];
+    this.emit({ type: 'compacted', summary });
+    return summary;
+  }
+
   async send(userText, signal) {
     this.messages.push({ role: 'user', content: userText });
     const { tools, schemas } = makeTools({

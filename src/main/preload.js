@@ -3,14 +3,34 @@
 const { contextBridge, ipcRenderer } = require('electron');
 
 contextBridge.exposeInMainWorld('harness', {
+  // config
   getConfig: () => ipcRenderer.invoke('get-config'),
   setConfig: (patch) => ipcRenderer.invoke('set-config', patch),
-  pickDir: () => ipcRenderer.invoke('pick-dir'),
-  listModels: () => ipcRenderer.invoke('list-models'),
-  newSession: () => ipcRenderer.invoke('new-session'),
-  send: (text) => ipcRenderer.invoke('send', text),
-  abort: () => ipcRenderer.invoke('abort'),
+
+  // sessions
+  sessionsList: () => ipcRenderer.invoke('sessions-list'),
+  sessionCreate: (opts) => ipcRenderer.invoke('session-create', opts || {}),
+  sessionDelete: (id) => ipcRenderer.invoke('session-delete', id),
+  sessionGet: (id) => ipcRenderer.invoke('session-get', id),
+  sessionRename: (id, title) => ipcRenderer.invoke('session-rename', { id, title }),
+  sessionConfig: (id, patch) => ipcRenderer.invoke('session-config', { id, patch }),
+  sessionSend: (id, text) => ipcRenderer.invoke('session-send', { id, text }),
+  sessionAbort: (id) => ipcRenderer.invoke('session-abort', id),
+  sessionClear: (id) => ipcRenderer.invoke('session-clear', id),
+  sessionCompact: (id) => ipcRenderer.invoke('session-compact', id),
+
+  // pickers / catalog / project
+  pickDir: (id) => ipcRenderer.invoke('pick-dir', id),
+  listModels: (force) => ipcRenderer.invoke('list-models', !!force),
+  listFiles: (id) => ipcRenderer.invoke('list-files', id),
+  gitStatus: (id) => ipcRenderer.invoke('git-status', id),
+  gitDiff: (id, file) => ipcRenderer.invoke('git-diff', { id, file }),
+  openExternal: (url) => ipcRenderer.invoke('open-external', url),
+  openSessionsFolder: () => ipcRenderer.invoke('open-sessions-folder'),
+
+  // approvals + events
   respondApproval: (id, approved) => ipcRenderer.send('approval-response', { id, approved }),
   onEvent: (cb) => ipcRenderer.on('agent-event', (_e, ev) => cb(ev)),
   onApproval: (cb) => ipcRenderer.on('approval', (_e, a) => cb(a)),
+  onSessionsUpdated: (cb) => ipcRenderer.on('sessions-updated', () => cb()),
 });
