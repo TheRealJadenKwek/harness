@@ -338,3 +338,11 @@ h3 { margin: 2px 0 4px; }
 /* checkpoint revert line */
 .ckpt { cursor: pointer; border-radius: 6px; padding: 2px 6px; margin-left: -6px; }
 .ckpt:hover { background: var(--panel2); color: var(--text); }
+
+/* sidebar search + voice + discard */
+.sess-search { margin: 0 8px 4px; background: var(--panel2); color: var(--text); border: 1px solid var(--border); border-radius: 8px; padding: 6px 10px; font: inherit; font-size: 12.5px; }
+.sess-search:focus { outline: none; border-color: var(--muted); }
+#micBtn.rec { color: var(--red); border-color: var(--red); animation: pulse 1s infinite; }
+.gf .gf-x { display: none; margin-left: auto; border: none; background: transparent; color: var(--muted); cursor: pointer; font-size: 11px; padding: 0 3px; border-radius: 4px; flex: none; }
+.gf:hover .gf-x { display: block; }
+.gf .gf-x:hover { color: var(--red); }

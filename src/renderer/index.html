@@ -15,6 +15,7 @@
         <div class="brand">⬡ Harness</div>
         <button id="newBtn" class="icon-btn" title="New chat (⌘N)">＋</button>
       </div>
+      <input id="sessSearch" class="sess-search" placeholder="Search chats…" autocomplete="off">
       <div id="sessionList" class="session-list"></div>
       <div class="side-foot">
         <button id="settingsBtn" class="side-foot-btn">⚙ Settings</button>
@@ -71,6 +72,7 @@
             <textarea id="input" rows="1" placeholder="Ask anything — @ to mention a file, / for commands…"></textarea>
             <div class="composer-foot">
               <button id="plusBtn" class="chip model-chip" title="Attach (⌘U)">＋</button>
+              <button id="micBtn" class="chip model-chip" title="Voice input (local whisper)">🎙</button>
               <button id="modeBtn" class="chip mode" title="Permission mode (⇧Tab)">🔨 Ask</button>
               <div class="spacer"></div>
               <button id="effortBtn" class="chip model-chip" title="Reasoning effort">Effort</button>
@@ -194,6 +196,15 @@
           <div id="spendGrid" class="sc-grid"></div>
           <div id="spendBars" class="spend-bars" title="Last 14 days"></div>
           <p class="muted">Harness-only, computed from OpenRouter pricing per turn. The account line includes everything on your key.</p>
+          <div class="menu-sep"></div>
+          <h3>Updates</h3>
+          <div class="row" style="justify-content:flex-start;align-items:center;gap:10px">
+            <button id="updateBtn" class="sheet-close">Check for updates</button>
+            <span id="updateStatus" class="muted"></span>
+          </div>
+          <div class="menu-sep"></div>
+          <h3>Hooks</h3>
+          <p class="muted">Optional <code>~/.harness-code/hooks.json</code>: <code>{"pre_tool": "cmd", "post_tool": "cmd"}</code>. pre_tool runs before every tool call (env <code>HC_TOOL</code>, <code>HC_ARGS</code>, <code>HC_CWD</code>) — a non-zero exit blocks the call with stderr as the reason.</p>
           <div class="menu-sep"></div>
           <h3>Appshots</h3>
           <p class="muted">Press <b>⌘⇧H</b> anywhere on your Mac to capture the screen and attach it to the active chat — Harness comes to the front with the shot ready to send. Requires Screen Recording permission for Harness Code (System Settings → Privacy).</p>

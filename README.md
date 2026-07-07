@@ -24,12 +24,16 @@ Built from scratch (a real agent loop, not a wrapper). Electron GUI + a zero-dep
 - **Works with non-tool-calling models** — a ReAct text protocol kicks in automatically for models without native function calling (detected from the catalog), so old/nostalgic models can still drive the full agent loop.
 - **Paste images** — ⌘V an image straight into the composer.
 - **Suggested replies** — after each turn a ghost-text draft of your likely next message appears in the composer; **⇥ Tab** accepts it (toggle in Settings).
+- **Voice input** — 🎙 records, transcribes **locally** via whisper.cpp (nothing leaves the Mac), and drops the text into the composer.
+- **Model-generated chat titles**, **cross-session search** (sidebar box searches titles + full transcripts), **per-file discard** in the Changes panel.
+- **Hooks** — `~/.harness-code/hooks.json` pre_tool/post_tool commands; a non-zero pre_tool exit vetoes the tool call.
+- **Self-update** — Settings → Check for updates: pulls from GitHub, refreshes the installed app, offers relaunch.
 - **Message queueing** — type while the agent is working; messages send when the turn ends.
 - **Model picker** (⌘K) — the full OpenRouter catalog (300+), searchable, with pricing and context length, cached for instant open. Type any model id, including ones not in the list.
 - **＋ attach menu** (⌘U) — add photos (sent to vision models as real image input), files (inserted as @mentions), or a folder; jump to slash commands.
 - **Reasoning effort selector** — faster ↔ smarter per session (OpenRouter unified `reasoning.effort`).
 - **Context & usage popover** — click the token meter: context-window fill bar for the current model, session cost, and your live OpenRouter credit balance.
-- **MCP connectors** — add stdio MCP servers in Settings; their tools are advertised to every model as `mcp__server__tool`, approval-gated like everything else.
+- **MCP connectors** — stdio servers by command, or **remote servers by URL** (`https://… [bearer-token]`, Streamable HTTP); tools advertised as `mcp__server__tool`, approval-gated like everything else.
 - **Skills** — markdown playbooks in `~/.harness-code/skills/`, invoked as `/name` from the composer.
 - **Plugins** — installable bundles of skills + MCP servers (`plugin.json` + `skills/*.md`), from a local folder or git URL; toggle from the ＋ menu or Settings. Plugin servers run with cwd = the plugin folder and may use `${PLUGIN_DIR}`.
 - **Agent browser** — `browser_open/read/click/fill/eval` tools drive the visible Preview panel, so you watch the model browse.

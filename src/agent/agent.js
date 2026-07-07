@@ -24,6 +24,7 @@ class Session {
     //     gate(name,args) -> {kind,detail,danger} | null (null = no approval needed) }
     this.extraTools = opts.extraTools || null;
     this.textTools = !!opts.textTools;   // ReAct-style text protocol for models without native tool calling
+    this.hooks = opts.hooks || null;     // { pre(name,args)->{ok,reason}, post(name,args,result) }
     this.sandbox = opts.sandbox !== false;   // Seatbelt-wrap bash (macOS)
     this._steer = [];                        // mid-turn user interjections
     this.messages = [this._sys()];
@@ -217,7 +218,14 @@ class Session {
         this.emit({ type: 'tool_call', name: tc.function.name, args });
         const tool = tools[tc.function.name];
         let result;
-        if (tool) {
+        let hookBlocked = false;
+        if (this.hooks) {   // user pre_tool hook can veto any tool call
+          try {
+            const h = await this.hooks.pre(tc.function.name, args);
+            if (h && !h.ok) { result = { error: 'blocked by pre_tool hook: ' + (h.reason || '(no reason)') }; hookBlocked = true; }
+          } catch {}
+        }
+        if (hookBlocked) { /* result already set */ } else if (tool) {
           try { result = await tool.run(args); }
           catch (e) { result = { error: String(e.message || e) }; }
         } else if (this.extraTools && this.extraTools.has(tc.function.name)) {
@@ -229,6 +237,7 @@ class Session {
             catch (e) { result = { error: String(e.message || e) }; }
           }
         } else result = { error: 'unknown tool: ' + tc.function.name };
+        if (this.hooks && !hookBlocked) { try { this.hooks.post(tc.function.name, args, result); } catch {} }
         // Tool results are text-only in the OpenAI format. When a tool returns an
         // image (computer_screenshot), strip it from the result and inject it as a
         // follow-up user message so vision models actually SEE it.

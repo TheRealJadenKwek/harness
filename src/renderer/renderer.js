@@ -260,7 +260,8 @@ function sessEl(rec, badge) {
 function renderSidebar() {
   const box = $('sessionList'); box.innerHTML = '';
   const header = (t) => { const h = document.createElement('div'); h.className = 'side-sec'; h.textContent = t; box.appendChild(h); return h; };
-  const metas = S.order.map((id) => S.recs.get(id)).filter(Boolean);
+  let metas = S.order.map((id) => S.recs.get(id)).filter(Boolean);
+  if (S.searchIds) metas = metas.filter((r) => S.searchIds.includes(r.meta.id));   // cross-session search filter
   const act = metas.filter((r) => !r.meta.archived);
   const pinned = act.filter((r) => r.meta.pinned);
   const groups = {};
@@ -663,6 +664,70 @@ function choosePopup(idx) {
   hidePopup(); i.focus();
 }
 
+// ---------------------------------------------------------------- cross-session search
+let searchTimer = null;
+$('sessSearch').addEventListener('input', () => {
+  clearTimeout(searchTimer);
+  searchTimer = setTimeout(async () => {
+    const q = $('sessSearch').value.trim();
+    S.searchIds = q ? await H.sessionsSearch(q) : null;
+    renderSidebar();
+  }, 200);
+});
+$('sessSearch').addEventListener('keydown', (e) => {
+  if (e.key === 'Escape') { $('sessSearch').value = ''; S.searchIds = null; renderSidebar(); $('input').focus(); }
+  if (e.key === 'Enter' && S.searchIds && S.searchIds.length) { activate(S.searchIds[0]); }
+});
+
+// ---------------------------------------------------------------- voice input (local whisper)
+let recState = null;   // { recorder, chunks }
+$('micBtn').onclick = async () => {
+  if (recState) {   // stop → transcribe
+    recState.recorder.stop();
+    return;
+  }
+  const perm = await H.micPermission();
+  if (perm && perm.granted === false) { alert('Microphone access denied — grant it in System Settings → Privacy.'); return; }
+  let stream;
+  try { stream = await navigator.mediaDevices.getUserMedia({ audio: true }); }
+  catch (e) { alert('Microphone unavailable: ' + e.message); return; }
+  const recorder = new MediaRecorder(stream, { mimeType: 'audio/webm' });
+  const chunks = [];
+  recorder.ondataavailable = (e) => { if (e.data.size) chunks.push(e.data); };
+  recorder.onstop = async () => {
+    stream.getTracks().forEach((t) => t.stop());
+    recState = null;
+    $('micBtn').textContent = '…';
+    const blob = new Blob(chunks, { type: 'audio/webm' });
+    const buf = new Uint8Array(await blob.arrayBuffer());
+    let b64 = '';
+    for (let i = 0; i < buf.length; i += 0x8000) b64 += String.fromCharCode.apply(null, buf.subarray(i, i + 0x8000));
+    const r = await H.transcribe(btoa(b64));
+    $('micBtn').textContent = '🎙';
+    $('micBtn').classList.remove('rec');
+    if (r.error) { const rec = active(); if (rec) addLine(rec, 'err', '⚠︎ ' + r.error); return; }
+    if (r.text) {
+      input.value = (input.value ? input.value + ' ' : '') + r.text;
+      input.dispatchEvent(new Event('input'));
+      input.focus();
+    }
+  };
+  recorder.start();
+  recState = { recorder, chunks };
+  $('micBtn').textContent = '⏺';
+  $('micBtn').classList.add('rec');
+};
+
+// ---------------------------------------------------------------- self-update
+$('updateBtn').onclick = async () => {
+  $('updateStatus').textContent = 'checking…';
+  const r = await H.selfUpdate();
+  if (r.error) { $('updateStatus').textContent = '⚠︎ ' + r.error; return; }
+  if (/Already up to date/i.test(r.out || '')) { $('updateStatus').textContent = '✓ up to date'; return; }
+  $('updateStatus').textContent = '✓ updated (' + (r.out || '') + ')';
+  if (confirm('Update installed. Relaunch now?')) H.appRelaunch();
+};
+
 // ---------------------------------------------------------------- ghost-text suggestions (Tab to accept)
 const input = $('input');
 const DEFAULT_PLACEHOLDER = input.placeholder;
@@ -1013,8 +1078,15 @@ async function refreshGit() {
     const el = document.createElement('div');
     el.className = 'gf' + (f.path === S.selGitFile ? ' sel' : '');
     const stLetter = f.status === '??' ? 'U' : f.status[0];
-    el.innerHTML = '<span class="g-st ' + esc(stLetter) + '">' + esc(f.status === '??' ? 'U' : f.status) + '</span><span class="g-path">' + esc(f.path) + '</span>';
+    el.innerHTML = '<span class="g-st ' + esc(stLetter) + '">' + esc(f.status === '??' ? 'U' : f.status) + '</span><span class="g-path">' + esc(f.path) + '</span><button class="gf-x" title="Discard changes to this file">✕</button>';
     el.onclick = () => { S.selGitFile = f.path; refreshGitSel(); showFileDiff(f.path); };
+    el.querySelector('.gf-x').onclick = async (e) => {
+      e.stopPropagation();
+      if (!confirm('Discard changes to ' + f.path + '?' + (stLetter === 'U' ? ' (deletes the untracked file)' : ''))) return;
+      const r = await H.gitDiscard(rec.meta.id, f.path, f.status);
+      if (r.error) alert(r.error);
+      refreshGit();
+    };
     box.appendChild(el);
   }
   if (S.selGitFile && st.files.some((f) => f.path === S.selGitFile)) showFileDiff(S.selGitFile);

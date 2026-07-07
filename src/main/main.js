@@ -228,6 +228,7 @@ function foldEvent(rec, e) {
     rec.updatedAt = Date.now();
     saveSession(rec);
     generateSuggestion(rec);   // fire-and-forget: ghost-text next-message suggestion
+    generateTitle(rec);        // fire-and-forget: model-written chat title after the first exchange
   }
   else if (e.type === 'error') { flushAssistant(rec); rec.transcript.push({ t: 'err', text: e.message }); saveSession(rec); }
   else if (e.type === 'aborted') { flushAssistant(rec); rec.transcript.push({ t: 'note', text: 'stopped.' }); saveSession(rec); }
@@ -247,6 +248,7 @@ function ensureAgent(rec) {
       apiKey: cfg.apiKey, model: rec.model, cwd: rec.cwd, mode: rec.mode, effort: rec.effort || null,
       goal: rec.goal || null,
       textTools: !supportsTools(rec.model),
+      hooks: makeHooks(rec),
       extraTools: makeExtraTools(rec),
       emit: (e) => onAgentEvent(rec, e),
       approve: (kind, detail, opts = {}) => new Promise((resolve) => {
@@ -1002,6 +1004,114 @@ async function generateSuggestion(rec) {
     if (text) sendToUI('suggest', { sessionId: rec.id, text });
   } catch {}
 }
+
+// After the first exchange, replace the truncated-first-message title with a real one.
+async function generateTitle(rec) {
+  const cfg = loadConfig();
+  if (!cfg.apiKey || rec.titled) return;
+  if (rec.transcript.filter((i) => i.t === 'user').length !== 1) return;
+  rec.titled = true;
+  const tail = rec.transcript.slice(0, 8)
+    .map((i) => (i.t === 'user' ? 'USER: ' + i.text : i.t === 'assistant' ? 'ASSISTANT: ' + (i.text || '').slice(0, 300) : ''))
+    .filter(Boolean).join('\n').slice(0, 1800);
+  try {
+    const res = await streamChat({
+      apiKey: cfg.apiKey, model: 'deepseek/deepseek-v4-flash', tools: null,
+      messages: [
+        { role: 'system', content: 'Write a 3-6 word title for this coding chat. Reply with ONLY the title — no quotes, no trailing punctuation.' },
+        { role: 'user', content: tail },
+      ],
+    });
+    const t = (res.content || '').trim().replace(/^["'`]+|["'`.]+$/g, '').split('\n')[0].slice(0, 48);
+    if (t) { rec.title = t; saveSession(rec); sessionsChanged(); }
+  } catch {}
+}
+
+// ---- cross-session search (sidebar) --------------------------------------------------
+ipcMain.handle('sessions-search', (_e, q) => {
+  q = String(q || '').toLowerCase().trim();
+  if (!q) return null;
+  const ids = [];
+  for (const rec of sessions.values()) {
+    if (rec.title.toLowerCase().includes(q)) { ids.push(rec.id); continue; }
+    if (rec.transcript.some((i) => (i.text || '').toLowerCase().includes(q))) ids.push(rec.id);
+  }
+  return ids;
+});
+
+// ---- per-file discard in the Changes panel -------------------------------------------
+ipcMain.handle('git-discard', async (_e, { id, file, status }) => {
+  const rec = sessions.get(id);
+  if (!rec) return { error: 'no session' };
+  if (status === '??' || status === 'U') {
+    try { fs.rmSync(path.resolve(rec.cwd, file)); return { ok: true }; }
+    catch (e) { return { error: String(e.message || e).slice(0, 120) }; }
+  }
+  const r = await git(rec.cwd, ['checkout', '--', file]);
+  return r.err ? { error: (r.se || 'checkout failed').slice(0, 120) } : { ok: true };
+});
+
+// ---- tool hooks: ~/.harness-code/hooks.json {"pre_tool": "cmd", "post_tool": "cmd"} ----
+// pre_tool runs before every tool (env: HC_TOOL, HC_ARGS, HC_CWD); non-zero exit BLOCKS
+// the tool with stderr as the reason. post_tool runs after, fire-and-forget.
+function loadHooks() {
+  try { return JSON.parse(fs.readFileSync(path.join(app.getPath('home'), '.harness-code', 'hooks.json'), 'utf8')); }
+  catch { return {}; }
+}
+function runHook(cmd, env) {
+  return new Promise((resolve) => {
+    execFile('/bin/bash', ['-lc', cmd], { timeout: 10000, env: { ...process.env, ...env } },
+      (err, _so, se) => resolve(err ? { ok: false, reason: (se || err.message).trim().slice(0, 200) } : { ok: true }));
+  });
+}
+function makeHooks(rec) {
+  return {
+    pre: async (name, args) => {
+      const h = loadHooks();
+      if (!h.pre_tool) return { ok: true };
+      return runHook(h.pre_tool, { HC_TOOL: name, HC_ARGS: JSON.stringify(args || {}).slice(0, 8000), HC_CWD: rec.cwd });
+    },
+    post: (name, args, result) => {
+      const h = loadHooks();
+      if (h.post_tool) runHook(h.post_tool, { HC_TOOL: name, HC_ARGS: JSON.stringify(args || {}).slice(0, 8000), HC_CWD: rec.cwd, HC_RESULT: JSON.stringify(result || {}).slice(0, 8000) });
+    },
+  };
+}
+
+// ---- self-update: pull latest from GitHub, refresh the bundle, offer relaunch ---------
+ipcMain.handle('self-update', async () => {
+  const repo = path.join(app.getPath('home'), 'harness-code');
+  const pull = await git(repo, ['pull', '--ff-only']);
+  if (pull.err) return { error: ('git pull: ' + (pull.se || '')).slice(0, 200) };
+  const appDir = '/Applications/Harness Code.app/Contents/Resources/app';
+  try {
+    fs.cpSync(path.join(repo, 'src'), path.join(appDir, 'src'), { recursive: true });
+    fs.cpSync(path.join(repo, 'assets'), path.join(appDir, 'assets'), { recursive: true });
+    fs.cpSync(path.join(repo, 'package.json'), path.join(appDir, 'package.json'));
+  } catch (e) { return { error: 'copy failed: ' + String(e.message).slice(0, 150) }; }
+  await new Promise((res) => execFile('codesign', ['--force', '--deep', '--sign', 'Apple Development: JADEN CALEB KWEK (Y3L6295L7T)', '/Applications/Harness Code.app'], res));
+  return { ok: true, out: pull.so.split('\n')[0] };
+});
+ipcMain.handle('app-relaunch', () => { app.relaunch(); app.exit(0); });
+
+// ---- voice input: MediaRecorder audio → ffmpeg → local whisper-cli --------------------
+ipcMain.handle('transcribe', async (_e, b64) => {
+  const tmpIn = path.join(app.getPath('temp'), 'hc-voice.webm');
+  const tmpWav = path.join(app.getPath('temp'), 'hc-voice.wav');
+  try { fs.writeFileSync(tmpIn, Buffer.from(b64, 'base64')); } catch { return { error: 'write failed' }; }
+  const ff = await new Promise((res) => execFile('/opt/homebrew/bin/ffmpeg', ['-y', '-i', tmpIn, '-ar', '16000', '-ac', '1', tmpWav], { timeout: 30000 }, (err, _o, se) => res({ err, se })));
+  if (ff.err) return { error: 'ffmpeg: ' + String(ff.se || '').slice(-120) };
+  return new Promise((resolve) => {
+    execFile('/opt/homebrew/bin/whisper-cli',
+      ['-m', path.join(app.getPath('home'), '.whisper-models/ggml-base.en.bin'), '-f', tmpWav, '-np', '-nt'],
+      { timeout: 60000, maxBuffer: 1024 * 1024 },
+      (err, so, se) => resolve(err ? { error: 'whisper: ' + String(se || err.message).slice(-120) } : { text: (so || '').trim() }));
+  });
+});
+ipcMain.handle('mic-permission', async () => {
+  try { const { systemPreferences } = require('electron'); return { granted: await systemPreferences.askForMediaAccess('microphone') }; }
+  catch { return { granted: true }; }
+});
 
 // ---- local AI-spend ledger: one number per local day, written on every turn -------
 const spendPath = () => path.join(app.getPath('userData'), 'spend.json');
