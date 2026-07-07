@@ -31,7 +31,7 @@ function loadConfig() {
       if (k.OPENROUTER_API_KEY) cfg.apiKey = k.OPENROUTER_API_KEY;
     } catch {}
   }
-  cfg.model = cfg.model || 'z-ai/glm-4.6';
+  cfg.model = cfg.model || 'deepseek/deepseek-v4-pro';
   cfg.mode = cfg.mode || 'ask';
   cfg.cwd = cfg.cwd || app.getPath('home');
   cfg.modeByModel = cfg.modeByModel || {};   // remembered trust level per model
