@@ -43,6 +43,7 @@ function loadConfig() {
   cfg.modeByModel = cfg.modeByModel || {};     // remembered trust level per model
   cfg.effortByModel = cfg.effortByModel || {}; // remembered reasoning effort per model
   cfg.mcpServers = cfg.mcpServers || [];       // [{name, command, enabled}]
+  cfg.pluginsDisabled = cfg.pluginsDisabled || [];   // plugin dir names the user switched off
   return cfg;
 }
 function saveConfig(cfg) {
@@ -360,19 +361,93 @@ ipcMain.handle('file-read', (_e, { id, rel }) => {
   } catch (e) { return { error: String((e && e.message) || e) }; }
 });
 
+// ---- plugins: installable bundles of skills + MCP servers ---------------------------
+// A plugin is a directory in ~/.harness-code/plugins/<name>/ containing:
+//   plugin.json   { name, description, version, mcpServers: [{name, command}] }   (optional)
+//   skills/*.md   markdown skills, invoked as /<filename>
+const pluginsDir = () => path.join(app.getPath('home'), '.harness-code', 'plugins');
+function listPlugins() {
+  const cfg = loadConfig();
+  let dirs = [];
+  try { dirs = fs.readdirSync(pluginsDir(), { withFileTypes: true }).filter((e) => e.isDirectory()).map((e) => e.name); } catch { return []; }
+  return dirs.map((dir) => {
+    let manifest = {};
+    try { manifest = JSON.parse(fs.readFileSync(path.join(pluginsDir(), dir, 'plugin.json'), 'utf8')); } catch {}
+    let skills = [];
+    try { skills = fs.readdirSync(path.join(pluginsDir(), dir, 'skills')).filter((f) => f.endsWith('.md')).map((f) => f.replace(/\.md$/, '')); } catch {}
+    return {
+      dir, name: manifest.name || dir,
+      description: manifest.description || '', version: manifest.version || '',
+      mcpServers: Array.isArray(manifest.mcpServers) ? manifest.mcpServers.filter((s) => s && s.name && s.command) : [],
+      skills,
+      enabled: !cfg.pluginsDisabled.includes(dir),
+    };
+  });
+}
+ipcMain.handle('plugin-list', () => listPlugins());
+ipcMain.handle('plugin-toggle', async (_e, { dir, enabled }) => {
+  const cfg = loadConfig();
+  cfg.pluginsDisabled = cfg.pluginsDisabled.filter((d) => d !== dir);
+  if (!enabled) cfg.pluginsDisabled.push(dir);
+  saveConfig(cfg);
+  await syncMcpFromConfig();
+  sendToUI('mcp-updated', {});
+  return { ok: true };
+});
+ipcMain.handle('plugin-remove', async (_e, dir) => {
+  const target = path.join(pluginsDir(), dir);
+  if (path.dirname(target) === pluginsDir()) { try { fs.rmSync(target, { recursive: true, force: true }); } catch {} }
+  await syncMcpFromConfig();
+  sendToUI('mcp-updated', {});
+  return { ok: true };
+});
+ipcMain.handle('plugin-install', async (_e, source) => {
+  source = String(source || '').trim();
+  if (!source) return { ok: false, error: 'give a local folder path or a git URL' };
+  try { fs.mkdirSync(pluginsDir(), { recursive: true }); } catch {}
+  const isGit = /^(https?:\/\/|git@)/.test(source);
+  const base = (path.basename(source.replace(/\.git$/, '').replace(/\/+$/, '')) || 'plugin').replace(/[^\w.-]/g, '_').slice(0, 40);
+  const dest = path.join(pluginsDir(), base);
+  if (fs.existsSync(dest)) return { ok: false, error: 'a plugin named "' + base + '" already exists' };
+  if (isGit) {
+    const r = await new Promise((res) => execFile('git', ['clone', '--depth', '1', source, dest], { timeout: 60000 }, (err, _o, se) => res({ err, se })));
+    if (r.err) return { ok: false, error: 'git clone failed: ' + String(r.se || r.err.message).slice(0, 200) };
+  } else {
+    const src = source.replace(/^~(?=\/|$)/, app.getPath('home'));
+    if (!fs.existsSync(src) || !fs.statSync(src).isDirectory()) return { ok: false, error: 'not a directory: ' + src };
+    fs.cpSync(src, dest, { recursive: true });
+  }
+  // must contain at least a manifest or skills to count as a plugin
+  const has = fs.existsSync(path.join(dest, 'plugin.json')) || fs.existsSync(path.join(dest, 'skills'));
+  if (!has) { try { fs.rmSync(dest, { recursive: true, force: true }); } catch {} return { ok: false, error: 'no plugin.json or skills/ folder found' }; }
+  await syncMcpFromConfig();
+  sendToUI('mcp-updated', {});
+  return { ok: true, dir: base };
+});
+
 // ---- MCP servers (connectors) ------------------------------------------------------
 const mcpClients = new Map();   // name -> McpClient
 function sanitizeToolName(s) { return String(s).replace(/[^a-zA-Z0-9_]/g, '_').slice(0, 40); }
 function syncMcpFromConfig() {
   const cfg = loadConfig();
-  const want = new Map(cfg.mcpServers.filter((s) => s.enabled).map((s) => [s.name, s.command]));
+  const want = new Map(cfg.mcpServers.filter((s) => s.enabled).map((s) => [s.name, { command: s.command, cwd: null }]));
+  // Enabled plugins contribute their servers too, namespaced <plugin>_<server>.
+  // Plugin commands run with cwd = the plugin folder and may use ${PLUGIN_DIR}.
+  for (const p of listPlugins()) {
+    if (!p.enabled) continue;
+    const pdir = path.join(pluginsDir(), p.dir);
+    for (const s of p.mcpServers) {
+      want.set(sanitizeToolName(p.dir + '_' + s.name), { command: s.command.split('${PLUGIN_DIR}').join(pdir), cwd: pdir });
+    }
+  }
   for (const [name, client] of mcpClients) {
-    if (!want.has(name) || want.get(name) !== client.command) { client.stop(); mcpClients.delete(name); }
+    const w = want.get(name);
+    if (!w || w.command !== client.command || (w.cwd || null) !== (client.cwd || null)) { client.stop(); mcpClients.delete(name); }
   }
   const starts = [];
-  for (const [name, command] of want) {
+  for (const [name, w] of want) {
     if (!mcpClients.has(name)) {
-      const c = new McpClient(name, command);
+      const c = new McpClient(name, w.command, w.cwd);
       mcpClients.set(name, c);
       starts.push(c.start().then(() => sendToUI('mcp-updated', {})));
     }
@@ -381,12 +456,22 @@ function syncMcpFromConfig() {
 }
 function mcpStatuses() {
   const cfg = loadConfig();
-  return cfg.mcpServers.map((s) => {
+  const out = cfg.mcpServers.map((s) => {
     const c = mcpClients.get(s.name);
-    return { name: s.name, command: s.command, enabled: !!s.enabled,
+    return { name: s.name, command: s.command, enabled: !!s.enabled, source: 'user',
       status: c ? c.status : 'stopped', error: c ? c.error : null,
       tools: c ? c.tools.map((t) => t.name) : [] };
   });
+  for (const p of listPlugins()) {
+    for (const s of p.mcpServers) {
+      const key = sanitizeToolName(p.dir + '_' + s.name);
+      const c = mcpClients.get(key);
+      out.push({ name: key, command: s.command, enabled: p.enabled, source: 'plugin:' + p.dir,
+        status: c ? c.status : 'stopped', error: c ? c.error : null,
+        tools: c ? c.tools.map((t) => t.name) : [] });
+    }
+  }
+  return out;
 }
 ipcMain.handle('mcp-list', () => mcpStatuses());
 ipcMain.handle('mcp-add', async (_e, { name, command }) => {
@@ -536,15 +621,29 @@ function makeExtraTools() {
 // ---- skills: markdown playbooks in ~/.harness-code/skills, invoked as /name ---------
 const skillsDir = () => path.join(app.getPath('home'), '.harness-code', 'skills');
 ipcMain.handle('skills-list', () => {
-  let files = [];
-  try { files = fs.readdirSync(skillsDir()); } catch { return []; }
-  return files.filter((f) => f.endsWith('.md')).map((f) => {
+  const readSkill = (file, name, plugin) => {
     let content = '';
-    try { content = fs.readFileSync(path.join(skillsDir(), f), 'utf8'); } catch {}
-    const name = f.replace(/\.md$/, '');
+    try { content = fs.readFileSync(file, 'utf8'); } catch { return null; }
     const firstLine = (content.split('\n').find((l) => l.trim()) || '').replace(/^#+\s*/, '').slice(0, 100);
-    return { name, description: firstLine, content };
-  });
+    return { name, description: firstLine, content, plugin: plugin || null };
+  };
+  const out = [];
+  try {
+    for (const f of fs.readdirSync(skillsDir())) {
+      if (!f.endsWith('.md')) continue;
+      const s = readSkill(path.join(skillsDir(), f), f.replace(/\.md$/, ''), null);
+      if (s) out.push(s);
+    }
+  } catch {}
+  // enabled plugins contribute skills too
+  for (const p of listPlugins()) {
+    if (!p.enabled) continue;
+    for (const name of p.skills) {
+      const s = readSkill(path.join(pluginsDir(), p.dir, 'skills', name + '.md'), name, p.dir);
+      if (s) out.push(s);
+    }
+  }
+  return out;
 });
 ipcMain.handle('skill-save', (_e, { name, content }) => {
   name = sanitizeToolName(name || '');

@@ -590,22 +590,70 @@ async function attachFiles() {
   renderAttachRow();
   $('input').focus();
 }
+function openSettings(sec) {
+  $('settingsSheet').style.display = 'flex';
+  renderMcpList(); renderSkillsList(); renderPluginsList();
+  const b = document.querySelector('.snav[data-sec=' + sec + ']');
+  if (b) b.onclick();
+}
+async function renderPlusMenu(view) {
+  const box = $('plusMenu'); box.innerHTML = '';
+  const item = (html, fn) => {
+    const d = document.createElement('div'); d.className = 'menu-item'; d.innerHTML = html;
+    d.onmousedown = (e) => e.stopPropagation();
+    d.onclick = fn; box.appendChild(d); return d;
+  };
+  const sep = () => { const d = document.createElement('div'); d.className = 'menu-sep'; box.appendChild(d); };
+  if (view === 'root') {
+    item('📎 Add files or photos <span class="mi-hint">⌘U</span>', () => { hideMenus(); attachFiles(); });
+    item('📁 Add folder', async () => {
+      hideMenus();
+      const rec = active(); if (!rec) return;
+      const p = await H.pickFolderPath(rec.meta.id);
+      if (p) { const i = $('input'); i.value = (i.value ? i.value.replace(/\s?$/, ' ') : '') + '@' + p + '/ '; i.focus(); }
+    });
+    item('▸ Slash commands', () => { hideMenus(); const i = $('input'); i.value = '/'; i.focus(); i.dispatchEvent(new Event('input')); });
+    sep();
+    item('🔌 Connectors <span class="mi-hint">›</span>', (e) => { e.stopPropagation(); renderPlusMenu('connectors'); });
+    item('🧩 Plugins <span class="mi-hint">›</span>', (e) => { e.stopPropagation(); renderPlusMenu('plugins'); });
+  } else if (view === 'connectors') {
+    item('‹ Connectors', (e) => { e.stopPropagation(); renderPlusMenu('root'); });
+    sep();
+    const list = await H.mcpList();
+    if (!list.length) item('<span class="mi-hint">No MCP servers yet</span>', () => {});
+    for (const s of list) {
+      const dot = s.status === 'running' ? '🟢' : s.enabled ? '🔴' : '⚪';
+      item(dot + ' ' + esc(s.name) + ' <span class="mi-hint">' + (s.status === 'running' ? s.tools.length + ' tools · on' : s.enabled ? s.status : 'off') + '</span>',
+        async (e) => {
+          e.stopPropagation();
+          if (s.source && s.source.startsWith('plugin:')) await H.pluginToggle(s.source.slice(7), !s.enabled);
+          else await H.mcpToggle(s.name, !s.enabled);
+          renderPlusMenu('connectors');
+        });
+    }
+    sep();
+    item('Manage connectors…', () => { hideMenus(); openSettings('mcp'); });
+  } else if (view === 'plugins') {
+    item('‹ Plugins', (e) => { e.stopPropagation(); renderPlusMenu('root'); });
+    sep();
+    const list = await H.pluginList();
+    if (!list.length) item('<span class="mi-hint">No plugins installed</span>', () => {});
+    for (const p of list) {
+      item((p.enabled ? '🟢 ' : '⚪ ') + esc(p.name) +
+        ' <span class="mi-hint">' + p.skills.length + ' skills · ' + p.mcpServers.length + ' servers</span>',
+        async (e) => { e.stopPropagation(); await H.pluginToggle(p.dir, !p.enabled); await loadSkills(); renderPlusMenu('plugins'); });
+    }
+    sep();
+    item('Manage plugins…', () => { hideMenus(); openSettings('plugins'); });
+  }
+}
 $('plusBtn').onclick = () => {
   const open = $('plusMenu').style.display !== 'none';
   hideMenus();
-  if (!open) $('plusMenu').style.display = '';
+  if (open) return;
+  renderPlusMenu('root');
+  $('plusMenu').style.display = '';
 };
-$('plusMenu').addEventListener('click', async (e) => {
-  const it = e.target.closest('.menu-item'); if (!it) return;
-  hideMenus();
-  const rec = active(); if (!rec) return;
-  if (it.dataset.act === 'attach') attachFiles();
-  else if (it.dataset.act === 'folder') {
-    const p = await H.pickFolderPath(rec.meta.id);
-    if (p) { const i = $('input'); i.value = (i.value ? i.value.replace(/\s?$/, ' ') : '') + '@' + p + '/ '; i.focus(); }
-  }
-  else if (it.dataset.act === 'slash') { const i = $('input'); i.value = '/'; i.focus(); i.dispatchEvent(new Event('input')); }
-});
 
 // ---- usage popover: context window + session cost + OpenRouter credits
 $('usageLabel').onclick = async () => {
@@ -963,7 +1011,7 @@ async function chooseModel(v) {
 $('settingsBtn').onclick = () => {
   $('settingsSheet').style.display = 'flex';
   $('keyInput').value = '';
-  renderMcpList(); renderSkillsList();
+  renderMcpList(); renderSkillsList(); renderPluginsList();
 };
 $('settingsClose').onclick = () => { $('settingsSheet').style.display = 'none'; };
 $('sessionsFolderBtn').onclick = () => H.openSessionsFolder();
@@ -1028,6 +1076,34 @@ $('skillSaveBtn').onclick = async () => {
   if (r.error) alert(r.error);
   else { $('skillName').value = ''; $('skillContent').value = ''; }
   renderSkillsList();
+};
+
+// Plugins section
+async function renderPluginsList() {
+  const list = await H.pluginList();
+  const box = $('pluginList'); box.innerHTML = '';
+  if (!list.length) { box.innerHTML = '<div class="muted">No plugins installed — add one below.</div>'; return; }
+  for (const p of list) {
+    const row = document.createElement('div'); row.className = 'sl-row';
+    row.innerHTML = '<span class="dot ' + (p.enabled ? 'ok' : 'bad') + '">●</span>' +
+      '<div class="sl-main"><b>' + esc(p.name) + '</b> <span class="mi-hint">' + esc(p.version || '') + ' ' + esc(p.description || '') + '</span>' +
+      '<div class="mi-hint">' + p.skills.length + ' skills' + (p.skills.length ? ' (' + p.skills.map((s) => '/' + s).join(' ') + ')' : '') +
+      ' · ' + p.mcpServers.length + ' MCP servers</div></div>' +
+      '<button class="mini-btn" data-a="toggle">' + (p.enabled ? 'Disable' : 'Enable') + '</button>' +
+      '<button class="mini-btn" data-a="remove">✕</button>';
+    row.querySelector('[data-a=toggle]').onclick = async () => { await H.pluginToggle(p.dir, !p.enabled); await loadSkills(); renderPluginsList(); renderMcpList(); };
+    row.querySelector('[data-a=remove]').onclick = async () => {
+      if (confirm('Uninstall plugin "' + p.name + '"? This deletes its folder.')) { await H.pluginRemove(p.dir); await loadSkills(); renderPluginsList(); renderMcpList(); }
+    };
+    box.appendChild(row);
+  }
+}
+$('pluginInstallBtn').onclick = async () => {
+  const r = await H.pluginInstall($('pluginSource').value.trim());
+  if (r.error) alert(r.error);
+  else $('pluginSource').value = '';
+  await loadSkills();
+  renderPluginsList(); renderMcpList();
 };
 
 // ---------------------------------------------------------------- appshot + agent-driven browser

@@ -90,12 +90,8 @@
             <div class="menu-item" data-mode="bypass">⚠ Bypass permissions <span class="mi-hint">5</span></div>
           </div>
 
-          <!-- + attach menu -->
-          <div id="plusMenu" class="menu up-menu" style="display:none">
-            <div class="menu-item" data-act="attach">📎 Add files or photos <span class="mi-hint">⌘U</span></div>
-            <div class="menu-item" data-act="folder">📁 Add folder</div>
-            <div class="menu-item" data-act="slash">▸ Slash commands</div>
-          </div>
+          <!-- + attach menu (rendered dynamically: root / connectors / plugins views) -->
+          <div id="plusMenu" class="menu up-menu" style="display:none"></div>
 
           <!-- effort picker -->
           <div id="effortMenu" class="menu up-menu right-up" style="display:none">
@@ -169,6 +165,7 @@
         <button class="snav on" data-sec="general">General</button>
         <button class="snav" data-sec="mcp">Connectors · MCP</button>
         <button class="snav" data-sec="skills">Skills</button>
+        <button class="snav" data-sec="plugins">Plugins</button>
         <button class="snav" data-sec="shortcuts">Shortcuts</button>
         <div class="spacer"></div>
         <button id="settingsClose" class="sheet-close">Close</button>
@@ -209,6 +206,16 @@
           <input id="skillName" placeholder="name (e.g. deploy-checklist)" autocomplete="off">
           <textarea id="skillContent" rows="6" placeholder="# What this skill does&#10;Step-by-step instructions for the model…"></textarea>
           <div class="row" style="justify-content:flex-start"><button id="skillSaveBtn" class="primary">Save skill</button></div>
+        </div>
+
+        <div id="sec-plugins" class="ssec" style="display:none">
+          <h3>Plugins</h3>
+          <p class="muted">A plugin bundles <b>skills</b> and <b>MCP servers</b> in one installable folder: <code>plugin.json</code> (<code>{ name, description, mcpServers: [{name, command}] }</code>) plus <code>skills/*.md</code>. Installed to <code>~/.harness-code/plugins/</code>.</p>
+          <div id="pluginList" class="settings-list"></div>
+          <div class="menu-sep"></div>
+          <label>Install from a local folder path or a git URL</label>
+          <input id="pluginSource" placeholder="~/my-plugin  ·  https://github.com/user/repo" autocomplete="off">
+          <div class="row" style="justify-content:flex-start"><button id="pluginInstallBtn" class="primary">Install</button></div>
         </div>
 
         <div id="sec-shortcuts" class="ssec" style="display:none">

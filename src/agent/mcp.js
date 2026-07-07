@@ -5,9 +5,10 @@
 const { spawn } = require('child_process');
 
 class McpClient {
-  constructor(name, command) {
+  constructor(name, command, cwd) {
     this.name = name;
     this.command = command;
+    this.cwd = cwd || null;
     this.proc = null;
     this.seq = 0;
     this.pending = new Map();
@@ -22,7 +23,10 @@ class McpClient {
     this.status = 'starting';
     this.error = null;
     try {
-      this.proc = spawn('/bin/bash', ['-lc', this.command], { stdio: ['pipe', 'pipe', 'pipe'], env: process.env });
+      this.proc = spawn('/bin/bash', ['-lc', this.command], {
+        stdio: ['pipe', 'pipe', 'pipe'], env: process.env,
+        ...(this.cwd ? { cwd: this.cwd } : {}),
+      });
     } catch (e) {
       this.status = 'error'; this.error = String(e.message || e);
       return Promise.resolve();
