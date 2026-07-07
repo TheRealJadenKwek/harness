@@ -13,6 +13,7 @@ contextBridge.exposeInMainWorld('harness', {
   sessionDelete: (id) => ipcRenderer.invoke('session-delete', id),
   sessionGet: (id) => ipcRenderer.invoke('session-get', id),
   sessionRename: (id, title) => ipcRenderer.invoke('session-rename', { id, title }),
+  sessionMeta: (id, patch) => ipcRenderer.invoke('session-meta', { id, patch }),
   sessionConfig: (id, patch) => ipcRenderer.invoke('session-config', { id, patch }),
   sessionSend: (id, text, images, modelText) => ipcRenderer.invoke('session-send', { id, text, images, modelText }),
   sessionAbort: (id) => ipcRenderer.invoke('session-abort', id),

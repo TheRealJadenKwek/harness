@@ -202,31 +202,143 @@ function makeLocalRec(meta) {
   return rec;
 }
 
-function renderSidebar() {
-  const box = $('sessionList'); box.innerHTML = '';
-  for (const id of S.order) {
-    const rec = S.recs.get(id); if (!rec) continue;
-    const m = rec.meta;
-    const el = document.createElement('div'); el.className = 'sess' + (id === S.active ? ' active' : '');
-    const live = rec.approvals.length ? '<span class="s-live appr">⚠</span>' : (rec.streaming ? '<span class="s-live spin">●</span>' : '');
-    el.innerHTML = '<div class="s-title">' + esc(m.title) + '</div>' +
-      '<div class="s-sub">' + esc(shortModel(m.model)) + ' · ' + timeAgo(m.updatedAt) + '</div>' +
-      live + '<button class="s-x" title="Delete">✕</button>';
-    el.onclick = () => activate(id);
-    el.querySelector('.s-x').onclick = async (e) => {
-      e.stopPropagation();
-      if (!confirm('Delete "' + m.title + '"?')) return;
-      await H.sessionDelete(id);
-      if (S.active === id) S.active = null;
-      await refreshSessions();
-      if (!S.active) {
-        if (S.order.length) activate(S.order[0]);
-        else { const nm = await H.sessionCreate({}); await refreshSessions(); activate(nm.id); }
-      }
-    };
-    box.appendChild(el);
+async function deleteSession(id, title) {
+  if (!confirm('Delete "' + (title || 'this chat') + '"?')) return;
+  await H.sessionDelete(id);
+  if (S.active === id) S.active = null;
+  await refreshSessions();
+  if (!S.active) {
+    const next = S.order.find((sid) => S.recs.get(sid) && !S.recs.get(sid).meta.archived);
+    if (next) activate(next);
+    else { const nm = await H.sessionCreate({}); await refreshSessions(); activate(nm.id); }
   }
 }
+
+function sessEl(rec, badge) {
+  const m = rec.meta;
+  const el = document.createElement('div'); el.className = 'sess' + (m.id === S.active ? ' active' : '');
+  const live = rec.approvals.length ? '<span class="s-live appr">⚠</span>' : (rec.streaming ? '<span class="s-live spin">●</span>' : '');
+  el.innerHTML = '<div class="s-title">' + (m.unread ? '<span class="s-unread">●</span> ' : '') + (badge ? badge + ' ' : '') + esc(m.title) + '</div>' +
+    '<div class="s-sub">' + esc(shortModel(m.model)) + ' · ' + timeAgo(m.updatedAt) + '</div>' +
+    live + '<button class="s-x" title="Delete">✕</button>';
+  el.onclick = () => activate(m.id);
+  el.oncontextmenu = (e) => { e.preventDefault(); showCtxMenu(e.clientX, e.clientY, m.id); };
+  el.querySelector('.s-x').onclick = (e) => { e.stopPropagation(); deleteSession(m.id, m.title); };
+  return el;
+}
+
+function renderSidebar() {
+  const box = $('sessionList'); box.innerHTML = '';
+  const header = (t) => { const h = document.createElement('div'); h.className = 'side-sec'; h.textContent = t; box.appendChild(h); return h; };
+  const metas = S.order.map((id) => S.recs.get(id)).filter(Boolean);
+  const act = metas.filter((r) => !r.meta.archived);
+  const pinned = act.filter((r) => r.meta.pinned);
+  const groups = {};
+  const rest = [];
+  for (const r of act.filter((r) => !r.meta.pinned)) {
+    if (r.meta.group) (groups[r.meta.group] || (groups[r.meta.group] = [])).push(r);
+    else rest.push(r);
+  }
+  if (pinned.length) { header('Pinned'); pinned.forEach((r) => box.appendChild(sessEl(r, '📌'))); }
+  for (const g of Object.keys(groups).sort()) { header(g); groups[g].forEach((r) => box.appendChild(sessEl(r))); }
+  if (rest.length && (pinned.length || Object.keys(groups).length)) header('Chats');
+  rest.forEach((r) => box.appendChild(sessEl(r)));
+  const arch = metas.filter((r) => r.meta.archived);
+  if (arch.length) {
+    const h = header('▸ Archived (' + arch.length + ')');
+    h.classList.add('clickable');
+    if (S.showArchived) h.textContent = '▾ Archived (' + arch.length + ')';
+    h.onclick = () => { S.showArchived = !S.showArchived; renderSidebar(); };
+    if (S.showArchived) arch.forEach((r) => box.appendChild(sessEl(r)));
+  }
+}
+
+// ---- right-click context menu on chats -------------------------------------------
+let ctxEl = null;
+function hideCtxMenu() { if (ctxEl) { ctxEl.remove(); ctxEl = null; } }
+function showCtxMenu(x, y, id, view) {
+  hideCtxMenu();
+  const rec = S.recs.get(id); if (!rec) return;
+  const m = rec.meta;
+  ctxEl = document.createElement('div');
+  ctxEl.className = 'menu ctx-menu';
+  ctxEl.dataset.sessId = id;
+  const item = (html, fn, cls) => {
+    const d = document.createElement('div'); d.className = 'menu-item' + (cls ? ' ' + cls : ''); d.innerHTML = html;
+    d.onmousedown = (e) => e.stopPropagation();
+    d.onclick = fn; ctxEl.appendChild(d); return d;
+  };
+  const sep = () => { const d = document.createElement('div'); d.className = 'menu-sep'; ctxEl.appendChild(d); };
+  const patch = async (p) => { hideCtxMenu(); const nm = await H.sessionMeta(id, p); if (nm) rec.meta = nm; renderSidebar(); };
+
+  if (view === 'openin') {
+    item('‹ Open in', (e) => { e.stopPropagation(); reopen('root'); });
+    sep();
+    for (const [t, label] of [['finder', 'Finder'], ['terminal', 'Terminal'], ['vscode', 'VS Code']]) {
+      item(label, async () => { hideCtxMenu(); const r = await H.openIn(id, t); if (r && r.error) alert(r.error); });
+    }
+  } else if (view === 'group') {
+    item('‹ Move to group', (e) => { e.stopPropagation(); reopen('root'); });
+    sep();
+    const names = [...new Set([...S.recs.values()].map((r) => r.meta.group).filter(Boolean))].sort();
+    for (const g of names) item((m.group === g ? '✓ ' : '') + esc(g), () => patch({ group: g }));
+    item('＋ New group…', () => {
+      const g = prompt('Group name:'); if (g && g.trim()) patch({ group: g.trim().slice(0, 30) }); else hideCtxMenu();
+    });
+    if (m.group) { sep(); item('Remove from group', () => patch({ group: null })); }
+  } else {
+    item('Open in <span class="mi-hint">›</span>', (e) => { e.stopPropagation(); reopen('openin'); });
+    sep();
+    item((m.pinned ? 'Unpin' : 'Pin') + ' <span class="mi-hint">P</span>', () => patch({ pinned: !m.pinned }));
+    item('Mark as ' + (m.unread ? 'read' : 'unread') + ' <span class="mi-hint">U</span>', () => patch({ unread: !m.unread }));
+    item('Rename <span class="mi-hint">R</span>', () => {
+      const t = prompt('Rename chat:', m.title); if (t && t.trim()) patch({ title: t.trim() }); else hideCtxMenu();
+    });
+    item('Fork <span class="mi-hint">F</span>', async () => {
+      hideCtxMenu();
+      const nm = await H.sessionFork(id);
+      if (nm) { await refreshSessions(); activate(nm.id); }
+    });
+    sep();
+    item('Move to group <span class="mi-hint">›</span>', (e) => { e.stopPropagation(); reopen('group'); });
+    sep();
+    item((m.archived ? 'Unarchive' : 'Archive') + ' <span class="mi-hint">A</span>', async () => {
+      await patch({ archived: !m.archived });
+      if (!m.archived && S.active === id) {   // just archived the active chat
+        const next = S.order.find((sid) => S.recs.get(sid) && !S.recs.get(sid).meta.archived);
+        if (next) activate(next);
+        else { const nm = await H.sessionCreate({}); await refreshSessions(); activate(nm.id); }
+      }
+    });
+    item('Delete <span class="mi-hint">D</span>', () => { hideCtxMenu(); deleteSession(id, m.title); }, 'ctx-danger');
+  }
+  document.body.appendChild(ctxEl);
+  const rect = ctxEl.getBoundingClientRect();
+  ctxEl.style.left = Math.min(x, window.innerWidth - rect.width - 8) + 'px';
+  ctxEl.style.top = Math.min(y, window.innerHeight - rect.height - 8) + 'px';
+  ctxEl.style.right = 'auto';
+  function reopen(v) {
+    const lx = parseInt(ctxEl.style.left), ly = parseInt(ctxEl.style.top);
+    showCtxMenu(lx, ly, id, v);
+  }
+}
+document.addEventListener('mousedown', (e) => { if (ctxEl && !e.target.closest('.ctx-menu')) hideCtxMenu(); });
+document.addEventListener('keydown', (e) => {
+  if (!ctxEl) return;
+  const id = ctxEl.dataset.sessId;
+  const rec = S.recs.get(id);
+  if (!rec) { hideCtxMenu(); return; }
+  const m = rec.meta;
+  const patch = async (p) => { hideCtxMenu(); const nm = await H.sessionMeta(id, p); if (nm) rec.meta = nm; renderSidebar(); };
+  const k = e.key.toLowerCase();
+  if (e.key === 'Escape') { e.preventDefault(); e.stopPropagation(); hideCtxMenu(); }
+  else if (k === 'p') { e.preventDefault(); patch({ pinned: !m.pinned }); }
+  else if (k === 'u') { e.preventDefault(); patch({ unread: !m.unread }); }
+  else if (k === 'r') { e.preventDefault(); hideCtxMenu(); const t = prompt('Rename chat:', m.title); if (t && t.trim()) H.sessionMeta(id, { title: t.trim() }).then((nm) => { if (nm) rec.meta = nm; renderSidebar(); updateTitlebar(); }); }
+  else if (k === 'f') { e.preventDefault(); hideCtxMenu(); H.sessionFork(id).then(async (nm) => { if (nm) { await refreshSessions(); activate(nm.id); } }); }
+  else if (k === 'a') { e.preventDefault(); patch({ archived: !m.archived }); }
+  else if (k === 'd') { e.preventDefault(); hideCtxMenu(); deleteSession(id, m.title); }
+}, true);
 
 async function activate(id) {
   if (!S.recs.has(id)) return;
@@ -244,6 +356,7 @@ async function activate(id) {
   updateComposer();
   hidePopup();
   hideMenus();
+  if (rec.meta.unread) { rec.meta.unread = false; H.sessionMeta(id, { unread: false }); }
   renderAttachRow();
   maybeShowApproval();
   if (S.panel === 'changes') refreshGit();
@@ -328,6 +441,7 @@ H.onEvent((e) => {
 function endTurn(rec) {
   rec.streaming = false;
   if (rec.meta.id === S.active) updateComposer();
+  else { rec.meta.unread = true; H.sessionMeta(rec.meta.id, { unread: true }); }   // finished in the background
   renderSidebar();
   if (rec.queued.length) {
     const next = rec.queued.shift();

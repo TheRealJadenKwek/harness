@@ -310,3 +310,11 @@ h3 { margin: 2px 0 4px; }
 .sl-row .dot.ok { color: var(--green); } .sl-row .dot.bad { color: var(--red); } .sl-row .dot.run { color: var(--orange); animation: pulse 1s infinite; }
 .sc-grid { display: grid; grid-template-columns: 90px 1fr; gap: 5px 14px; font-size: 13px; }
 .sc-grid span:nth-child(odd) { font-family: var(--mono); color: var(--muted); }
+
+/* sidebar sections + context menu */
+.side-sec { color: var(--muted); font-size: 10.5px; text-transform: uppercase; letter-spacing: .5px; padding: 10px 10px 3px; user-select: none; }
+.side-sec.clickable { cursor: pointer; }
+.side-sec.clickable:hover { color: var(--text); }
+.s-unread { color: var(--blue); font-size: 9px; vertical-align: 2px; }
+.ctx-menu { position: fixed; min-width: 210px; }
+.menu-item.ctx-danger { color: var(--red); }

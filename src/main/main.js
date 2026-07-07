@@ -57,6 +57,7 @@ function metaOf(rec) {
   return {
     id: rec.id, title: rec.title, cwd: rec.cwd, model: rec.model, mode: rec.mode,
     effort: rec.effort || null, goal: rec.goal || null,
+    pinned: !!rec.pinned, unread: !!rec.unread, group: rec.group || null, archived: !!rec.archived,
     createdAt: rec.createdAt, updatedAt: rec.updatedAt, usage: rec.usage,
     streaming: !!rec.abort,
   };
@@ -69,6 +70,7 @@ function saveSession(rec) {
       meta: {
         id: rec.id, title: rec.title, cwd: rec.cwd, model: rec.model, mode: rec.mode,
         effort: rec.effort || null, goal: rec.goal || null,
+        pinned: !!rec.pinned, unread: !!rec.unread, group: rec.group || null, archived: !!rec.archived,
         createdAt: rec.createdAt, updatedAt: rec.updatedAt, usage: rec.usage,
       },
       messages: rec.agent ? rec.agent.messages : (rec.savedMessages || []),
@@ -819,6 +821,17 @@ ipcMain.handle('session-delete', (_e, id) => {
 ipcMain.handle('session-get', (_e, id) => {
   const rec = sessions.get(id);
   return rec ? { meta: metaOf(rec), transcript: rec.transcript } : null;
+});
+
+// Generic sidebar-metadata patch: pin, unread, group, archive, title.
+ipcMain.handle('session-meta', (_e, { id, patch }) => {
+  const rec = sessions.get(id);
+  if (!rec) return null;
+  for (const k of ['pinned', 'unread', 'group', 'archived']) if (patch[k] !== undefined) rec[k] = patch[k];
+  if (patch.title) rec.title = String(patch.title).slice(0, 60);
+  saveSession(rec);
+  sessionsChanged();
+  return metaOf(rec);
 });
 
 ipcMain.handle('session-rename', (_e, { id, title }) => {
