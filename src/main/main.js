@@ -6,7 +6,8 @@ const { app, BrowserWindow, ipcMain, dialog, shell } = require('electron');
 const path = require('path');
 const fs = require('fs');
 const https = require('https');
-const { execFile } = require('child_process');
+const http = require('http');
+const { execFile, spawn } = require('child_process');
 const { Session } = require('../agent/agent');
 
 let win;
@@ -201,7 +202,7 @@ function createWindow() {
   win = new BrowserWindow({
     width: 1360, height: 860, minWidth: 860, minHeight: 520,
     titleBarStyle: 'hiddenInset', backgroundColor: '#161619',
-    webPreferences: { preload: path.join(__dirname, 'preload.js'), contextIsolation: true, nodeIntegration: false },
+    webPreferences: { preload: path.join(__dirname, 'preload.js'), contextIsolation: true, nodeIntegration: false, webviewTag: true },
   });
   win.loadFile(path.join(__dirname, '../renderer/index.html'));
 }
@@ -216,7 +217,139 @@ app.whenReady().then(() => {
 });
 app.on('window-all-closed', () => { if (process.platform !== 'darwin') app.quit(); });
 app.on('activate', () => { if (BrowserWindow.getAllWindows().length === 0) createWindow(); });
-app.on('before-quit', () => { for (const rec of sessions.values()) if (rec.agent) saveSession(rec); });
+app.on('before-quit', () => {
+  for (const rec of sessions.values()) if (rec.agent) saveSession(rec);
+  for (const t of tasks.values()) if (t.status === 'running') { try { process.kill(-t.child.pid, 'SIGTERM'); } catch {} }
+});
+
+// ---- background tasks: long-running shell commands (dev servers, watchers) ------
+// Spawned in their own process group so Stop kills the whole tree. First
+// localhost URL seen in the logs becomes the task's preview URL.
+let taskSeq = 0;
+const tasks = new Map();   // id -> { id, sessionId, name, command, cwd, status, exitCode, url, startedAt, log, child }
+const URL_RE = /https?:\/\/(?:localhost|127\.0\.0\.1|0\.0\.0\.0)(?::\d+)?(?:\/[^\s"'<>)\]]*)?/;
+function taskMeta(t) {
+  return { id: t.id, sessionId: t.sessionId, name: t.name, command: t.command, cwd: t.cwd,
+    status: t.status, exitCode: t.exitCode, url: t.url, startedAt: t.startedAt };
+}
+
+ipcMain.handle('task-start', (_e, { sessionId, command, name }) => {
+  const rec = sessions.get(sessionId);
+  if (!rec || !command) return null;
+  const id = ++taskSeq;
+  let child;
+  try {
+    child = spawn('/bin/bash', ['-lc', command], {
+      cwd: rec.cwd, detached: true, stdio: ['ignore', 'pipe', 'pipe'],
+      env: { ...process.env, PYTHONUNBUFFERED: '1', FORCE_COLOR: '0' },
+    });
+  } catch (e) { return { error: String((e && e.message) || e) }; }
+  const t = { id, sessionId, name: (name || command).slice(0, 48), command, cwd: rec.cwd,
+    status: 'running', exitCode: null, url: null, startedAt: Date.now(), log: '', child };
+  tasks.set(id, t);
+  const onChunk = (c) => {
+    const s = c.toString();
+    t.log = (t.log + s).slice(-200000);
+    if (!t.url) {
+      const m = s.match(URL_RE) || t.log.match(URL_RE);
+      if (m) { t.url = m[0].replace('0.0.0.0', 'localhost'); sendToUI('task-event', { type: 'url', id, url: t.url }); }
+    }
+    sendToUI('task-event', { type: 'log', id, chunk: s.slice(-8000) });
+  };
+  child.stdout.on('data', onChunk);
+  child.stderr.on('data', onChunk);
+  child.on('error', (e) => { t.status = 'exited'; t.exitCode = -1; t.log += '\nspawn error: ' + e.message; sendToUI('task-event', { type: 'exit', id, code: -1 }); });
+  child.on('exit', (code) => { t.status = 'exited'; t.exitCode = code; sendToUI('task-event', { type: 'exit', id, code }); });
+  sendToUI('task-event', { type: 'started', id });
+  // Fallback URL detection: many servers buffer or never print their URL. If the
+  // command mentions a port (":8123", "--port 3000", "-p 5173", trailing "8080"),
+  // probe it until something answers and use that as the preview URL.
+  const pm = command.match(/(?:--?p(?:ort)?[= ]\s*|:)(\d{3,5})\b/) || command.match(/\b(\d{3,5})\b(?!.*\d{3,5})/);
+  if (pm) {
+    const port = +pm[1];
+    if (port >= 80 && port <= 65535) {
+      let tries = 0;
+      const probe = () => {
+        if (t.url || t.status !== 'running' || ++tries > 20) return;
+        const req = http.get({ host: '127.0.0.1', port, path: '/', timeout: 900 }, (res) => {
+          res.resume();
+          if (!t.url && t.status === 'running') { t.url = 'http://localhost:' + port + '/'; sendToUI('task-event', { type: 'url', id, url: t.url }); }
+        });
+        req.on('error', () => setTimeout(probe, 1000));
+        req.on('timeout', () => { req.destroy(); setTimeout(probe, 1000); });
+      };
+      setTimeout(probe, 700);
+    }
+  }
+  return taskMeta(t);
+});
+
+ipcMain.handle('task-stop', (_e, id) => {
+  const t = tasks.get(id);
+  if (t && t.status === 'running') { try { process.kill(-t.child.pid, 'SIGTERM'); } catch {} }
+  return { ok: true };
+});
+ipcMain.handle('task-remove', (_e, id) => {
+  const t = tasks.get(id);
+  if (t) { if (t.status === 'running') { try { process.kill(-t.child.pid, 'SIGTERM'); } catch {} } tasks.delete(id); }
+  return { ok: true };
+});
+ipcMain.handle('task-list', () => [...tasks.values()].sort((a, b) => b.startedAt - a.startedAt).map(taskMeta));
+ipcMain.handle('task-log', (_e, id) => { const t = tasks.get(id); return t ? t.log.slice(-60000) : ''; });
+
+// Run-command suggestions from the project's package.json scripts.
+ipcMain.handle('project-scripts', (_e, id) => {
+  const rec = sessions.get(id);
+  if (!rec) return [];
+  try {
+    const pj = JSON.parse(fs.readFileSync(path.join(rec.cwd, 'package.json'), 'utf8'));
+    return Object.keys(pj.scripts || {}).map((k) => ({ name: k, command: 'npm run ' + k }));
+  } catch { return []; }
+});
+
+// ---- files panel: lazy directory tree + read-only file preview -------------------
+const TREE_SKIP = ['node_modules', '.git', 'dist', 'build', 'out', '.next', 'venv', '__pycache__', 'target'];
+ipcMain.handle('file-tree', (_e, { id, sub }) => {
+  const rec = sessions.get(id);
+  if (!rec) return [];
+  const base = path.resolve(rec.cwd, sub || '.');
+  const rel = path.relative(rec.cwd, base);
+  if (rel.startsWith('..') || path.isAbsolute(rel)) return [];
+  let ents;
+  try { ents = fs.readdirSync(base, { withFileTypes: true }); } catch { return []; }
+  return ents
+    .filter((e) => !e.name.startsWith('.') && !TREE_SKIP.includes(e.name))
+    .sort((a, b) => (b.isDirectory() - a.isDirectory()) || a.name.localeCompare(b.name))
+    .slice(0, 500)
+    .map((e) => ({ name: e.name, dir: e.isDirectory() }));
+});
+ipcMain.handle('file-read', (_e, { id, rel }) => {
+  const rec = sessions.get(id);
+  if (!rec) return { error: 'no session' };
+  const abs = path.resolve(rec.cwd, rel);
+  const r = path.relative(rec.cwd, abs);
+  if (r.startsWith('..') || path.isAbsolute(r)) return { error: 'outside working directory' };
+  try {
+    const st = fs.statSync(abs);
+    if (st.size > 2 * 1024 * 1024) return { error: 'file too large to preview (' + Math.round(st.size / 1024) + ' KB)' };
+    const buf = fs.readFileSync(abs);
+    if (buf.includes(0)) return { binary: true, bytes: st.size };
+    return { content: buf.toString('utf8').slice(0, 120000), bytes: st.size };
+  } catch (e) { return { error: String((e && e.message) || e) }; }
+});
+
+// ---- "Open in …" ------------------------------------------------------------------
+ipcMain.handle('open-in', (_e, { id, target }) => {
+  const rec = sessions.get(id);
+  if (!rec) return { ok: false };
+  const dir = rec.cwd;
+  if (target === 'finder') { shell.openPath(dir); return { ok: true }; }
+  const appName = target === 'terminal' ? 'Terminal' : target === 'vscode' ? 'Visual Studio Code' : null;
+  if (!appName) return { ok: false };
+  return new Promise((resolve) => {
+    execFile('open', ['-a', appName, dir], (err) => resolve(err ? { ok: false, error: appName + ' not found' } : { ok: true }));
+  });
+});
 
 // ---- IPC: config ---------------------------------------------------------------
 ipcMain.handle('get-config', () => {

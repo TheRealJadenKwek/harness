@@ -31,6 +31,25 @@
         <div class="spacer"></div>
         <span id="usageLabel" class="usage" title="Session tokens · estimated cost"></span>
         <button id="diffToggle" class="icon-btn" title="Changes panel (⌘D)">±</button>
+        <button id="runBtn" class="icon-btn" title="Run / preview">▷</button>
+        <button id="moreBtn" class="icon-btn" title="More">⋮</button>
+        <div id="runPop" class="menu" style="display:none">
+          <div class="menu-title">Run a command in this project</div>
+          <input id="runCmd" placeholder="npm run dev, python3 -m http.server…" autocomplete="off">
+          <div id="runScripts" class="run-scripts"></div>
+          <div class="row"><button id="runStart" class="primary">▷ Start</button></div>
+        </div>
+        <div id="moreMenu" class="menu" style="display:none">
+          <div class="menu-item" data-act="files">🗂 Files <span class="mi-hint">⇧⌘F</span></div>
+          <div class="menu-item" data-act="tasks">◎ Background tasks</div>
+          <div class="menu-item" data-act="preview">▷ Preview</div>
+          <div class="menu-sep"></div>
+          <div class="menu-item" data-act="finder">Open in Finder</div>
+          <div class="menu-item" data-act="terminal">Open in Terminal</div>
+          <div class="menu-item" data-act="vscode">Open in VS Code</div>
+          <div class="menu-sep"></div>
+          <div class="menu-item" data-act="sessions">Sessions folder</div>
+        </div>
       </header>
 
       <main id="logs" class="logs"></main>
@@ -53,17 +72,42 @@
       </footer>
     </div>
 
-    <!-- Right: git changes panel -->
-    <aside class="diffbar" id="diffPanel" style="display:none">
+    <!-- Right: tabbed panel (Changes / Files / Tasks / Preview) -->
+    <aside class="diffbar" id="rightPanel" style="display:none">
       <div class="diff-head">
-        <span class="diff-title">Changes</span>
-        <span id="gitBranch" class="git-branch"></span>
+        <button class="ptab" data-tab="changes">± Changes</button>
+        <button class="ptab" data-tab="files">🗂 Files</button>
+        <button class="ptab" data-tab="tasks">◎ Tasks<span id="taskBadge" class="task-badge" style="display:none"></span></button>
+        <button class="ptab" data-tab="preview">▷ Preview</button>
         <div class="spacer"></div>
-        <button id="gitRefresh" class="icon-btn" title="Refresh">⟳</button>
-        <button id="diffClose" class="icon-btn" title="Close">✕</button>
+        <button id="panelClose" class="icon-btn" title="Close">✕</button>
       </div>
-      <div id="gitFiles" class="git-files"></div>
-      <div id="gitDiffView" class="git-diff-view"></div>
+
+      <div id="tab-changes" class="ptab-body">
+        <div class="panel-sub"><span id="gitBranch" class="git-branch"></span><div class="spacer"></div><button id="gitRefresh" class="icon-btn" title="Refresh">⟳</button></div>
+        <div id="gitFiles" class="git-files"></div>
+        <div id="gitDiffView" class="git-diff-view"></div>
+      </div>
+
+      <div id="tab-files" class="ptab-body" style="display:none">
+        <div class="panel-sub"><span class="muted" id="filesRoot"></span><div class="spacer"></div><button id="filesRefresh" class="icon-btn" title="Refresh">⟳</button></div>
+        <div id="fileTree" class="file-tree"></div>
+        <div id="filePreview" class="file-preview" style="display:none"></div>
+      </div>
+
+      <div id="tab-tasks" class="ptab-body" style="display:none">
+        <div id="taskListEl" class="task-list"></div>
+        <pre id="taskLogEl" class="task-log"></pre>
+      </div>
+
+      <div id="tab-preview" class="ptab-body" style="display:none">
+        <div class="panel-sub preview-bar">
+          <input id="previewUrl" placeholder="http://localhost:3000" autocomplete="off">
+          <button id="previewGo" class="icon-btn" title="Reload">⟳</button>
+          <button id="previewExt" class="icon-btn" title="Open in browser">↗</button>
+        </div>
+        <div id="previewHost" class="preview-host"><div class="git-empty">Run a dev server (▷) or enter a URL — the preview loads here.</div></div>
+      </div>
     </aside>
   </div>
 

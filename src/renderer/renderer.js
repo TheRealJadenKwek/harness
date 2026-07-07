@@ -9,8 +9,11 @@ const S = {
   active: null,         // active session id
   models: [],
   showingApproval: null,
-  diffOpen: false,
+  panel: null,           // null | 'changes' | 'files' | 'tasks' | 'preview'
   selGitFile: null,
+  tasks: new Map(),      // taskId -> meta
+  selTask: null,
+  selFile: null,
 };
 const active = () => S.recs.get(S.active);
 
@@ -239,7 +242,8 @@ async function activate(id) {
   updateComposer();
   hidePopup();
   maybeShowApproval();
-  if (S.diffOpen) refreshGit();
+  if (S.panel === 'changes') refreshGit();
+  else if (S.panel === 'files') refreshFiles();
   $('input').focus();
 }
 
@@ -287,7 +291,7 @@ H.onEvent((e) => {
   else if (e.type === 'tool_call') { finalizeAssistant(rec); addTool(rec, e.name, e.args); }
   else if (e.type === 'tool_result') {
     if (rec.lastTool) setToolResult(rec.lastTool, e.name, e.result);
-    if (S.diffOpen && e.sessionId === S.active && MUTATING.includes(e.name)) {
+    if (S.panel === 'changes' && e.sessionId === S.active && MUTATING.includes(e.name)) {
       clearTimeout(gitDebounce); gitDebounce = setTimeout(refreshGit, 500);
     }
   }
@@ -465,7 +469,11 @@ function cycleMode() { const rec = active(); if (rec) setSessionConfig({ mode: M
 async function pickDir() {
   const rec = active(); if (!rec) return;
   const d = await H.pickDir(rec.meta.id);
-  if (d) { rec.meta.cwd = d; rec.files = null; updateTitlebar(); if (S.diffOpen) refreshGit(); }
+  if (d) {
+    rec.meta.cwd = d; rec.files = null; updateTitlebar();
+    if (S.panel === 'changes') refreshGit();
+    else if (S.panel === 'files') refreshFiles();
+  }
 }
 $('modeBtn').onclick = cycleMode;
 $('dirBtn').onclick = pickDir;
@@ -520,14 +528,23 @@ document.addEventListener('keydown', (e) => {
   else if (e.key === 'Escape') { e.preventDefault(); e.stopPropagation(); respondApproval(false); }
 }, true);
 
-// ---------------------------------------------------------------- git changes panel
-function toggleDiff() {
-  S.diffOpen = !S.diffOpen;
-  $('diffPanel').style.display = S.diffOpen ? '' : 'none';
-  if (S.diffOpen) refreshGit();
+// ---------------------------------------------------------------- right panel (tabs)
+const TABS = ['changes', 'files', 'tasks', 'preview'];
+function showPanel(tab) {
+  S.panel = tab;
+  $('rightPanel').style.display = '';
+  for (const t of TABS) $('tab-' + t).style.display = t === tab ? '' : 'none';
+  for (const b of document.querySelectorAll('.ptab')) b.classList.toggle('on', b.dataset.tab === tab);
+  if (tab === 'changes') refreshGit();
+  else if (tab === 'files') refreshFiles();
+  else if (tab === 'tasks') renderTasks();
 }
+function closePanel() { S.panel = null; $('rightPanel').style.display = 'none'; }
+function togglePanel(tab) { (S.panel === tab) ? closePanel() : showPanel(tab); }
+for (const b of document.querySelectorAll('.ptab')) b.onclick = () => showPanel(b.dataset.tab);
+$('panelClose').onclick = closePanel;
+function toggleDiff() { togglePanel('changes'); }
 $('diffToggle').onclick = toggleDiff;
-$('diffClose').onclick = toggleDiff;
 $('gitRefresh').onclick = () => refreshGit();
 async function refreshGit() {
   const rec = active(); if (!rec) return;
@@ -575,6 +592,166 @@ async function showFileDiff(file) {
     if (l.startsWith('-')) return '<span class="gl-del">' + esc(l) + '</span>';
     return esc(l) + '\n';
   }).join('');
+}
+
+// ---------------------------------------------------------------- run popover + more menu
+function hideMenus() { $('runPop').style.display = 'none'; $('moreMenu').style.display = 'none'; }
+document.addEventListener('mousedown', (e) => {
+  if (!e.target.closest('.menu') && !e.target.closest('#runBtn') && !e.target.closest('#moreBtn')) hideMenus();
+});
+
+$('runBtn').onclick = async () => {
+  const rec = active(); if (!rec) return;
+  const wasOpen = $('runPop').style.display !== 'none';
+  hideMenus();
+  if (wasOpen) return;
+  $('runPop').style.display = '';
+  $('runCmd').value = localStorage.getItem('runCmd:' + rec.meta.cwd) || '';
+  $('runCmd').focus();
+  const scripts = await H.projectScripts(rec.meta.id);
+  const box = $('runScripts'); box.innerHTML = '';
+  for (const s of scripts.slice(0, 12)) {
+    const row = document.createElement('div'); row.className = 'menu-item';
+    row.innerHTML = '<span class="p-main">' + esc(s.name) + '</span><span class="mi-hint">' + esc(s.command) + '</span>';
+    row.onclick = () => { $('runCmd').value = s.command; startRun(); };
+    box.appendChild(row);
+  }
+};
+async function startRun() {
+  const rec = active(); if (!rec) return;
+  const command = $('runCmd').value.trim();
+  if (!command) return;
+  localStorage.setItem('runCmd:' + rec.meta.cwd, command);
+  hideMenus();
+  const t = await H.taskStart(rec.meta.id, command);
+  if (t && t.error) { addLine(rec, 'err', '⚠︎ ' + t.error); return; }
+  if (t) { S.tasks.set(t.id, t); S.selTask = t.id; showPanel('tasks'); }
+}
+$('runStart').onclick = startRun;
+$('runCmd').addEventListener('keydown', (e) => { if (e.key === 'Enter') { e.preventDefault(); startRun(); } if (e.key === 'Escape') hideMenus(); });
+
+$('moreBtn').onclick = () => {
+  const wasOpen = $('moreMenu').style.display !== 'none';
+  hideMenus();
+  if (!wasOpen) $('moreMenu').style.display = '';
+};
+$('moreMenu').addEventListener('click', async (e) => {
+  const item = e.target.closest('.menu-item'); if (!item) return;
+  const act = item.dataset.act;
+  hideMenus();
+  const rec = active();
+  if (act === 'files' || act === 'tasks' || act === 'preview') showPanel(act);
+  else if (act === 'sessions') H.openSessionsFolder();
+  else if (rec && (act === 'finder' || act === 'terminal' || act === 'vscode')) {
+    const r = await H.openIn(rec.meta.id, act);
+    if (r && r.error) addLine(rec, 'err', '⚠︎ ' + r.error);
+  }
+});
+
+// ---------------------------------------------------------------- background tasks
+function taskDot(t) { return t.status === 'running' ? '<span class="t-dot run">●</span>' : '<span class="t-dot dead">●</span>'; }
+function renderTasks() {
+  const box = $('taskListEl'); box.innerHTML = '';
+  const list = [...S.tasks.values()].sort((a, b) => b.startedAt - a.startedAt);
+  const running = list.filter((t) => t.status === 'running').length;
+  $('taskBadge').style.display = running ? '' : 'none';
+  $('taskBadge').textContent = running;
+  if (!list.length) { box.innerHTML = '<div class="git-empty">No background tasks. Start one with ▷ in the toolbar.</div>'; $('taskLogEl').textContent = ''; return; }
+  for (const t of list) {
+    const row = document.createElement('div'); row.className = 'task-row' + (t.id === S.selTask ? ' sel' : '');
+    row.innerHTML = taskDot(t) +
+      '<span class="t-name">' + esc(t.name) + (t.status === 'exited' ? ' <span class="mi-hint">(exit ' + t.exitCode + ')</span>' : '') + '</span>' +
+      (t.url ? '<span class="t-url">' + esc(t.url.replace(/^https?:\/\//, '')) + '</span>' : '') +
+      '<button class="t-stop" title="' + (t.status === 'running' ? 'Stop' : 'Remove') + '">' + (t.status === 'running' ? '■' : '✕') + '</button>';
+    row.onclick = async () => { S.selTask = t.id; renderTasks(); $('taskLogEl').textContent = await H.taskLog(t.id); $('taskLogEl').scrollTop = 1e9; };
+    row.querySelector('.t-stop').onclick = async (e) => {
+      e.stopPropagation();
+      if (t.status === 'running') await H.taskStop(t.id);
+      else { await H.taskRemove(t.id); S.tasks.delete(t.id); if (S.selTask === t.id) { S.selTask = null; $('taskLogEl').textContent = ''; } renderTasks(); }
+    };
+    box.appendChild(row);
+  }
+  if (S.selTask && S.tasks.has(S.selTask)) H.taskLog(S.selTask).then((l) => { $('taskLogEl').textContent = l; $('taskLogEl').scrollTop = 1e9; });
+}
+H.onTaskEvent((e) => {
+  if (e.type === 'log') {
+    if (S.panel === 'tasks' && e.id === S.selTask) {
+      const el = $('taskLogEl');
+      const stick = el.scrollHeight - el.scrollTop - el.clientHeight < 60;
+      el.textContent = (el.textContent + e.chunk).slice(-60000);
+      if (stick) el.scrollTop = el.scrollHeight;
+    }
+    return;
+  }
+  H.taskList().then((list) => {
+    S.tasks = new Map(list.map((t) => [t.id, t]));
+    if (S.panel === 'tasks') renderTasks();
+    const running = list.filter((t) => t.status === 'running').length;
+    $('taskBadge').style.display = running ? '' : 'none';
+    $('taskBadge').textContent = running;
+  });
+  if (e.type === 'url') setPreview(e.url, true);
+});
+
+// ---------------------------------------------------------------- preview (webview)
+let webview = null;
+function setPreview(url, autoshow) {
+  if (!url) return;
+  $('previewUrl').value = url;
+  if (autoshow) showPanel('preview');
+  const host = $('previewHost');
+  if (!webview) {
+    host.innerHTML = '';
+    webview = document.createElement('webview');
+    webview.setAttribute('partition', 'preview');
+    host.appendChild(webview);
+  }
+  webview.setAttribute('src', url);
+}
+$('previewGo').onclick = () => { const u = $('previewUrl').value.trim(); if (u) setPreview(/^https?:/.test(u) ? u : 'http://' + u, false); else if (webview) webview.reload(); };
+$('previewUrl').addEventListener('keydown', (e) => { if (e.key === 'Enter') $('previewGo').onclick(); });
+$('previewExt').onclick = () => { const u = $('previewUrl').value.trim(); if (u) H.openExternal(/^https?:/.test(u) ? u : 'http://' + u); };
+
+// ---------------------------------------------------------------- files panel
+async function refreshFiles() {
+  const rec = active(); if (!rec) return;
+  $('filesRoot').textContent = shortDir(rec.meta.cwd);
+  $('filePreview').style.display = 'none';
+  S.selFile = null;
+  const tree = $('fileTree'); tree.innerHTML = '';
+  await renderTreeLevel(tree, '', 0);
+}
+$('filesRefresh').onclick = () => refreshFiles();
+async function renderTreeLevel(container, sub, depth) {
+  const rec = active(); if (!rec || depth > 8) return;
+  const entries = await H.fileTree(rec.meta.id, sub || '.');
+  for (const e of entries) {
+    const rel = sub ? sub + '/' + e.name : e.name;
+    const row = document.createElement('div'); row.className = 'ft-row';
+    row.style.paddingLeft = (6 + depth * 14) + 'px';
+    row.innerHTML = '<span class="ft-i">' + (e.dir ? '▸' : '·') + '</span>' + esc(e.name) + (e.dir ? '/' : '');
+    container.appendChild(row);
+    if (e.dir) {
+      let kids = null;
+      row.onclick = async () => {
+        if (kids) { kids.remove(); kids = null; row.querySelector('.ft-i').textContent = '▸'; return; }
+        kids = document.createElement('div');
+        row.after(kids);
+        row.querySelector('.ft-i').textContent = '▾';
+        await renderTreeLevel(kids, rel, depth + 1);
+      };
+    } else {
+      row.onclick = async () => {
+        for (const r of document.querySelectorAll('.ft-row.sel')) r.classList.remove('sel');
+        row.classList.add('sel');
+        S.selFile = rel;
+        const res = await H.fileRead(rec.meta.id, rel);
+        const fp = $('filePreview');
+        fp.style.display = '';
+        fp.textContent = res.error ? '⚠︎ ' + res.error : res.binary ? '(binary file, ' + res.bytes + ' bytes)' : res.content;
+      };
+    }
+  }
 }
 
 // ---------------------------------------------------------------- model sheet
@@ -639,6 +816,7 @@ document.addEventListener('keydown', (e) => {
   else if (mod && e.key.toLowerCase() === 'k') { e.preventDefault(); openModelSheet(false); }
   else if (mod && e.key.toLowerCase() === 'b') { e.preventDefault(); $('sideToggle').onclick(); }
   else if (mod && e.key.toLowerCase() === 'd') { e.preventDefault(); toggleDiff(); }
+  else if (mod && e.shiftKey && e.key.toLowerCase() === 'f') { e.preventDefault(); togglePanel('files'); }
   else if (mod && e.key >= '1' && e.key <= '9') {
     const idx = +e.key - 1;
     if (S.order[idx]) { e.preventDefault(); activate(S.order[idx]); }

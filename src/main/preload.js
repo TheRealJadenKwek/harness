@@ -28,6 +28,20 @@ contextBridge.exposeInMainWorld('harness', {
   openExternal: (url) => ipcRenderer.invoke('open-external', url),
   openSessionsFolder: () => ipcRenderer.invoke('open-sessions-folder'),
 
+  // background tasks + run
+  taskStart: (sessionId, command, name) => ipcRenderer.invoke('task-start', { sessionId, command, name }),
+  taskStop: (id) => ipcRenderer.invoke('task-stop', id),
+  taskRemove: (id) => ipcRenderer.invoke('task-remove', id),
+  taskList: () => ipcRenderer.invoke('task-list'),
+  taskLog: (id) => ipcRenderer.invoke('task-log', id),
+  projectScripts: (id) => ipcRenderer.invoke('project-scripts', id),
+  onTaskEvent: (cb) => ipcRenderer.on('task-event', (_e, ev) => cb(ev)),
+
+  // files panel + open-in
+  fileTree: (id, sub) => ipcRenderer.invoke('file-tree', { id, sub }),
+  fileRead: (id, rel) => ipcRenderer.invoke('file-read', { id, rel }),
+  openIn: (id, target) => ipcRenderer.invoke('open-in', { id, target }),
+
   // approvals + events
   respondApproval: (id, approved) => ipcRenderer.send('approval-response', { id, approved }),
   onEvent: (cb) => ipcRenderer.on('agent-event', (_e, ev) => cb(ev)),

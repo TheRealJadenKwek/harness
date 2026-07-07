@@ -12,6 +12,9 @@ Built from scratch (a real agent loop, not a wrapper). Electron GUI + a zero-dep
 - **Agentic loop** — read / list / glob / grep / write / edit / bash tools, streamed tool-call assembly, up to 40 steps per turn.
 - **Streaming UI** — markdown answers (code blocks, inline code, links), collapsible ✳ thinking blocks, collapsible tool cards with args + results.
 - **Inline diffs** in the chat for every write/edit, plus a **git Changes panel** (⌘D): status by file, colored unified diffs, auto-refresh as the agent edits.
+- **Run & Preview** (▷) — start a dev server (suggestions from package.json scripts); its URL is auto-detected (logs + port probing) and loads in an embedded **live preview** with a URL bar.
+- **Background tasks** — a process manager for dev servers/watchers: live logs, running badge, stop kills the whole process tree.
+- **Files panel** (⇧⌘F) — lazy project tree with read-only file preview. **⋮ menu**: Open in Finder / Terminal / VS Code, sessions folder.
 - **Permission modes** per session — 📋 Plan (read-only) / 🔨 Ask (approve everything) / ⚡ Auto (auto-approve routine work). A **destructive-action guard** (rm, resets, overwrites, sudo…) always stops and asks, even in Auto. Per-model trust memory: each model remembers the mode you last used with it.
 - **@-file mentions** with fuzzy autocomplete, **slash commands** (`/model`, `/mode`, `/dir`, `/clear`, `/compact`, `/rename`, `/diff`, `/help`).
 - **/compact** — summarize the session and compress the context, Claude Code style.
