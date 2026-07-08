@@ -655,3 +655,9 @@ h3 { margin: 2px 0 4px; }
 #effortBtn { font-weight: 500; }
 
 @media (prefers-color-scheme: dark) { .working .w-star { color: #5b8aff; } }
+
+/* status dots (connectors/plugins) */
+.st-dot { display:inline-block; width:8px; height:8px; border-radius:50%; vertical-align:0; margin-right:2px; }
+.st-dot.g { background: var(--green); }
+.st-dot.r { background: var(--red); }
+.st-dot.w { background: color-mix(in srgb, var(--muted) 45%, transparent); }

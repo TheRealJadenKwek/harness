@@ -127,7 +127,7 @@ function addUser(rec, text, imageCount, meta) {
     wrap.appendChild(tr);
   }
   const el = document.createElement('div'); el.className = 'msg user';
-  el.textContent = (imageCount && !thumbs.length ? '🖼 ' + imageCount + ' image' + (imageCount > 1 ? 's' : '') + '\n' : '') + text;
+  el.textContent = (imageCount && !thumbs.length ? '[' + imageCount + ' image' + (imageCount > 1 ? 's' : '') + ' attached]\n' : '') + text;
   wrap.appendChild(el);
   const n = meta && meta.n !== undefined ? meta.n : rec.userN++;
   const raw = (meta && meta.raw !== undefined) ? meta.raw : text;
@@ -279,7 +279,7 @@ function openSidePopup(rec) {
     pop = document.createElement('div');
     pop.id = 'scpop';
     pop.innerHTML = '<div class="sc-bar"><span>Side chat</span><span class="sc-note">separate from the session</span><span style="flex:1"></span>'
-      + '<button class="sc-btn" id="scClear" title="Clear side chat">🗑</button><button class="sc-btn" id="scClose" title="Close">✕</button></div>'
+      + '<button class="sc-btn" id="scClear" title="Clear side chat">' + svgIcon('<path d="M3 6h18M8 6V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2M19 6l-1 14a2 2 0 0 1-2 2H8a2 2 0 0 1-2-2L5 6"/>') + '</button><button class="sc-btn" id="scClose" title="Close">✕</button></div>'
       + '<div id="scBody"></div>'
       + '<div class="sc-inrow"><textarea id="scInput" rows="1" placeholder="Ask on the side…"></textarea><button class="sc-btn" id="scSend" title="Send">↵</button></div>';
     document.body.appendChild(pop);
@@ -503,7 +503,7 @@ function addCkptLine(rec, ckptId, files) {
 }
 
 function renderItem(rec, item) {
-  if (item.t === 'user') addUser(rec, (item.auto ? '🎯 ' : '') + (item.remote ? '📱 ' : '') + (item.steered ? '↳ ' : '') + item.text, item.images, { n: rec.userN++, ts: item.ts, raw: item.text, thumbs: item.thumbs });
+  if (item.t === 'user') addUser(rec, (item.auto ? '◎ ' : '') + (item.remote ? '⌁ ' : '') + (item.steered ? '↳ ' : '') + item.text, item.images, { n: rec.userN++, ts: item.ts, raw: item.text, thumbs: item.thumbs });
   else if (item.t === 'sidechat') addSideChat(rec, item.q, item.a);
   else if (item.t === 'plan') { renderPlan(rec, item.items); rec.planEl = null; }
   else if (item.t === 'ckpt') addCkptLine(rec, item.id, item.files);
@@ -559,7 +559,7 @@ async function deleteSession(id, title) {
 function sessEl(rec, badge) {
   const m = rec.meta;
   const el = document.createElement('div'); el.className = 'sess' + (m.id === S.active ? ' active' : '');
-  const live = rec.approvals.length ? '<span class="s-live appr">⚠</span>' : (rec.streaming ? '<span class="s-live spin">●</span>' : '');
+  const live = rec.approvals.length ? '<span class="s-live appr">⚠︎</span>' : (rec.streaming ? '<span class="s-live spin">●</span>' : '');
   el.innerHTML = '<div class="s-title">' + (m.unread ? '<span class="s-unread">●</span> ' : '') + (badge ? badge + ' ' : '') + esc(m.title) + '</div>' +
     '<div class="s-sub">' + esc(shortModel(m.model)) + ' · ' + timeAgo(m.updatedAt) + '</div>' +
     live + '<button class="s-x" title="Delete">✕</button>';
@@ -582,7 +582,7 @@ function renderSidebar() {
     if (r.meta.group) (groups[r.meta.group] || (groups[r.meta.group] = [])).push(r);
     else rest.push(r);
   }
-  if (pinned.length) { header('Pinned'); pinned.forEach((r) => box.appendChild(sessEl(r, '📌'))); }
+  if (pinned.length) { header('Pinned'); pinned.forEach((r) => box.appendChild(sessEl(r, svgIcon('<path d="M12 17v5M9.5 11 8 12.3c-.6.5-.9 1.3-.7 2l.2.7h9l.2-.7c.2-.7-.1-1.5-.7-2L14.5 11V5H16a1 1 0 0 0 0-2H8a1 1 0 0 0 0 2h1.5z"/>', 11)))); }
   for (const g of Object.keys(groups).sort()) { header(g); groups[g].forEach((r) => box.appendChild(sessEl(r))); }
   if (rest.length && (pinned.length || Object.keys(groups).length)) header('Chats');
   rest.forEach((r) => box.appendChild(sessEl(r)));
@@ -639,7 +639,7 @@ async function openCliView(fp) {
     const stick = atBottom(el);
     el.innerHTML = '';
     const ban = document.createElement('div'); ban.className = 'done';
-    ban.textContent = '👁 read-only ' + d.engine + ' CLI session · ' + shortDir(d.cwd) + ' · updates live · Esc to close';
+    ban.textContent = 'read-only ' + d.engine + ' CLI session · ' + shortDir(d.cwd) + ' · updates live · Esc to close';
     el.appendChild(ban);
     for (const m of (d.messages || [])) {
       if (m.role === 'user') { const u = document.createElement('div'); u.className = 'msg user'; u.textContent = m.text; el.appendChild(u); }
@@ -1041,7 +1041,7 @@ H.onEvent((e) => {
   }
   else if (e.type === 'auto_approved') addLine(rec, 'done', '⚡ auto-approved ' + e.kind + ': ' + String(e.detail || '').slice(0, 80));
   else if (e.type === 'control_note') addLine(rec, 'done', e.message);
-  else if (e.type === 'remote_user') { addUser(rec, '📱 ' + e.text, (e.thumbs || []).length, { ts: Date.now(), raw: e.text, thumbs: e.thumbs }); rec.streaming = true; startWorking(rec); updateComposer(); renderSidebar(); }
+  else if (e.type === 'remote_user') { addUser(rec, '⌁ ' + e.text, (e.thumbs || []).length, { ts: Date.now(), raw: e.text, thumbs: e.thumbs }); rec.streaming = true; startWorking(rec); updateComposer(); renderSidebar(); }
   else if (e.type === 'sidechat_delta') {
     if (rec.sideStream) { rec.sideStream.acc += e.text; rec.sideStream.el.textContent = rec.sideStream.acc; scScroll(); }
   }
@@ -1056,7 +1056,7 @@ H.onEvent((e) => {
       rec.sideStream = null; scScroll();
     }
   }
-  else if (e.type === 'auto_user') { addUser(rec, '🎯 ' + e.text, 0, { ts: Date.now(), raw: e.text }); rec.streaming = true; startWorking(rec); updateComposer(); renderSidebar(); }
+  else if (e.type === 'auto_user') { addUser(rec, '◎ ' + e.text, 0, { ts: Date.now(), raw: e.text }); rec.streaming = true; startWorking(rec); updateComposer(); renderSidebar(); }
   else if (e.type === 'plan') renderPlan(rec, e.items);
   else if (e.type === 'checkpoint') addCkptLine(rec, e.ckptId, e.files);
   else if (e.type === 'snapshot') { /* main-side checkpoint bookkeeping only */ }
@@ -1147,7 +1147,7 @@ async function onSend(opts) {
   const rec = active(); if (!rec) return;
   const text = $('input').value.trim();
   let images = (rec.attachments || []).map((a) => a.dataUrl).filter(Boolean);
-  if (images.length && !visionOk(rec)) addLine(rec, 'done', '🖼 ' + shortModel(rec.meta.model) + ' can\'t see images — they\'ll be auto-described by a vision model');
+  if (images.length && !visionOk(rec)) addLine(rec, 'done', shortModel(rec.meta.model) + ' can\'t see images — they\'ll be auto-described by a vision model');
   if (!text && !images.length) return;
   $('input').value = ''; $('input').style.height = 'auto'; hidePopup();
   rec.suggestion = null; showSuggestion(rec);
@@ -1510,7 +1510,7 @@ async function setSessionConfig(patch) {
   const m = await H.sessionConfig(rec.meta.id, patch);
   if (m) rec.meta = m;
   if (patch.model && !visionOk(rec) && (rec.attachments || []).some((a) => a.dataUrl)) {
-    addLine(rec, 'done', '🖼 ' + shortModel(rec.meta.model) + ' can\'t see images — attachments will be auto-described by a vision model');
+    addLine(rec, 'done', shortModel(rec.meta.model) + ' can\'t see images — attachments will be auto-described by a vision model');
   }
   updateTitlebar(); renderSidebar();
 }
@@ -1568,7 +1568,7 @@ function renderAttachRow() {
   row.innerHTML = '';
   atts.forEach((a, i) => {
     const chip = document.createElement('div'); chip.className = 'att-chip';
-    chip.innerHTML = (a.dataUrl ? '<img src="' + a.dataUrl + '">' : '📄') + '<span>' + esc(a.name) + '</span><button title="Remove">✕</button>';
+    chip.innerHTML = (a.dataUrl ? '<img src="' + a.dataUrl + '">' : svgIcon('<path d="M14 2H7a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h10a2 2 0 0 0 2-2V7Z"/><path d="M14 2v5h5"/>')) + '<span>' + esc(a.name) + '</span><button title="Remove">✕</button>';
     chip.querySelector('button').onclick = () => { rec.attachments.splice(i, 1); renderAttachRow(); };
     row.appendChild(chip);
   });
@@ -1614,15 +1614,15 @@ async function renderPlusMenu(view) {
     });
     item('▸ Slash commands', () => { hideMenus(); const i = $('input'); i.value = '/'; i.focus(); i.dispatchEvent(new Event('input')); });
     sep();
-    item('🔌 Connectors <span class="mi-hint">›</span>', (e) => { e.stopPropagation(); renderPlusMenu('connectors'); });
-    item('🧩 Plugins <span class="mi-hint">›</span>', (e) => { e.stopPropagation(); renderPlusMenu('plugins'); });
+    item(svgIcon('<path d="M12 22v-5M9 8V2M15 8V2M6 8h12v5a4 4 0 0 1-4 4h-4a4 4 0 0 1-4-4z"/>') + ' Connectors <span class="mi-hint">›</span>', (e) => { e.stopPropagation(); renderPlusMenu('connectors'); });
+    item(svgIcon('<rect x="3" y="3" width="7" height="7" rx="1.5"/><rect x="14" y="3" width="7" height="7" rx="1.5"/><rect x="3" y="14" width="7" height="7" rx="1.5"/><rect x="14" y="14" width="7" height="7" rx="1.5"/>') + ' Plugins <span class="mi-hint">›</span>', (e) => { e.stopPropagation(); renderPlusMenu('plugins'); });
   } else if (view === 'connectors') {
     item('‹ Connectors', (e) => { e.stopPropagation(); renderPlusMenu('root'); });
     sep();
     const list = await H.mcpList();
     if (!list.length) item('<span class="mi-hint">No MCP servers yet</span>', () => {});
     for (const s of list) {
-      const dot = s.status === 'running' ? '🟢' : s.enabled ? '🔴' : '⚪';
+      const dot = '<span class="st-dot ' + (s.status === 'running' ? 'g' : s.enabled ? 'r' : 'w') + '"></span>';
       item(dot + ' ' + esc(s.name) + ' <span class="mi-hint">' + (s.status === 'running' ? s.tools.length + ' tools · on' : s.enabled ? s.status : 'off') + '</span>',
         async (e) => {
           e.stopPropagation();
@@ -1639,7 +1639,7 @@ async function renderPlusMenu(view) {
     const list = await H.pluginList();
     if (!list.length) item('<span class="mi-hint">No plugins installed</span>', () => {});
     for (const p of list) {
-      item((p.enabled ? '🟢 ' : '⚪ ') + esc(p.name) +
+      item((p.enabled ? '<span class="st-dot g"></span> ' : '<span class="st-dot w"></span> ') + esc(p.name) +
         ' <span class="mi-hint">' + p.skills.length + ' skills · ' + p.mcpServers.length + ' servers</span>',
         async (e) => { e.stopPropagation(); await H.pluginToggle(p.dir, !p.enabled); await loadSkills(); renderPlusMenu('plugins'); });
     }
@@ -2263,7 +2263,7 @@ H.onAppshot((a) => {
   rec.attachments = rec.attachments || [];
   rec.attachments.push({ name: a.name, dataUrl: a.dataUrl });
   renderAttachRow();
-  addLine(rec, 'done', '📸 appshot attached — describe what you want done with it');
+  addLine(rec, 'done', 'appshot attached — describe what you want done with it');
   $('input').focus();
 });
 H.onPreviewOpen(({ url }) => setPreview(url, true));
