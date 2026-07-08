@@ -197,7 +197,7 @@ function scSaveState(patch) { localStorage.scPos = JSON.stringify({ ...scState()
 function scApplyPos(pop) {
   const st = scState();
   if (st.docked) {
-    pop.style.left = 'auto'; pop.style.top = '46px'; pop.style.right = '14px'; pop.style.bottom = 'auto';
+    pop.style.left = 'auto'; pop.style.top = '82px'; pop.style.right = '14px'; pop.style.bottom = 'auto';
   } else if (typeof st.x === 'number') {
     const r = pop.getBoundingClientRect();
     const x = Math.min(Math.max(st.x, 8), innerWidth - (r.width || 400) - 8);
@@ -213,12 +213,46 @@ function scShowTab() {
     tab.id = 'sctab';
     tab.innerHTML = '◦ Side chat<span class="sct-dot"></span>';
     tab.title = 'Side chat (docked) — click to open';
-    tab.onclick = () => {
-      const pop = scEl();
-      const r = active(); if (!r) return;
-      if (pop && pop.style.display !== 'none') { pop.style.display = 'none'; }
-      else { openSidePopup(r); }
-      tab.classList.remove('unread');
+    tab.onmousedown = (e) => {
+      e.preventDefault();
+      const sx = e.clientX, sy = e.clientY;
+      let moved = false;
+      const GRAB_X = 70, GRAB_Y = 16;   // where the header lands under the cursor
+      const move = (ev) => {
+        if (!moved && Math.hypot(ev.clientX - sx, ev.clientY - sy) > 6) {
+          moved = true;
+          const r = active(); if (!r) return;
+          scUndock();
+          openSidePopup(r);
+        }
+        if (!moved) return;
+        const pop = scEl(); if (!pop) return;
+        const rct = pop.getBoundingClientRect();
+        const x = Math.min(Math.max(ev.clientX - GRAB_X, 8), innerWidth - rct.width - 8);
+        const y = Math.min(Math.max(ev.clientY - GRAB_Y, 8), innerHeight - rct.height - 8);
+        pop.style.left = x + 'px'; pop.style.top = y + 'px';
+        pop.style.right = 'auto'; pop.style.bottom = 'auto';
+        pop.classList.toggle('sc-snap', (innerWidth - (x + rct.width) < 80) && (y < 90));
+      };
+      const up = () => {
+        document.removeEventListener('mousemove', move);
+        document.removeEventListener('mouseup', up);
+        if (!moved) {   // plain click: toggle open/closed
+          const pop = scEl();
+          const r = active(); if (!r) return;
+          if (pop && pop.style.display !== 'none') pop.style.display = 'none';
+          else openSidePopup(r);
+          tab.classList.remove('unread');
+          return;
+        }
+        const pop = scEl(); if (!pop) return;
+        pop.classList.remove('sc-snap');
+        const rct = pop.getBoundingClientRect();
+        if ((innerWidth - rct.right < 80) && (rct.top < 90)) scDock();
+        else scSaveState({ x: rct.left, y: rct.top, docked: false });
+      };
+      document.addEventListener('mousemove', move);
+      document.addEventListener('mouseup', up);
     };
     document.body.appendChild(tab);
   }

@@ -533,7 +533,7 @@ h3 { margin: 2px 0 4px; }
 #scpop .sc-bar { cursor: grab; user-select: none; -webkit-app-region: no-drag; }
 #scpop .sc-bar:active { cursor: grabbing; }
 #scpop.sc-snap { outline: 2.5px solid var(--accent, #2f63e8); outline-offset: 2px; transform: scale(.985); transition: transform .1s; }
-#sctab { position: fixed; top: 9px; right: 14px; z-index: 181; -webkit-app-region: no-drag;
+#sctab { position: fixed; top: 48px; right: 14px; z-index: 181; -webkit-app-region: no-drag; cursor: grab;
          display: inline-flex; align-items: center; gap: 6px;
          border: 1px solid var(--border); border-radius: 20px; padding: 4px 13px;
          background: var(--panel); color: var(--text); font: 600 12px/1.4 inherit; cursor: pointer;
