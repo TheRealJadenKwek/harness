@@ -1,5 +1,7 @@
 // Streaming proxy to OpenRouter. The API key lives ONLY here (server env);
 // the browser sends an access code instead.
+const { db } = require('./_db.js');
+
 const ALLOWED = new Set([
   'deepseek/deepseek-v4-pro',
   'deepseek/deepseek-v4-flash',
@@ -21,6 +23,15 @@ module.exports = async (req, res) => {
     role: m.role === 'assistant' ? 'assistant' : 'user',
     content: String(m.content || '').slice(0, 60000),
   }));
+  let memoryBlock = '';
+  try {
+    const mems = await db('memories?code=eq.' + encodeURIComponent(code) + '&order=created.desc&limit=60&select=fact');
+    if (mems.length) memoryBlock = '\n\nThings you remember about her from earlier conversations (use them naturally, never recite the list):\n' + mems.map((m) => '- ' + m.fact).join('\n');
+  } catch {}
+  clean.unshift({
+    role: 'system',
+    content: 'You are Harness, her personal assistant — warm, sharp, and quick. You are especially good at writing and improving emails: match her natural voice, keep them concise and human, never stiff or corporate unless she asks. For other tasks, be direct and genuinely useful.' + memoryBlock,
+  });
 
   const upstream = await fetch('https://openrouter.ai/api/v1/chat/completions', {
     method: 'POST',

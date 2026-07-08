@@ -103,6 +103,11 @@
 <div id="drawer">
   <div class="head"><b>Chats</b><button class="icon-btn" id="drawerNew">✚</button></div>
   <div id="chatlist"></div>
+  <div style="padding:10px 14px calc(14px + env(safe-area-inset-bottom))"><button class="model-chip" id="memBtn" style="font-size:13px">✨ Memory</button></div>
+</div>
+<div class="sheet" id="memSheet">
+  <h3>✨ What I remember</h3>
+  <div id="memList" style="max-height:50vh;overflow-y:auto"></div>
 </div>
 <div class="sheet" id="modelSheet">
   <h3>Model</h3>
@@ -183,7 +188,7 @@ function renderList() {
     row.className = 'chat-row' + (cur && c.id === cur.id ? ' active' : '');
     const t = document.createElement('span'); t.className = 't'; t.textContent = c.title; row.appendChild(t);
     const x = document.createElement('button'); x.className = 'x'; x.textContent = '✕';
-    x.onclick = (e) => { e.stopPropagation(); chats = chats.filter((z) => z.id !== c.id); if (cur && cur.id === c.id) cur = chats[0] || null; save(); render(); };
+    x.onclick = (e) => { e.stopPropagation(); chats = chats.filter((z) => z.id !== c.id); if (cur && cur.id === c.id) cur = chats[0] || null; save(); render(); fetch('/api/sync', { method: 'DELETE', headers: H(), body: JSON.stringify({ id: c.id }) }).catch(() => {}); };
     row.appendChild(x);
     row.onclick = () => { cur = c; render(); closeDrawer(); };
     box.appendChild(row);
@@ -247,7 +252,10 @@ async function send() {
   }
   working.remove();
   streaming = false; aborter = null; $('send').textContent = '↑';
-  save(); renderList();
+  chat.updatedAt = new Date().toISOString();
+  save(); renderList(); syncPush(chat);
+  const lastUser = [...chat.messages].reverse().find((m) => m.role === 'user');
+  if (acc && lastUser) memorize(lastUser.content, acc);
 }
 // ---- ui plumbing
 function openSheet(id) { $(id).classList.add('open'); $('scrim').classList.add('open'); }
@@ -268,13 +276,63 @@ $('modelBtn').onclick = () => {
   }
   openSheet('modelSheet');
 };
-$('codeSave').onclick = () => { localStorage.code = $('codeInput').value.trim(); closeSheets(); };
+$('codeSave').onclick = () => { localStorage.code = $('codeInput').value.trim(); closeSheets(); syncPull(); };
+
+// ---- server sync: history + memory follow the access code, not this browser
+const H = () => ({ 'Content-Type': 'application/json', 'X-Access-Code': localStorage.code || '' });
+let pushTimer = null;
+function syncPush(chat) {
+  clearTimeout(pushTimer);
+  pushTimer = setTimeout(() => {
+    fetch('/api/sync', { method: 'POST', headers: H(), body: JSON.stringify({ chat }) }).catch(() => {});
+  }, 800);
+}
+async function syncPull() {
+  try {
+    const r = await fetch('/api/sync', { headers: H() });
+    if (!r.ok) return;
+    const { chats: remote } = await r.json();
+    const byId = new Map(chats.map((c) => [c.id, c]));
+    for (const rc of remote) {
+      const local = byId.get(rc.id);
+      if (!local || new Date(rc.updated) > new Date(local.updatedAt || 0)) {
+        const merged = { id: rc.id, title: rc.title, model: rc.model, messages: rc.messages, updatedAt: rc.updated };
+        if (local) Object.assign(local, merged); else chats.push(merged);
+      }
+    }
+    chats.sort((a, b) => new Date(b.updatedAt || 0) - new Date(a.updatedAt || 0));
+    if (!cur || !cur.messages.length) cur = chats[0] || cur;
+    save(); render();
+  } catch {}
+}
+function memorize(user, assistant) {
+  fetch('/api/memorize', { method: 'POST', headers: H(), body: JSON.stringify({ user, assistant }) }).catch(() => {});
+}
 const input = $('input');
 function autosize() { input.style.height = 'auto'; if (input.value) input.style.height = Math.min(130, input.scrollHeight) + 'px'; }
 input.addEventListener('input', autosize);
 input.addEventListener('keydown', (e) => { if (e.key === 'Enter' && !e.shiftKey && !('ontouchstart' in window)) { e.preventDefault(); send(); } });
 
-if (!localStorage.code) openSheet('codeSheet');
+$('memBtn').onclick = async () => {
+  closeSheets();
+  const box = $('memList'); box.innerHTML = '<div style="color:var(--muted);font-size:13px;padding:8px">loading…</div>';
+  openSheet('memSheet');
+  try {
+    const { memories } = await (await fetch('/api/memorize', { headers: H() })).json();
+    box.innerHTML = '';
+    if (!memories.length) box.innerHTML = '<div style="color:var(--muted);font-size:14px;padding:8px">Nothing yet — memories appear as you chat.</div>';
+    for (const m of memories) {
+      const row = document.createElement('div'); row.className = 'opt';
+      const t = document.createElement('span'); t.textContent = m.fact; t.style.fontSize = '14px'; row.appendChild(t);
+      const x = document.createElement('button'); x.className = 'x'; x.textContent = '✕'; x.style.cssText = 'border:none;background:none;color:var(--muted);cursor:pointer';
+      x.onclick = () => { row.remove(); fetch('/api/memorize', { method: 'DELETE', headers: H(), body: JSON.stringify({ id: m.id }) }).catch(() => {}); };
+      row.appendChild(x);
+      box.appendChild(row);
+    }
+  } catch { box.innerHTML = '<div class="err">couldn\'t load</div>'; }
+};
+
+if (!localStorage.code) openSheet('codeSheet'); else syncPull();
 if (!cur) newChat(); else render();
 </script>
 </body>
