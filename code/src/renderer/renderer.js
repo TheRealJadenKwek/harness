@@ -119,6 +119,7 @@ function timeago(ts) {
 function addUser(rec, text, imageCount, meta) {
   clearEmpty(rec);
   const wrap = document.createElement('div'); wrap.className = 'msg-wrap';
+  (rec.chapters = rec.chapters || []).push({ q: (meta && meta.raw) || text, a: '', el: wrap });
   const thumbs = (meta && meta.thumbs) || [];
   if (thumbs.length) {
     const tr = document.createElement('div'); tr.className = 'user-thumbs';
@@ -145,6 +146,7 @@ function addUser(rec, text, imageCount, meta) {
   ctl.appendChild(t);
   wrap.appendChild(ctl);
   logOf(rec).appendChild(wrap); scrollLog(rec);
+  if (rec === active()) renderChapters(rec);
 }
 async function rerenderLog(rec) {
   rec.logEl.innerHTML = ''; rec.cur = null; rec.userN = 0; rec.planEl = null; rec.lastTool = null;
@@ -386,6 +388,8 @@ function renderCurMd(rec) {
 }
 function finalizeAssistant(rec, ts) {
   const c = rec.cur; if (!c) return;
+  const ch = rec.chapters && rec.chapters[rec.chapters.length - 1];
+  if (ch && !ch.a) ch.a = (c.raw || '').replace(/\s+/g, ' ').slice(0, 220);
   if (c.mdTimer) { clearTimeout(c.mdTimer); c.mdTimer = null; }
   c.textEl.innerHTML = md(c.raw);
   c.textEl.dataset.raw = c.raw;
@@ -843,6 +847,46 @@ document.addEventListener('keydown', (e) => {
   }
 });
 
+// ---------------------------------------------------------------- chapters minimap
+function renderChapters(rec) {
+  const bar = $('chapters');
+  const chs = (rec.chapters || []).filter((c) => c.el && c.el.isConnected);
+  rec.chapters = chs;
+  if (chs.length < 2) { bar.style.display = 'none'; return; }
+  bar.style.display = 'flex';
+  bar.style.gap = Math.max(3, Math.min(9, Math.floor(bar.clientHeight / chs.length) - 4)) + 'px';
+  bar.innerHTML = '';
+  const tip = $('chapTip');
+  chs.forEach((ch, i) => {
+    const t = document.createElement('div');
+    t.className = 'chap-tick';
+    t.onmouseenter = () => {
+      const r = t.getBoundingClientRect();
+      tip.innerHTML = '<div class="ct-q">' + esc(ch.q.slice(0, 120)) + '</div>'
+        + (ch.a ? '<div class="ct-a">' + esc(ch.a) + '</div>' : '');
+      tip.style.display = 'block';
+      tip.style.left = (r.right + 10) + 'px';
+      tip.style.top = Math.min(Math.max(r.top - 20, 52), innerHeight - 150) + 'px';
+    };
+    t.onmouseleave = () => { tip.style.display = 'none'; };
+    t.onclick = () => ch.el.scrollIntoView({ behavior: 'smooth', block: 'start' });
+    bar.appendChild(t);
+  });
+  if (!rec.chSpy) {
+    rec.chSpy = true;
+    rec.logEl.addEventListener('scroll', () => { if (rec === active()) chSpy(rec); }, { passive: true });
+  }
+  chSpy(rec);
+}
+function chSpy(rec) {
+  const ticks = $('chapters').children;
+  const chs = rec.chapters || [];
+  if (!ticks.length || ticks.length !== chs.length) return;
+  const top = rec.logEl.scrollTop + 90;
+  let cur = 0;
+  chs.forEach((ch, i) => { if (ch.el.offsetTop <= top) cur = i; });
+  for (let i = 0; i < ticks.length; i++) ticks[i].classList.toggle('cur', i === cur);
+}
 async function activate(id) {
   if (!S.recs.has(id)) return;
   closeCliView();
@@ -867,6 +911,7 @@ async function activate(id) {
   else if (S.panel === 'files') refreshFiles();
   showSuggestion(rec);
   maybeEmptyState(rec);
+  renderChapters(rec);
   $('input').focus();
 }
 
@@ -1211,7 +1256,7 @@ function runSlash(rec, text) {
     return true;
   }
   if (cmd === '/new') { newChat(); return true; }
-  if (cmd === '/clear') { H.sessionClear(rec.meta.id).then(() => { rec.logEl.innerHTML = ''; rec.cur = null; rec.userN = 0; addLine(rec, 'done', 'conversation cleared.'); }); return true; }
+  if (cmd === '/clear') { H.sessionClear(rec.meta.id).then(() => { rec.logEl.innerHTML = ''; rec.cur = null; rec.userN = 0; rec.chapters = []; renderChapters(rec); addLine(rec, 'done', 'conversation cleared.'); }); return true; }
   if (cmd === '/compact') {
     rec.streaming = true; updateComposer(); addLine(rec, 'done', '✦ compacting context…'); startWorking(rec);
     H.sessionCompact(rec.meta.id).then((r) => { if (!r.ok && r.error) { addLine(rec, 'err', '⚠︎ ' + r.error); endTurn(rec); } });
