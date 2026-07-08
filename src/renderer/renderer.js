@@ -37,7 +37,7 @@ function md(src) {
   let s = esc(src || '');
   const blocks = [];
   s = s.replace(/```([\w+-]*)\n?([\s\S]*?)(?:```|$)/g, (_, lang, code) => {
-    blocks.push('<pre class="code"><code>' + code.replace(/\n$/, '') + '</code></pre>');
+    blocks.push('<pre class="code"><button class="code-copy" title="Copy code">⧉</button><code>' + code.replace(/\n$/, '') + '</code></pre>');
     return '\uE000' + (blocks.length - 1) + '\uE001';
   });
   s = s.replace(/`([^`\n]+)`/g, '<code class="ic">$1</code>');
@@ -90,12 +90,13 @@ function ensureAssistant(rec) {
 function renderCurMd(rec) {
   const c = rec.cur; if (!c) return;
   if (c.mdTimer) return;
-  c.mdTimer = setTimeout(() => { c.mdTimer = null; if (rec.cur === c) c.textEl.innerHTML = md(c.raw); }, 120);
+  c.mdTimer = setTimeout(() => { c.mdTimer = null; if (rec.cur === c) { c.textEl.innerHTML = md(c.raw); c.textEl.dataset.raw = c.raw; } }, 120);
 }
 function finalizeAssistant(rec) {
   const c = rec.cur; if (!c) return;
   if (c.mdTimer) { clearTimeout(c.mdTimer); c.mdTimer = null; }
   c.textEl.innerHTML = md(c.raw);
+  c.textEl.dataset.raw = c.raw;
   c.think.classList.add('closed');
   c.thinkHead.textContent = '✳ thought for a bit';
   rec.cur = null;
@@ -1365,6 +1366,66 @@ async function renderTreeLevel(container, sub, depth) {
   }
 }
 
+
+// ---------------------------------------------------------------- message context menu + code copy
+let msgCtxEl = null;
+function hideMsgCtx() { if (msgCtxEl) { msgCtxEl.remove(); msgCtxEl = null; } }
+document.addEventListener('mousedown', (e) => { if (msgCtxEl && !e.target.closest('.msg-ctx')) hideMsgCtx(); });
+document.addEventListener('contextmenu', (e) => {
+  const msg = e.target.closest('.msg');
+  if (!msg || !e.target.closest('.log')) return;
+  e.preventDefault();
+  hideMsgCtx(); hideCtxMenu(); hideMenus();
+  const sel = String(window.getSelection() || '').trim();
+  const mdEl = msg.querySelector('.md');
+  const raw = mdEl ? (mdEl.dataset.raw || msg.innerText) : msg.innerText;
+  const plain = msg.innerText;
+  msgCtxEl = document.createElement('div');
+  msgCtxEl.className = 'menu ctx-menu msg-ctx';
+  const item = (label, fn) => {
+    const d = document.createElement('div');
+    d.className = 'menu-item';
+    d.textContent = label;
+    d.onmousedown = (ev) => ev.stopPropagation();
+    d.onclick = () => { hideMsgCtx(); fn(); };
+    msgCtxEl.appendChild(d);
+  };
+  if (sel) item('Copy selection', () => H.clipboardWrite(sel));
+  item('Copy message', () => H.clipboardWrite(plain));
+  if (mdEl) item('Copy as Markdown', () => H.clipboardWrite(raw));
+  item('Attach as context', () => {
+    const q = (sel || plain).split('\n').map((l) => '> ' + l).join('\n');
+    input.value = (input.value ? input.value + '\n' : '') + q + '\n\n';
+    input.dispatchEvent(new Event('input'));
+    input.focus();
+  });
+  document.body.appendChild(msgCtxEl);
+  const r = msgCtxEl.getBoundingClientRect();
+  msgCtxEl.style.left = Math.min(e.clientX, window.innerWidth - r.width - 8) + 'px';
+  msgCtxEl.style.top = Math.min(e.clientY, window.innerHeight - r.height - 8) + 'px';
+  msgCtxEl.style.right = 'auto';
+});
+// one-click copy on any fenced code block
+document.addEventListener('click', (e) => {
+  const btn = e.target.closest('.code-copy');
+  if (!btn) return;
+  const code = btn.parentElement.querySelector('code');
+  if (code) {
+    H.clipboardWrite(code.innerText);
+    btn.textContent = '✓';
+    setTimeout(() => { btn.textContent = '⧉'; }, 1200);
+  }
+});
+
+// ---------------------------------------------------------------- model favorites (right-click or ★)
+function favModels() { try { return JSON.parse(localStorage.getItem('favModels') || '[]'); } catch { return []; } }
+function toggleFavModel(v) {
+  const f = favModels();
+  const i = f.indexOf(v);
+  if (i >= 0) f.splice(i, 1); else f.push(v);
+  localStorage.setItem('favModels', JSON.stringify(f));
+}
+
 // ---------------------------------------------------------------- model sheet
 async function openModelSheet(forceRefresh) {
   $('modelSheet').style.display = 'flex';
@@ -1392,16 +1453,21 @@ function priceStr(m) {
 function renderModels(q) {
   const rec = active();
   const s = q.trim().toLowerCase();
-  const list = s ? S.models.filter((m) => m.value.toLowerCase().includes(s) || m.label.toLowerCase().includes(s)) : S.models;
+  let list = s ? S.models.filter((m) => m.value.toLowerCase().includes(s) || m.label.toLowerCase().includes(s)) : S.models;
+  const fav = favModels();
+  if (fav.length) list = [...list].sort((a, b) => (fav.includes(b.value) ? 1 : 0) - (fav.includes(a.value) ? 1 : 0));
   $('modelCount').textContent = list.length + ' of ' + S.models.length + ' models' +
     (s && !S.models.some((m) => m.value === q.trim()) ? ' · Enter to use “' + q.trim() + '”' : '');
   const box = $('modelList'); box.innerHTML = '';
   for (const m of list.slice(0, 400)) {
     const row = document.createElement('div');
     row.className = 'model-row' + (rec && m.value === rec.meta.model ? ' sel' : '');
-    row.innerHTML = '<div class="m-line"><div>' + esc(m.label) + (m.reasoning ? ' <span class="mi-hint" title="Supports reasoning effort">🧠</span>' : '') + '</div><div class="m-price">' + esc(priceStr(m)) + '</div></div>' +
+    const isFav = fav.includes(m.value);
+    row.innerHTML = '<div class="m-line"><span class="fav-star' + (isFav ? ' on' : '') + '" title="Favourite (or right-click the row)">' + (isFav ? '★' : '☆') + '</span><div>' + esc(m.label) + (m.reasoning ? ' <span class="mi-hint" title="Supports reasoning effort">🧠</span>' : '') + '</div><div class="m-price">' + esc(priceStr(m)) + '</div></div>' +
       '<div class="mv">' + esc(m.value) + (m.context ? ' · ' + Math.round(m.context / 1000) + 'k ctx' : '') + '</div>';
     row.onclick = () => chooseModel(m.value);
+    row.oncontextmenu = (e) => { e.preventDefault(); toggleFavModel(m.value); renderModels($('modelSearch').value); };
+    row.querySelector('.fav-star').onclick = (e) => { e.stopPropagation(); toggleFavModel(m.value); renderModels($('modelSearch').value); };
     box.appendChild(row);
   }
 }

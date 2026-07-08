@@ -28,6 +28,7 @@ contextBridge.exposeInMainWorld('harness', {
   gitStatus: (id) => ipcRenderer.invoke('git-status', id),
   gitDiff: (id, file) => ipcRenderer.invoke('git-diff', { id, file }),
   openExternal: (url) => ipcRenderer.invoke('open-external', url),
+  clipboardWrite: (t) => ipcRenderer.invoke('clipboard-write', String(t)),
   openSessionsFolder: () => ipcRenderer.invoke('open-sessions-folder'),
 
   // background tasks + run

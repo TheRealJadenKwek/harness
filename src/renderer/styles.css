@@ -352,3 +352,18 @@ h3 { margin: 2px 0 4px; }
 .working .w-star { color: #c96442; display: inline-block; font-size: 15px; line-height: 1; animation: wstar 1.8s ease-in-out infinite; transform-origin: 50% 55%; }
 @keyframes wstar { 0% { transform: rotate(0deg) scale(1); opacity: 1; } 50% { transform: rotate(180deg) scale(.82); opacity: .65; } 100% { transform: rotate(360deg) scale(1); opacity: 1; } }
 .working .w-time { font-family: var(--mono); font-size: 11px; }
+
+/* code-block copy button */
+.md pre.code { position: relative; }
+.md pre.code .code-copy {
+  position: absolute; top: 6px; right: 6px; display: none;
+  background: var(--panel2); color: var(--muted); border: 1px solid var(--border);
+  border-radius: 6px; padding: 2px 7px; cursor: pointer; font-size: 12px;
+}
+.md pre.code:hover .code-copy { display: block; }
+.md pre.code .code-copy:hover { color: var(--text); }
+
+/* model favourites */
+.fav-star { color: var(--border); cursor: pointer; font-size: 13px; flex: none; }
+.fav-star:hover { color: var(--orange); }
+.fav-star.on { color: var(--orange); }

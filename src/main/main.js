@@ -1818,6 +1818,12 @@ ipcMain.handle('git-diff', async (_e, { id, file }) => {
   return { diff: r.so.slice(0, 300000) };
 });
 
+ipcMain.handle('clipboard-write', (_e, t) => {
+  const { clipboard } = require('electron');
+  clipboard.writeText(String(t || ''));
+  return { ok: true };
+});
+
 ipcMain.handle('open-external', (_e, url) => {
   if (/^https?:\/\//i.test(url || '')) shell.openExternal(url);
   return { ok: true };
