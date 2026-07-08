@@ -251,6 +251,7 @@ function ensureAgent(rec) {
       apiKey: cfg.apiKey, model: rec.model, cwd: rec.cwd, mode: rec.mode, effort: rec.effort || null,
       goal: rec.goal || null,
       textTools: !supportsTools(rec.model),
+      ctxLimit: ctxLimitOf(rec.model),
       hooks: makeHooks(rec),
       extraTools: makeExtraTools(rec),
       emit: (e) => onAgentEvent(rec, e),
@@ -1549,7 +1550,7 @@ ipcMain.handle('session-config', (_e, { id, patch }) => {
   }
   saveConfig(cfg);
   if (rec.agent) {
-    if (patch.model) { rec.agent.setModel(rec.model); rec.agent.textTools = !supportsTools(rec.model); }
+    if (patch.model) { rec.agent.setModel(rec.model); rec.agent.textTools = !supportsTools(rec.model); rec.agent.setCtxLimit(ctxLimitOf(rec.model)); }
     rec.agent.setMode(rec.mode);
     if (patch.cwd) rec.agent.setCwd(rec.cwd);
     rec.agent.setEffort(rec.effort || null);
@@ -1584,7 +1585,7 @@ function beginTurn(rec, { text, images, modelText, remote }) {
     try {
       // auto-compact when the context window is ~75% full (like Claude Code)
       const limit = ctxLimitOf(rec.model);
-      if (limit && rec.usage.context > 0.75 * limit && agent.messages.length > 8) {
+      if (limit && rec.usage.context > 0.7 * Math.max(limit - 4600, limit * 0.5) && agent.messages.length > 8) {
         rec.transcript.push({ t: 'note', text: '✦ context ~' + Math.round(rec.usage.context / limit * 100) + '% full — auto-compacting' });
         sendToUI('agent-event', { sessionId: rec.id, type: 'control_note', message: '✦ context nearly full — auto-compacting first' });
         try { await agent.compact(rec.abort.signal); } catch {}

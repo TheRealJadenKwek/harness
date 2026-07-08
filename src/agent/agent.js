@@ -26,6 +26,7 @@ class Session {
     this.textTools = !!opts.textTools;   // ReAct-style text protocol for models without native tool calling
     this.hooks = opts.hooks || null;     // { pre(name,args)->{ok,reason}, post(name,args,result) }
     this.sandbox = opts.sandbox !== false;   // Seatbelt-wrap bash (macOS)
+    this.ctxLimit = opts.ctxLimit || 0;      // model context window (tokens) for hard fitting
     this._steer = [];                        // mid-turn user interjections
     this.messages = [this._sys()];
   }
@@ -71,6 +72,39 @@ class Session {
 
   setModel(m) { this.model = m; }
   setEffort(e) { this.effort = e || null; }
+  setCtxLimit(n) { this.ctxLimit = n || 0; }
+
+  _estTokens() {
+    let n = 1600;   // system prompt + tool schemas overhead
+    for (const m of this.messages) {
+      n += (typeof m.content === 'string' ? m.content.length : JSON.stringify(m.content || '').length) / 4 + 8;
+    }
+    return Math.round(n);
+  }
+
+  // Hard context fitting: providers reserve ~4k completion tokens on top of the
+  // prompt, so small-context models 400 long before the raw limit. Drop the oldest
+  // messages (in valid units — an assistant tool_call goes WITH its tool results)
+  // until the request fits. Self-healing; runs before every model call.
+  _fit() {
+    const limit = this.ctxLimit || 0;
+    if (!limit) return;
+    const budget = Math.max(2500, (limit - 4600) * 0.85);
+    if (this._estTokens() <= budget) return;
+    let dropped = 0;
+    while (this._estTokens() > budget && this.messages.length > 8) {
+      this.messages.splice(1, 1);
+      dropped++;
+      while (this.messages.length > 1 && this.messages[1] && this.messages[1].role === 'tool') {
+        this.messages.splice(1, 1);   // never orphan tool results
+        dropped++;
+      }
+    }
+    if (dropped) {
+      this.messages.splice(1, 0, { role: 'user', content: '[Note: ' + dropped + ' earlier messages were dropped to fit this model\'s context window. Ask the user if context you need is missing.]' });
+      this.emit({ type: 'control_note', message: '✂ dropped ' + dropped + ' old messages to fit the ' + Math.round(limit / 1000) + 'k context window' });
+    }
+  }
   setMode(m) { this.mode = m; this.messages[0] = this._sys(); }
   setCwd(d) { this.cwd = d; this.messages[0] = this._sys(); }
   setGoal(g) { this.goal = g || null; this.messages[0] = this._sys(); }
@@ -91,11 +125,22 @@ class Session {
       role: 'user',
       content: 'Summarize this entire session so far for your own future reference: the task(s), every file read or changed (with paths), key decisions, current state, and what remains. Be complete but concise. Reply with ONLY the summary.',
     }];
-    const res = await streamChat({
-      apiKey: this.apiKey, baseUrl: this.baseUrl, model: this.model,
-      messages: req, tools: null, signal,
-      onText: (d) => this.emit({ type: 'text', delta: d }),
-    });
+    // summarize on a large-context cheap model — compacting with the session model
+    // fails exactly when compaction is needed (the history no longer fits it)
+    let res;
+    try {
+      res = await streamChat({
+        apiKey: this.apiKey, baseUrl: this.baseUrl, model: 'deepseek/deepseek-v4-flash',
+        messages: req, tools: null, signal,
+        onText: (d) => this.emit({ type: 'text', delta: d }),
+      });
+    } catch (e) {
+      res = await streamChat({
+        apiKey: this.apiKey, baseUrl: this.baseUrl, model: this.model,
+        messages: req, tools: null, signal,
+        onText: (d) => this.emit({ type: 'text', delta: d }),
+      });
+    }
     const summary = res.content || '';
     this.messages = [
       this._sys(),
@@ -162,6 +207,7 @@ class Session {
       this.emit({ type: 'turn_start', step });
       this._drainSteer();
       this._trim();
+      this._fit();
       let res;
       try {
         res = await streamChat({
