@@ -192,6 +192,32 @@ function fetchLocalModels() {
 }
 function isLocalModel(model) { return typeof model === 'string' && model.startsWith('local/'); }
 
+let mediaModelsMem = null, mediaModelsAt = 0;
+async function getMediaModels() {
+  if (mediaModelsMem && Date.now() - mediaModelsAt < 3600e3) return mediaModelsMem;
+  const key = loadConfig().apiKey;
+  const grab = (kind) => new Promise((resolve) => {
+    https.get('https://openrouter.ai/api/v1/models?output_modalities=' + kind,
+      { headers: { 'Authorization': 'Bearer ' + key } }, (res) => {
+        let b = ''; res.on('data', (c) => (b += c));
+        res.on('end', () => {
+          try {
+            resolve((JSON.parse(b).data || []).map((m) => ({
+              id: m.id, name: m.name || m.id, kind,
+              price: Number((m.pricing || {}).completion) || Number((m.pricing || {}).image) || 0,
+              description: String(m.description || '').slice(0, 300),
+            })));
+          } catch { resolve([]); }
+        });
+      }).on('error', () => resolve([]));
+  });
+  const [img, vid] = await Promise.all([grab('image'), grab('video')]);
+  mediaModelsMem = { image: img, video: vid };
+  mediaModelsAt = Date.now();
+  return mediaModelsMem;
+}
+ipcMain.handle('media-models', () => getMediaModels());
+
 async function getModels(force) {
   if (!force && modelsMem) return modelsMem;
   if (!force) {
@@ -957,7 +983,103 @@ async function runSubAgent(rec, task) {
   return { report: (finalText || '(no report)').slice(0, 20000), tools_used: toolsUsed };
 }
 
+const MEDIA_TOOLS_DESC = 'The user configures a DEFAULT model in Settings; you may pass `model` to override ONLY if the user has enabled auto-pick — call list_media_models first to see what exists, their prices, and strengths, and choose deliberately.';
+function makeMediaTools(rec) {
+  const dl = (url, headers) => new Promise((resolve, reject) => {
+    https.get(url, { headers }, (res) => {
+      if (res.statusCode >= 300) { reject(new Error('HTTP ' + res.statusCode)); return; }
+      const chunks = [];
+      res.on('data', (c) => chunks.push(c));
+      res.on('end', () => resolve(Buffer.concat(chunks)));
+    }).on('error', reject);
+  });
+  const orPost = (path, body, key) => new Promise((resolve, reject) => {
+    const req = https.request({ method: 'POST', hostname: 'openrouter.ai', path,
+      headers: { 'Authorization': 'Bearer ' + key, 'Content-Type': 'application/json' } }, (res) => {
+      let b = ''; res.on('data', (c) => (b += c));
+      res.on('end', () => { try { resolve(JSON.parse(b)); } catch (e) { reject(e); } });
+    });
+    req.on('error', reject);
+    req.end(JSON.stringify(body));
+  });
+  const orGet = (path, key) => new Promise((resolve, reject) => {
+    https.get({ hostname: 'openrouter.ai', path, headers: { 'Authorization': 'Bearer ' + key } }, (res) => {
+      let b = ''; res.on('data', (c) => (b += c));
+      res.on('end', () => { try { resolve(JSON.parse(b)); } catch (e) { reject(e); } });
+    }).on('error', reject);
+  });
+  const saveMedia = (buf, ext) => {
+    const dir = path.join(rec.cwd, 'generated');
+    fs.mkdirSync(dir, { recursive: true });
+    const fp = path.join(dir, 'media-' + Date.now().toString(36) + '.' + ext);
+    fs.writeFileSync(fp, buf);
+    return fp;
+  };
+  const resolveModel = (args, kind) => {
+    const cfg = loadConfig();
+    const configured = kind === 'image' ? (cfg.imageModel || 'google/gemini-3.1-flash-image') : (cfg.videoModel || null);
+    if (cfg.mediaAutoPick && args.model && /^[\w.-]+\/[\w.:-]+$/.test(args.model)) return args.model;
+    return configured;
+  };
+  return {
+    list_media_models: {
+      schema: { name: 'list_media_models', description: 'List the available image- and video-generation models with prices and descriptions, so you can recommend or (if the user allows auto-pick) choose the right one for a request.', parameters: { type: 'object', properties: {} } },
+      gate: () => null,
+      run: async () => {
+        const m = await getMediaModels();
+        const cfg = loadConfig();
+        return { defaults: { image: cfg.imageModel || 'google/gemini-3.1-flash-image', video: cfg.videoModel || '(none set)' },
+                 auto_pick_allowed: !!cfg.mediaAutoPick,
+                 image_models: m.image, video_models: m.video };
+      },
+    },
+    generate_image: {
+      schema: { name: 'generate_image', description: 'Generate an image from a text prompt; it is saved into the project (generated/) and shown to the user. ' + MEDIA_TOOLS_DESC, parameters: { type: 'object', properties: { prompt: { type: 'string' }, model: { type: 'string' } }, required: ['prompt'] } },
+      gate: (a) => ({ kind: 'media', detail: 'image: ' + String(a.prompt || '').slice(0, 80), danger: false }),
+      run: async (a) => {
+        const key = loadConfig().apiKey;
+        const model = resolveModel(a, 'image');
+        const j = await orPost('/api/v1/chat/completions', { model, modalities: ['image', 'text'],
+          messages: [{ role: 'user', content: String(a.prompt || '').slice(0, 2000) }] }, key);
+        const img = ((((j.choices || [])[0] || {}).message || {}).images || [])[0];
+        const url = img && img.image_url && img.image_url.url;
+        if (!url) return { error: (j.error && j.error.message) || 'no image returned', model };
+        const b64 = url.split(',')[1];
+        const fp = saveMedia(Buffer.from(b64, 'base64'), 'png');
+        sendToUI('agent-event', { sessionId: rec.id, type: 'media', path: fp, kind: 'image' });
+        rec.transcript.push({ t: 'media', path: fp, kind: 'image' });
+        return { ok: true, model, saved_to: path.relative(rec.cwd, fp), cost: (j.usage && j.usage.cost) || null };
+      },
+    },
+    generate_video: {
+      schema: { name: 'generate_video', description: 'Generate a short video (EXPENSIVE: $0.20-$1+/clip, 1-3 min render; only on explicit user request). Saved into the project and shown to the user. ' + MEDIA_TOOLS_DESC, parameters: { type: 'object', properties: { prompt: { type: 'string' }, model: { type: 'string' } }, required: ['prompt'] } },
+      gate: (a) => ({ kind: 'media', detail: 'VIDEO ($$$): ' + String(a.prompt || '').slice(0, 80), danger: false }),
+      run: async (a) => {
+        const key = loadConfig().apiKey;
+        const model = resolveModel(a, 'video');
+        if (!model) return { error: 'no video model configured — the user must pick one in Settings → Media generation' };
+        const job = await orPost('/api/v1/videos', { model, prompt: String(a.prompt || '').slice(0, 2000) }, key);
+        if (!job.id) return { error: (job.error && job.error.message) || 'video job rejected', model };
+        const deadline = Date.now() + 240000;
+        let st = job;
+        while (st.status !== 'completed' && Date.now() < deadline) {
+          if (st.status === 'failed' || st.status === 'error') return { error: 'video generation failed', model };
+          await new Promise((ok) => setTimeout(ok, 5000));
+          st = await orGet('/api/v1/videos/' + job.id, key);
+        }
+        if (st.status !== 'completed' || !(st.unsigned_urls || [])[0]) return { error: 'video timed out (may still complete on OpenRouter)', model };
+        const buf = await dl(st.unsigned_urls[0], { 'Authorization': 'Bearer ' + key });
+        const fp = saveMedia(buf, 'mp4');
+        sendToUI('agent-event', { sessionId: rec.id, type: 'media', path: fp, kind: 'video' });
+        rec.transcript.push({ t: 'media', path: fp, kind: 'video' });
+        return { ok: true, model, saved_to: path.relative(rec.cwd, fp), cost: (st.usage && st.usage.cost) || null };
+      },
+    },
+  };
+}
+
 function makeExtraTools(rec, noAgent) {
+  const mediaTools = makeMediaTools(rec);
   const autoTools = {
     ...AUTOMATION_TOOLS,
     create_automation: {
@@ -985,7 +1107,7 @@ function makeExtraTools(rec, noAgent) {
   };
   return {
     get schemas() {
-      const out = [...Object.values(BROWSER_TOOLS), ...Object.values(COMPUTER_TOOLS), ...Object.values(autoTools)].map((t) => ({ type: 'function', function: t.schema }));
+      const out = [...Object.values(BROWSER_TOOLS), ...Object.values(COMPUTER_TOOLS), ...Object.values(autoTools), ...Object.values(mediaTools)].map((t) => ({ type: 'function', function: t.schema }));
       if (!noAgent) out.push({ type: 'function', function: AGENT_TOOL_SCHEMA });
       for (const [srv, client] of mcpClients) {
         if (client.status !== 'running') continue;
@@ -1000,11 +1122,12 @@ function makeExtraTools(rec, noAgent) {
       return out;
     },
     has(name) {
-      if (BROWSER_TOOLS[name] || COMPUTER_TOOLS[name] || autoTools[name]) return true;
+      if (BROWSER_TOOLS[name] || COMPUTER_TOOLS[name] || autoTools[name] || mediaTools[name]) return true;
       if (name === 'agent' && !noAgent) return true;
       return name.startsWith('mcp__') && this._route(name) !== null;
     },
     gate(name, args) {
+      if (mediaTools[name]) return mediaTools[name].gate(args || {});
       if (autoTools[name]) return autoTools[name].gate(args || {});
       if (BROWSER_TOOLS[name]) return BROWSER_TOOLS[name].gate(args || {});
       if (COMPUTER_TOOLS[name]) return COMPUTER_TOOLS[name].gate(args || {});
@@ -1023,6 +1146,7 @@ function makeExtraTools(rec, noAgent) {
       return null;
     },
     run(name, args) {
+      if (mediaTools[name]) return mediaTools[name].run(args || {});
       if (autoTools[name]) return autoTools[name].run(args || {});
       if (BROWSER_TOOLS[name]) return BROWSER_TOOLS[name].run(args || {});
       if (COMPUTER_TOOLS[name]) return COMPUTER_TOOLS[name].run(args || {}, rec);

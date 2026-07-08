@@ -132,6 +132,15 @@ async function doForkAt(rec, n, text) {
   const inp = $('input');
   inp.value = r.text || text; inp.dispatchEvent(new Event('input')); inp.focus();
 }
+function addMedia(rec, p, kind) {
+  const el = document.createElement('div');
+  el.className = 'msg assistant';
+  el.innerHTML = kind === 'video'
+    ? '<video controls src="file://' + p + '" style="max-width:min(460px,100%);border-radius:12px"></video>'
+    : '<img src="file://' + p + '" style="max-width:min(420px,100%);border-radius:12px;cursor:pointer">';
+  if (kind !== 'video') el.querySelector('img').onclick = () => H.revealFile(p);
+  logOf(rec).appendChild(el); scrollLog(rec);
+}
 function addLine(rec, cls, text) {
   const el = document.createElement('div'); el.className = cls; el.textContent = text;
   logOf(rec).appendChild(el); scrollLog(rec); return el;
@@ -282,6 +291,7 @@ function renderItem(rec, item) {
   }
   else if (item.t === 'tool') addTool(rec, item.name, item.args, item.result === undefined ? { error: '(interrupted)' } : item.result);
   else if (item.t === 'diff') addDiff(rec, item.file, item.before, item.after);
+  else if (item.t === 'media') addMedia(rec, item.path, item.kind);
   else if (item.t === 'note') addLine(rec, 'done', item.text);
   else if (item.t === 'err') addLine(rec, 'err', '⚠︎ ' + item.text);
 }
@@ -637,6 +647,7 @@ H.onEvent((e) => {
     img.onclick = () => card.classList.toggle('big');
     card.appendChild(img); logOf(rec).appendChild(card); scrollLog(rec);
   }
+  else if (e.type === 'media') addMedia(rec, e.path, e.kind);
   else if (e.type === 'diff') addDiff(rec, e.file, e.before, e.after);
   else if (e.type === 'done') {
     finalizeAssistant(rec, Date.now());
@@ -729,6 +740,24 @@ $('sendBtn').onclick = () => onSend();
 $('stopBtn').onclick = () => { const rec = active(); if (rec) H.sessionAbort(rec.meta.id); };
 
 function hideSettings() { $('settingsSheet').style.display = 'none'; }
+async function fillMediaSelects() {
+  const sel = (id) => $(id);
+  if (!sel('imgModelSel')) return;
+  const m = await H.mediaModels();
+  const cfg = await H.getConfig();
+  const fill = (el, list, cur, noneLabel) => {
+    el.innerHTML = '';
+    if (noneLabel) { const o = document.createElement('option'); o.value = ''; o.textContent = noneLabel; el.appendChild(o); }
+    for (const x of list) { const o = document.createElement('option'); o.value = x.id; o.textContent = x.name + ' ($' + (x.price * 1e6).toFixed(2) + '/M)'; el.appendChild(o); }
+    el.value = cur || (noneLabel ? '' : (list[0] && list[0].id) || '');
+  };
+  fill(sel('imgModelSel'), m.image, cfg.imageModel || 'google/gemini-3.1-flash-image');
+  fill(sel('vidModelSel'), m.video, cfg.videoModel, '— no video model (video gen off) —');
+  sel('imgModelSel').onchange = () => H.setConfig({ imageModel: sel('imgModelSel').value });
+  sel('vidModelSel').onchange = () => H.setConfig({ videoModel: sel('vidModelSel').value || null });
+  $('mediaAutoPick').checked = !!cfg.mediaAutoPick;
+  $('mediaAutoPick').onchange = () => H.setConfig({ mediaAutoPick: $('mediaAutoPick').checked });
+}
 // ---------------------------------------------------------------- automations
 async function refreshAutomations() {
   if ($('autoModelList') && !$('autoModelList').children.length && S.models && S.models.length) {
@@ -1655,7 +1684,7 @@ async function chooseModel(v) {
 $('settingsBtn').onclick = () => {
   $('settingsSheet').style.display = 'flex';
   $('keyInput').value = '';
-  renderMcpList(); renderSkillsList(); renderPluginsList(); renderSpend(); renderRules(); renderTrash(); refreshAutomations();
+  renderMcpList(); renderSkillsList(); renderPluginsList(); renderSpend(); renderRules(); renderTrash(); refreshAutomations(); fillMediaSelects();
   H.getConfig().then((c) => { $('sandboxToggle').checked = !!c.sandboxBash; $('suggestToggle').checked = !!c.suggestions; });
 };
 $('sandboxToggle').onchange = () => H.setConfig({ sandboxBash: $('sandboxToggle').checked });

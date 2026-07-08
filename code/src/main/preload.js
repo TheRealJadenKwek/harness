@@ -93,6 +93,7 @@ contextBridge.exposeInMainWorld('harness', {
   transcribe: (b64) => ipcRenderer.invoke('transcribe', b64),
   micPermission: () => ipcRenderer.invoke('mic-permission'),
   ruleRemove: (idx) => ipcRenderer.invoke('rule-remove', idx),
+  mediaModels: () => ipcRenderer.invoke('media-models'),
   automationList: () => ipcRenderer.invoke('automation-list'),
   automationSave: (a) => ipcRenderer.invoke('automation-save', a),
   automationDelete: (id) => ipcRenderer.invoke('automation-delete', id),

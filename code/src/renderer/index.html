@@ -203,6 +203,14 @@
           <div id="spendBars" class="spend-bars" title="Last 14 days"></div>
           <p class="muted">Harness-only, computed from OpenRouter pricing per turn. The account line includes everything on your key.</p>
           <div class="menu-sep"></div>
+          <h3>Media generation</h3>
+          <p class="muted">Models used by <code>generate_image</code> / <code>generate_video</code>. You set the defaults; optionally let the model pick per request (it consults <code>list_media_models</code> for prices and strengths).</p>
+          <div class="row" style="justify-content:flex-start;gap:8px;flex-wrap:wrap">
+            <select id="imgModelSel" style="font:inherit;background:var(--bg);color:var(--text);border:1px solid var(--border);border-radius:8px;padding:6px;max-width:280px"></select>
+            <select id="vidModelSel" style="font:inherit;background:var(--bg);color:var(--text);border:1px solid var(--border);border-radius:8px;padding:6px;max-width:280px"></select>
+          </div>
+          <label style="display:flex;gap:8px;align-items:center;cursor:pointer;margin-top:6px"><input type="checkbox" id="mediaAutoPick" style="width:auto"> Let the model choose the media model per request (your defaults otherwise)</label>
+          <div class="menu-sep"></div>
           <h3>Updates</h3>
           <div class="row" style="justify-content:flex-start;align-items:center;gap:10px">
             <button id="updateBtn" class="sheet-close">Check for updates</button>
