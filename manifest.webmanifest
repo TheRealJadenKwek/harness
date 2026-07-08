@@ -1,0 +1,9 @@
+{
+  "name": "Harness Chat",
+  "short_name": "Harness",
+  "display": "standalone",
+  "start_url": "/",
+  "background_color": "#161619",
+  "theme_color": "#161619",
+  "icons": [{ "src": "/icon.png", "sizes": "180x180", "type": "image/png" }]
+}

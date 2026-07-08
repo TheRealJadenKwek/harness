@@ -1,0 +1,6 @@
+{
+  "version": "0.0.1",
+  "configurations": [
+    { "name": "harness-chat-web", "runtimeExecutable": "npx", "runtimeArgs": ["vercel", "dev", "--listen", "3111", "--yes"], "port": 3111 }
+  ]
+}
