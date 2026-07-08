@@ -13,11 +13,11 @@
 <style>
   :root {
     --bg:#f4f4f2; --panel:#fbfbfa; --panel2:#ececea; --panel3:#e0e0dd; --border:#d8d8d3;
-    --text:#1c1c1e; --muted:#71717a; --accent:#1c1c1e; --accent-text:#fff;
+    --text:#1c1c1e; --muted:#71717a; --accent:#1c1c1e; --accent-text:#fff; --star:#2f63e8;
   }
   @media (prefers-color-scheme: dark) {
     :root { --bg:#161619; --panel:#1e1e23; --panel2:#28282f; --panel3:#313139; --border:#34343d;
-            --text:#e6e6ea; --muted:#9a9aa6; --accent:#e8e8ec; --accent-text:#17171a; }
+            --text:#e6e6ea; --muted:#9a9aa6; --accent:#e8e8ec; --accent-text:#17171a; --star:#5b8aff; }
   }
   * { box-sizing:border-box; -webkit-tap-highlight-color:transparent; }
   html,body { margin:0; height:100%; overscroll-behavior:none; overflow:hidden; }
@@ -40,7 +40,7 @@
   .chat-row:hover { background:var(--panel2); }
   .chat-row.active { background:var(--panel3); }
   .chat-row .t { flex:1; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; font-size:14px; }
-  .chat-row .live { color:#c96442; font-size:12px; animation:pulse 1.2s ease-in-out infinite; }
+  .chat-row .live { color:var(--star); font-size:12px; animation:pulse 1.2s ease-in-out infinite; }
   .chat-row .x { color:var(--muted); border:none; background:none; font-size:13px; cursor:pointer; visibility:hidden; }
   .chat-row:hover .x { visibility:visible; }
   #side .foot { border-top:1px solid var(--border); padding:8px; }
@@ -67,7 +67,7 @@
   .msg.bot ul,.msg.bot ol { margin:4px 0 8px; padding-left:22px; }
   .msg.bot h1,.msg.bot h2,.msg.bot h3 { margin:10px 0 4px; font-size:1.05em; }
   .working { color:var(--muted); font-size:13px; display:flex; gap:6px; align-items:center; align-self:flex-start; }
-  .working .star { color:#c96442; animation:pulse 1.2s ease-in-out infinite; }
+  .working .star { color:var(--star); animation:pulse 1.2s ease-in-out infinite; }
   @keyframes pulse { 50% { opacity:.25 } }
   .err { color:#e05a5a; font-size:13px; align-self:flex-start; }
   .composer { padding:8px 12px calc(8px + env(safe-area-inset-bottom)); overflow-x:hidden; }
@@ -87,6 +87,9 @@
   textarea { flex:1; min-width:0; border:none; background:transparent; color:var(--text); font:inherit; font-size:16px;
              resize:none; outline:none; max-height:160px; padding:7px 4px; overflow-x:hidden; line-height:1.45; }
   textarea::placeholder { color:color-mix(in srgb, var(--muted) 80%, transparent); }
+  #micBtn { border:none; background:transparent; color:var(--muted); width:34px; height:40px; cursor:pointer; border-radius:50%; }
+  #micBtn:hover { color:var(--text); }
+  #micBtn.rec { color:#e05a5a; animation:pulse 1.2s ease-in-out infinite; }
   #send { border:none; width:40px; height:40px; border-radius:50%; background:var(--accent); color:var(--accent-text);
           font-size:18px; cursor:pointer; flex:none; transition:transform .1s, opacity .15s; }
   #send:active { transform:scale(.92); }
@@ -157,7 +160,7 @@
   details.think { align-self:flex-start; max-width:100%; }
   details.think summary { cursor:pointer; list-style:none; font-size:12.5px; color:var(--muted); display:flex; align-items:center; gap:6px; }
   details.think summary::-webkit-details-marker { display:none; }
-  details.think summary .star { color:#c96442; }
+  details.think summary .star { color:var(--star); }
   details.think[open] summary { margin-bottom:6px; }
   details.think .tbody { font-size:13px; color:var(--muted); white-space:pre-wrap; border-left:2px solid var(--border); padding-left:10px; max-height:300px; overflow-y:auto; }
   .toolline { display:flex; align-items:center; gap:7px; align-self:flex-start; font-size:12.5px; color:var(--muted); }
@@ -226,6 +229,7 @@
       <div class="box">
         <button id="attachBtn" title="Attach a photo"></button>
         <textarea id="input" rows="1" placeholder="Message…"></textarea>
+        <button id="micBtn" title="Dictate"></button>
         <button id="send"></button>
       </div>
       <div class="model-row">
@@ -237,7 +241,7 @@
     </div>
   </div>
 </div>
-<input type="file" id="filePick" accept="image/*" multiple style="display:none">
+<input type="file" id="filePick" accept="image/*,.pdf,.txt,.md,.csv,.json,.log,.html,.js,.py,.ts" multiple style="display:none">
 <button id="quoteBtn">↳ Add to message</button>
 <div id="ctxMenu"></div>
 
@@ -446,7 +450,8 @@ function render() {
   $('title').textContent = cur ? cur.title : 'Harness Chat';
   const m = findModel(cur ? cur.model : MODELS[0].id);
   $('modelName').textContent = m.name;
-  $('attachBtn').style.display = m.vision ? '' : 'none';
+  $('attachBtn').style.display = '';
+  $('attachBtn').title = m.vision ? 'Attach photos or documents' : 'Attach documents (this model cannot see images)';
   $('effortBtn').style.display = m.reasoning ? '' : 'none';
   $('effortBtn').innerHTML = ICON.brain + ' ' + (cur && cur.effort ? cur.effort : 'auto');
   let stat = '';
@@ -487,9 +492,20 @@ function copyBtn(text) {
 }
 const FILE_ICON = { pdf: ICON.doc, xlsx: ICON.table, pptx: ICON.pres, text: ICON.text, html: ICON.globe, zip: ICON.box };
 function fileCard(spec) {
+  if (spec.kind === 'image' && spec.dataUrl) {
+    const wrap = document.createElement('div');
+    wrap.className = 'msg bot';
+    wrap.innerHTML = '<img src="' + spec.dataUrl + '" style="max-width:min(420px,100%);border-radius:14px;display:block">' +
+      '<div style="font-size:12px;color:var(--muted);margin-top:5px;cursor:pointer">' + ICON.doc + ' download</div>';
+    wrap.querySelector('div').onclick = async () => {
+      const blob = await (await fetch(spec.dataUrl)).blob();
+      saveBlob(blob, spec.filename || 'image.png');
+    };
+    return wrap;
+  }
   const card = document.createElement('div'); card.className = 'filecard';
   const hint = spec.kind === 'html' ? 'tap to preview · ⤓ downloads' : 'tap to download';
-  card.innerHTML = '<span class="fic" style="color:#c96442">' + (FILE_ICON[spec.kind] || ICON.text) + '</span>'
+  card.innerHTML = '<span class="fic" style="color:var(--star)">' + (FILE_ICON[spec.kind] || ICON.text) + '</span>'
     + '<span style="min-width:0"><div class="fn">' + esc(spec.filename) + '</div><div class="fk">' + spec.kind.toUpperCase() + ' · ' + hint + '</div></span>'
     + '<span class="dl" title="Download">⤓</span>';
   if (spec.kind === 'html') {
@@ -506,7 +522,7 @@ function fileCard(spec) {
 }
 function toolLine(text, done) {
   const el = document.createElement('div'); el.className = 'toolline';
-  el.innerHTML = (done ? '<span class="ok">✓</span>' : '<span class="star" style="color:#c96442">✳</span>') + '<span>' + esc(text) + '</span>';
+  el.innerHTML = (done ? '<span class="ok">✓</span>' : '<span class="star" style="color:var(--star)">✳</span>') + '<span>' + esc(text) + '</span>';
   return el;
 }
 function bubble(msg, chat, idx) {
@@ -521,6 +537,7 @@ function bubble(msg, chat, idx) {
   wrap.appendChild(el);
   if (msg.role === 'assistant') {
     for (const n of msg.toolNotes || []) wrap.insertBefore(toolLine(n, true), el);
+    for (const ex of msg.execs || []) wrap.appendChild(execCard(ex));
     for (const f of msg.files || []) wrap.appendChild(fileCard(f));
   }
   const ctl = document.createElement('div'); ctl.className = 'mctl';
@@ -656,8 +673,14 @@ function ctxArchive(c) {
 }
 function renderAttach() {
   const row = $('attachRow');
-  row.style.display = pendingImages.length ? '' : 'none';
+  row.style.display = (pendingImages.length || pendingDocs.length) ? '' : 'none';
   row.innerHTML = '';
+  pendingDocs.forEach((d, i) => {
+    const chip = document.createElement('div'); chip.className = 'thumb';
+    chip.innerHTML = '<div style="width:auto;max-width:160px;height:52px;display:flex;align-items:center;gap:6px;padding:0 10px;background:var(--panel);border:1px solid var(--border);border-radius:10px;font-size:12px;color:var(--muted)">' + ICON.text + '<span style="overflow:hidden;text-overflow:ellipsis;white-space:nowrap">' + esc(d.name) + '</span></div>';
+    const x = document.createElement('button'); x.textContent = '\u2715'; x.onclick = () => { pendingDocs.splice(i, 1); renderAttach(); };
+    chip.appendChild(x); row.appendChild(chip);
+  });
   pendingImages.forEach((u, i) => {
     const d = document.createElement('div'); d.className = 'thumb';
     const im = document.createElement('img'); im.src = u; d.appendChild(im);
@@ -754,7 +777,10 @@ async function send() {
   $('input').value = ''; autosize();
   pendingImages = [];
   chat.err = null;
-  const quoted = quote ? '> ' + quote.replace(/\n/g, '\n> ') + '\n\n' : '';
+  let docBlock = '';
+  for (const d of pendingDocs) docBlock += '[Attached document: ' + d.name + ']\n-----BEGIN DOCUMENT-----\n' + d.text.slice(0, 40000) + '\n-----END DOCUMENT-----\n\n';
+  pendingDocs = [];
+  const quoted = docBlock + (quote ? '> ' + quote.replace(/\n/g, '\n> ') + '\n\n' : '');
   chat.messages.push({ role: 'user', content: quoted + (text || 'What do you see?'), ts: new Date().toISOString(), ...(images.length ? { images } : {}) });
   quote = null; renderQuote();
   if (chat.title === 'New chat') chat.title = (text || 'Photo').slice(0, 40);
@@ -819,6 +845,13 @@ async function send() {
             }
           }
           if (h.tool && h.status === 'done') { reply.toolNotes = reply.toolNotes || []; reply.toolNotes.push('searched the web'); }
+          if (h.exec) {
+            reply.execs = reply.execs || [];
+            reply.execs.push(h.exec);
+            if (!appended) { chat.messages.push(reply); appended = true; }
+            pendingExec = { chat, spec: h.exec };
+            if (cur === chat) render();
+          }
           if (h.file) {
             reply.files = reply.files || [];
             reply.files.push(h.file);
@@ -851,13 +884,20 @@ async function send() {
   } catch (e) {
     if (e.name !== 'AbortError') chat.err = e.message;
   }
-  if (appended && !acc && !(reply.files && reply.files.length)) chat.messages.pop();
+  if (appended && !acc && !(reply.files && reply.files.length) && !(reply.execs && reply.execs.length)) chat.messages.pop();
   live.delete(chat.id);
   chat.updatedAt = new Date().toISOString();
   save(); syncPush(chat);
   if (cur === chat) render(); else renderList();
   const lastUser = [...chat.messages].reverse().find((m) => m.role === 'user');
   if (acc && lastUser) memorize(lastUser.content, acc);
+  if (pendingExec && pendingExec.chat === chat) {
+    const pe = pendingExec; pendingExec = null;
+    runCode(pe.spec).then((out) => {
+      const msg = 'CODE OUTPUT (' + pe.spec.language + '):\n-----\n' + out.slice(0, 6000) + '\n-----';
+      if (cur === chat) { sendText_auto(chat, msg); } else { sendText_auto(chat, msg); }
+    });
+  }
 }
 function updateSendBtn() { $('send').innerHTML = cur && live.has(cur.id) ? ICON.stop : ICON.send; }
 
@@ -874,14 +914,36 @@ $('menuBtn').onclick = () => { $('side').classList.add('open'); $('scrim').class
 $('newBtn').onclick = newChat;
 $('sideNew').onclick = newChat;
 $('send').onclick = send;
-$('attachBtn').onclick = () => {
-  if (!findModel(cur ? cur.model : '').vision) return;
-  $('filePick').click();
-};
+$('attachBtn').onclick = () => $('filePick').click();
+let pendingDocs = [];
+async function extractDoc(f) {
+  if (f.type === 'application/pdf' || f.name.endsWith('.pdf')) {
+    const pdfjs = await loadLib('pdfjs', 'https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.min.js', 'pdfjsLib');
+    pdfjs.GlobalWorkerOptions.workerSrc = 'https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.worker.min.js';
+    const doc = await pdfjs.getDocument({ data: await f.arrayBuffer() }).promise;
+    let text = '';
+    for (let i = 1; i <= Math.min(doc.numPages, 60) && text.length < 60000; i++) {
+      const page = await doc.getPage(i);
+      const tc = await page.getTextContent();
+      text += tc.items.map((it) => it.str).join(' ') + '\n\n';
+    }
+    return text.trim();
+  }
+  return (await f.text()).slice(0, 60000);
+}
 $('filePick').onchange = async (e) => {
-  for (const f of [...e.target.files].slice(0, 4)) {
-    const url = await downscale(f);
-    if (url) pendingImages.push(url);
+  const vision = findModel(cur ? cur.model : '').vision;
+  for (const f of [...e.target.files].slice(0, 6)) {
+    if (f.type.startsWith('image/')) {
+      if (!vision) continue;
+      const url = await downscale(f);
+      if (url) pendingImages.push(url);
+    } else if (f.size < 15 * 1024 * 1024) {
+      try {
+        const text = await extractDoc(f);
+        if (text) pendingDocs.push({ name: f.name, text });
+      } catch { alert('could not read ' + f.name); }
+    }
   }
   e.target.value = '';
   renderAttach();
@@ -1159,10 +1221,84 @@ async function downloadFile(spec) {
   }
 }
 
+let pendingExec = null;
+async function runCode(spec) {
+  try {
+    if (spec.language === 'javascript') {
+      return await new Promise((resolve) => {
+        const src = 'let __out=[];const console={log:(...a)=>__out.push(a.map(x=>typeof x==="object"?JSON.stringify(x):String(x)).join(" ")),error:(...a)=>__out.push(a.join(" "))};onmessage=async()=>{try{const r=await eval(' + JSON.stringify(spec.code) + ');if(r!==undefined)__out.push(String(typeof r==="object"?JSON.stringify(r):r));postMessage(__out.join("\\n")||"(no output)")}catch(e){postMessage("Error: "+e.message)}};';
+        const w = new Worker(URL.createObjectURL(new Blob([src], { type: 'text/javascript' })));
+        const t = setTimeout(() => { w.terminate(); resolve('Error: timed out (10s)'); }, 10000);
+        w.onmessage = (e) => { clearTimeout(t); w.terminate(); resolve(String(e.data)); };
+        w.onerror = (e) => { clearTimeout(t); w.terminate(); resolve('Error: ' + e.message); };
+        w.postMessage(1);
+      });
+    }
+    // python via pyodide (lazy, cached by the browser after first load)
+    if (!window.loadPyodide) await loadLib('pyodide', 'https://cdn.jsdelivr.net/pyodide/v0.26.2/full/pyodide.js', 'loadPyodide');
+    if (!window.__pyodide) window.__pyodide = await window.loadPyodide({ indexURL: 'https://cdn.jsdelivr.net/pyodide/v0.26.2/full/' });
+    const py = window.__pyodide;
+    await py.runPythonAsync('import sys, io as _io\nsys.stdout = _io.StringIO()\nsys.stderr = sys.stdout');
+    let resultRepr = '';
+    try {
+      const r = await py.runPythonAsync(spec.code);
+      if (r !== undefined && r !== null) resultRepr = String(r);
+    } catch (e) { return 'Error: ' + String(e.message || e).split('\n').slice(-3).join('\n'); }
+    const out = await py.runPythonAsync('sys.stdout.getvalue()');
+    return ((out || '') + (resultRepr ? '\n' + resultRepr : '')).trim() || '(no output)';
+  } catch (e) { return 'Error: ' + String(e.message || e); }
+}
+function sendText_auto(chat, text) {
+  // auto follow-up (code results) — bypasses the composer
+  const prevCur = cur; cur = chat;
+  const inp = $('input'); const keep = inp.value; inp.value = text;
+  send();
+  inp.value = keep; cur = prevCur; if (cur !== chat) render();
+}
+function execCard(spec) {
+  const d = document.createElement('div');
+  d.className = 'msg bot';
+  d.innerHTML = '<div style="font-size:12px;color:var(--muted);margin-bottom:4px">' + ICON.brain + ' running ' + spec.language + '…</div><pre><code>' + esc(spec.code.slice(0, 2000)) + '</code></pre>';
+  return d;
+}
 const input = $('input');
 function autosize() { input.style.height = 'auto'; if (input.value) input.style.height = Math.min(130, input.scrollHeight) + 'px'; }
 input.addEventListener('input', autosize);
 input.addEventListener('keydown', (e) => { if (e.key === 'Enter' && !e.shiftKey && !('ontouchstart' in window)) { e.preventDefault(); send(); } });
+
+const MIC_ICON = svg('<path d="M12 2a3 3 0 0 1 3 3v6a3 3 0 0 1-6 0V5a3 3 0 0 1 3-3Z"/><path d="M19 10v1a7 7 0 0 1-14 0v-1"/><path d="M12 18v4"/>', 17);
+$('micBtn').innerHTML = MIC_ICON;
+let recorder = null, recChunks = [];
+$('micBtn').onclick = async () => {
+  if (isGuest()) { alert('Voice input needs an account (transcription runs on your key via the server).'); return; }
+  if (recorder && recorder.state === 'recording') { recorder.stop(); return; }
+  try {
+    const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+    const mime = MediaRecorder.isTypeSupported('audio/webm') ? 'audio/webm' : 'audio/mp4';
+    recorder = new MediaRecorder(stream, { mimeType: mime });
+    recChunks = [];
+    recorder.ondataavailable = (e) => recChunks.push(e.data);
+    recorder.onstop = async () => {
+      stream.getTracks().forEach((t) => t.stop());
+      $('micBtn').classList.remove('rec');
+      $('micBtn').innerHTML = MIC_ICON;
+      const blob = new Blob(recChunks, { type: mime });
+      if (blob.size < 1200) return;
+      const b64 = await new Promise((ok) => { const fr = new FileReader(); fr.onload = () => ok(String(fr.result).split(',')[1]); fr.readAsDataURL(blob); });
+      const inp = $('input'); const before = inp.value;
+      inp.placeholder = 'transcribing…';
+      try {
+        const r = await fetch('/api/transcribe', { method: 'POST', headers: await H(), body: JSON.stringify({ audio: b64, format: mime.includes('mp4') ? 'mp4' : 'webm' }) });
+        const j = await r.json();
+        if (j.text) { inp.value = (before ? before + ' ' : '') + j.text; autosize(); inp.focus(); }
+      } catch {}
+      inp.placeholder = 'Message…';
+    };
+    recorder.start();
+    $('micBtn').classList.add('rec');
+  } catch { alert('microphone unavailable'); }
+};
+
 
 // ------------------------------------------------ boot
 (async () => {

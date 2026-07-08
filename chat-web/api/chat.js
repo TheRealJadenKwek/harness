@@ -6,6 +6,23 @@ const { db, authed, userKey } = require('./_db.js');
 const MODEL_OK = /^[\w.-]+\/[\w.:-]+$/;
 const MAX_ROUNDS = 6;
 
+async function fetchPage(url) {
+  if (!/^https?:\/\//i.test(url)) url = 'https://' + url;
+  try {
+    const r = await fetch(url, { redirect: 'follow', headers: { 'User-Agent': 'Mozilla/5.0 (Macintosh) HarnessChat', 'Accept': 'text/html,*/*' }, signal: AbortSignal.timeout(15000) });
+    if (!r.ok) return { error: 'HTTP ' + r.status };
+    const ct = r.headers.get('content-type') || '';
+    if (!/text\/html|text\/plain|application\/xhtml/.test(ct)) return { error: 'not a readable page (' + ct.split(';')[0] + ')' };
+    let html = (await r.text()).slice(0, 900000);
+    const title = (/<title[^>]*>([\s\S]*?)<\/title>/i.exec(html) || [])[1] || '';
+    html = html.replace(/<script[\s\S]*?<\/script>/gi, ' ').replace(/<style[\s\S]*?<\/style>/gi, ' ')
+               .replace(/<nav[\s\S]*?<\/nav>/gi, ' ').replace(/<footer[\s\S]*?<\/footer>/gi, ' ')
+               .replace(/<[^>]+>/g, ' ').replace(/&nbsp;/g, ' ').replace(/&amp;/g, '&').replace(/&lt;/g, '<').replace(/&gt;/g, '>').replace(/&#\d+;/g, ' ')
+               .replace(/\s+/g, ' ').trim();
+    return { url, title: title.trim(), text: html.slice(0, 12000) + (html.length > 12000 ? ' …[truncated]' : '') };
+  } catch (e) { return { error: String(e.message || e).slice(0, 120) }; }
+}
+
 const TOOLS = [
   {
     type: 'function',
@@ -13,6 +30,30 @@ const TOOLS = [
       name: 'web_search',
       description: 'Search the web (DuckDuckGo). Returns top results as {title, url, snippet}. Use for anything current: news, prices, facts you are unsure of, links.',
       parameters: { type: 'object', properties: { query: { type: 'string' } }, required: ['query'] },
+    },
+  },
+  {
+    type: 'function',
+    function: {
+      name: 'fetch_page',
+      description: 'Fetch a web page and return its readable text (title + ~12k chars). Use after web_search to actually READ a promising result, or when the user gives you a URL.',
+      parameters: { type: 'object', properties: { url: { type: 'string' } }, required: ['url'] },
+    },
+  },
+  {
+    type: 'function',
+    function: {
+      name: 'generate_image',
+      description: 'Generate an image from a text prompt (billed to the user\'s key). Returns the image directly to the user as a card. Use when the user asks you to draw, create, or generate a picture/illustration/logo.',
+      parameters: { type: 'object', properties: { prompt: { type: 'string' } }, required: ['prompt'] },
+    },
+  },
+  {
+    type: 'function',
+    function: {
+      name: 'run_code',
+      description: 'Execute code on the user\'s device and get the output. language "python" (scientific stack available) or "javascript". The result arrives in the user\'s NEXT message (the run happens client-side) — so after calling this, briefly say what you are computing and STOP; continue when the result comes back.',
+      parameters: { type: 'object', properties: { language: { type: 'string', enum: ['python', 'javascript'] }, code: { type: 'string' } }, required: ['language', 'code'] },
     },
   },
   {
@@ -104,7 +145,7 @@ module.exports = async (req, res) => {
   convo.unshift({
     role: 'system',
     content: 'You are Harness, the user\'s personal assistant — warm, sharp, and quick. You are especially good at writing and improving emails: match their natural voice, keep them concise and human, never stiff or corporate unless asked. For other tasks, be direct and genuinely useful.'
-      + (toolsOK ? '\n\nYou have tools. Use web_search whenever current or verifiable information would help — news, prices, facts, links. Use create_file whenever the user wants a document, spreadsheet, presentation, web page, app, game, or any file: deliver a real artifact (pdf/xlsx/pptx/html with live preview/zip for multi-file projects/plain text) instead of pasting long content into the chat, then briefly say what you made.' : '')
+      + (toolsOK ? '\n\nYou have tools. Use web_search for current information, then fetch_page to actually read a promising result (search snippets alone are shallow — read before you summarize or cite). Use generate_image when asked to draw or create a picture. Use run_code for calculations, data analysis, or anything better computed than guessed. Use create_file whenever the user wants a document, spreadsheet, presentation, web page, app, game, or any file: deliver a real artifact (pdf/xlsx/pptx/html with live preview/zip for multi-file projects/plain text) instead of pasting long content into the chat, then briefly say what you made.' : '')
       + memoryBlock,
   });
 
@@ -179,6 +220,35 @@ module.exports = async (req, res) => {
           send({ harness: { tool: 'web_search', status: 'run', detail: String(args.query || '').slice(0, 80) } });
           result = await webSearch(String(args.query || ''));
           send({ harness: { tool: 'web_search', status: 'done', detail: result.results ? result.results.length + ' results' : (result.error || '') } });
+        } else if (tc.function.name === 'fetch_page') {
+          send({ harness: { tool: 'fetch_page', status: 'run', detail: String(args.url || '').slice(0, 80) } });
+          result = await fetchPage(String(args.url || ''));
+          send({ harness: { tool: 'fetch_page', status: 'done', detail: result.title ? result.title.slice(0, 60) : (result.error || '') } });
+        } else if (tc.function.name === 'generate_image') {
+          send({ harness: { tool: 'generate_image', status: 'run', detail: String(args.prompt || '').slice(0, 80) } });
+          try {
+            const ir = await fetch('https://openrouter.ai/api/v1/chat/completions', {
+              method: 'POST',
+              headers: { 'Authorization': 'Bearer ' + key, 'Content-Type': 'application/json' },
+              body: JSON.stringify({ model: 'google/gemini-3.1-flash-image', modalities: ['image', 'text'],
+                                     messages: [{ role: 'user', content: String(args.prompt || '').slice(0, 2000) }] }),
+            });
+            const ij = await ir.json();
+            const imgs = (((ij.choices || [])[0] || {}).message || {}).images || [];
+            const dataUrl = imgs[0] && imgs[0].image_url && imgs[0].image_url.url;
+            if (dataUrl) {
+              send({ harness: { file: { kind: 'image', filename: 'image.png', dataUrl: String(dataUrl).slice(0, 8000000) } } });
+              send({ harness: { tool: 'generate_image', status: 'done', detail: 'image delivered' } });
+              result = { ok: true, note: 'image generated and shown to the user — do not describe it exhaustively, just confirm briefly' };
+            } else {
+              send({ harness: { tool: 'generate_image', status: 'done', detail: 'no image returned' } });
+              result = { error: (ij.error && ij.error.message) || 'model returned no image' };
+            }
+          } catch (e) { result = { error: String(e.message || e).slice(0, 200) }; }
+        } else if (tc.function.name === 'run_code') {
+          const spec = { language: args.language === 'javascript' ? 'javascript' : 'python', code: String(args.code || '').slice(0, 100000) };
+          send({ harness: { exec: spec } });
+          result = { status: 'running on the user\'s device — the output will arrive in the next user message. Stop here and wait for it.' };
         } else if (tc.function.name === 'create_file') {
           const spec = {
             kind: ['text', 'html', 'zip', 'pdf', 'xlsx', 'pptx'].includes(args.kind) ? args.kind : 'text',
