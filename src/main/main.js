@@ -629,6 +629,36 @@ async function browserReady() {
   return !!previewWC;
 }
 const BROWSER_TOOLS = {
+  web_search: {
+    schema: { name: 'web_search', description: 'Search the web (DuckDuckGo). Returns the top results as {title, url, snippet}. Use this to find current information, then browser_open a result if you need the full page.', parameters: { type: 'object', properties: { query: { type: 'string' } }, required: ['query'] } },
+    gate: () => null,   // read-only
+    run: async (a) => {
+      const q = String(a.query || '').trim();
+      if (!q) return { error: 'empty query' };
+      const body = await new Promise((resolve, reject) => {
+        const req = https.request({
+          method: 'POST', hostname: 'html.duckduckgo.com', path: '/html/',
+          headers: { 'Content-Type': 'application/x-www-form-urlencoded', 'User-Agent': 'Mozilla/5.0 (Macintosh) HarnessCode' },
+        }, (res) => { let b = ''; res.on('data', (c) => (b += c)); res.on('end', () => resolve(b)); });
+        req.on('error', reject);
+        req.setTimeout(15000, () => req.destroy(new Error('search timed out')));
+        req.end('q=' + encodeURIComponent(q));
+      }).catch((e) => null);
+      if (!body) return { error: 'search request failed' };
+      const results = [];
+      const re = /<a[^>]*class="result__a"[^>]*href="([^"]+)"[^>]*>([\s\S]*?)<\/a>[\s\S]*?(?:<a[^>]*class="result__snippet"[^>]*>([\s\S]*?)<\/a>|class="result__snippet"[^>]*>([\s\S]*?)<\/)/g;
+      const strip = (h) => (h || '').replace(/<[^>]+>/g, '').replace(/&amp;/g, '&').replace(/&lt;/g, '<').replace(/&gt;/g, '>').replace(/&#x27;/g, "'").replace(/&quot;/g, '"').replace(/\s+/g, ' ').trim();
+      let m;
+      while ((m = re.exec(body)) && results.length < 8) {
+        let url = m[1];
+        const uddg = /[?&]uddg=([^&]+)/.exec(url);   // ddg redirect wrapper
+        if (uddg) { try { url = decodeURIComponent(uddg[1]); } catch {} }
+        results.push({ title: strip(m[2]), url, snippet: strip(m[3] || m[4]).slice(0, 300) });
+      }
+      if (!results.length) return { error: 'no results parsed', hint: 'try browser_open https://duckduckgo.com/?q=' + encodeURIComponent(q) };
+      return { query: q, results };
+    },
+  },
   browser_open: {
     schema: { name: 'browser_open', description: 'Open a URL in the built-in browser (the Preview panel the user can see). Returns the page title.', parameters: { type: 'object', properties: { url: { type: 'string' } }, required: ['url'] } },
     gate: (a) => ({ kind: 'browser', detail: 'open ' + (a.url || ''), danger: false }),

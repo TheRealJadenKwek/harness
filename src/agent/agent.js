@@ -281,6 +281,7 @@ class Session {
         advertised.map((s) => JSON.stringify({ name: s.function.name, description: (s.function.description || '').slice(0, 200), parameters: s.function.parameters })).join('\n');
     }
 
+    this._nudged = false;
     let usageTotal = { prompt_tokens: 0, completion_tokens: 0, last_prompt: 0 };
     for (let step = 0; step < MAX_STEPS; step++) {
       if (signal && signal.aborted) { this.emit({ type: 'aborted' }); return; }
@@ -342,6 +343,18 @@ class Session {
       if (textParseError) {
         this.messages.push({ role: 'user', content: 'Your tool block failed to parse (' + textParseError + '). Reply with a corrected ```tool block, or your final answer with no tool block.' });
         continue;
+      }
+
+      // Small models often ANNOUNCE a tool ("I'll use web_search…") without
+      // emitting the block. Nudge once per turn, mentioning the named tool.
+      if (this.textTools && !toolCalls.length && !this._nudged) {
+        const names = advertised.map((t) => t.function.name);
+        const named = names.find((n) => (res.content || '').includes(n));
+        if (named && /\b(I'?ll|I will|let me|going to|first,? I)\b/i.test(res.content || '')) {
+          this._nudged = true;
+          this.messages.push({ role: 'user', content: 'You said you would use ' + named + ' but sent no tool block. Reply now with ONLY the ```tool block for ' + named + ' — no other text.' });
+          continue;
+        }
       }
       if (!toolCalls.length) {                 // final answer…
         if (this._drainSteer()) continue;      // …unless the user interjected — keep going
