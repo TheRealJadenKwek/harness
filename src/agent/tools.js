@@ -5,7 +5,7 @@
 // supplies, so the GUI can prompt the user (the "Ask/plan vs build" permission model).
 const fs = require('fs');
 const path = require('path');
-const { execFile } = require('child_process');
+const { execFile, spawn } = require('child_process');
 
 function inside(root, p) {
   const abs = path.resolve(root, p);
@@ -214,7 +214,7 @@ function makeTools(ctx) {
         const ok = await ctx.approve('applescript', script, { danger: true });
         if (!ok) return { error: 'denied by user' };
         return await new Promise((resolve) => {
-          execFile('osascript', ['-e', script], { timeout: 60000, maxBuffer: 2 * 1024 * 1024 },
+          execFile('osascript', ['-e', script], { timeout: 60000, maxBuffer: 2 * 1024 * 1024, ...(ctx.signal && ctx.signal() ? { signal: ctx.signal() } : {}) },
             (err, stdout, stderr) => {
               resolve({
                 exit_code: err ? (err.code == null ? 1 : err.code) : 0,
@@ -247,16 +247,31 @@ function makeTools(ctx) {
         const bin = useSandbox ? '/usr/bin/sandbox-exec' : '/bin/bash';
         const args = useSandbox ? ['-p', profile, '/bin/bash', '-lc', command] : ['-lc', command];
         return await new Promise((resolve) => {
-          execFile(bin, args, { cwd: R(), timeout: 120000, maxBuffer: 4 * 1024 * 1024 },
-            (err, stdout, stderr) => {
-              resolve({
-                command,
-                exit_code: err ? (err.code == null ? 1 : err.code) : 0,
-                stdout: (stdout || '').slice(0, 40000),
-                stderr: (stderr || '').slice(0, 20000),
-                ...(err && err.killed ? { timed_out: true } : {}),
-              });
-            });
+          const sig = ctx.signal && ctx.signal();
+          // detached → own process group, so stop kills the whole tree (bash AND
+          // whatever it spawned), not just the wrapper shell
+          const child = spawn(bin, args, { cwd: R(), detached: true });
+          let stdout = '', stderr = '';
+          child.stdout.on('data', (d) => { if (stdout.length < 45000) stdout += d; });
+          child.stderr.on('data', (d) => { if (stderr.length < 25000) stderr += d; });
+          let settled = false;
+          const killTree = () => { try { process.kill(-child.pid, 'SIGKILL'); } catch {} };
+          const finish = (r) => {
+            if (settled) return; settled = true;
+            clearTimeout(timer);
+            if (sig) sig.removeEventListener('abort', onAbort);
+            resolve(r);
+          };
+          const onAbort = () => { killTree(); finish({ command, error: 'interrupted — the user pressed stop', stdout: stdout.slice(0, 4000) }); };
+          const timer = setTimeout(() => { killTree(); finish({ command, exit_code: 1, timed_out: true, stdout: stdout.slice(0, 40000), stderr: stderr.slice(0, 20000) }); }, 120000);
+          if (sig) { if (sig.aborted) return onAbort(); sig.addEventListener('abort', onAbort, { once: true }); }
+          child.on('error', (e) => finish({ command, error: String(e.message || e) }));
+          child.on('close', (code) => finish({
+            command,
+            exit_code: code == null ? 1 : code,
+            stdout: stdout.slice(0, 40000),
+            stderr: stderr.slice(0, 20000),
+          }));
         });
       },
     },

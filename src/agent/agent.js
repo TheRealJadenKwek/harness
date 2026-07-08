@@ -262,6 +262,7 @@ class Session {
     const { tools, schemas } = makeTools({
       cwd: this.cwd,
       sandbox: this.sandbox,
+      signal: () => signal,   // stop must kill a running child process, not wait it out
       approve: gatedApprove,
       onDiff: (file, before, after) => this.emit({ type: 'diff', file, before, after }),
       onPlan: (items) => this.emit({ type: 'plan', items }),
@@ -355,6 +356,10 @@ class Session {
       for (const tc of toolCalls) {
         let args = {};
         try { args = JSON.parse(tc.function.arguments || '{}'); } catch {}
+        if (signal && signal.aborted) {   // stop pressed mid-batch: answer remaining calls without running them
+          this.messages.push({ role: 'tool', tool_call_id: tc.id, name: tc.function.name, content: JSON.stringify({ error: 'cancelled — the user pressed stop' }) });
+          continue;
+        }
         this.emit({ type: 'tool_call', name: tc.function.name, args });
         const tool = tools[tc.function.name];
         let result;
