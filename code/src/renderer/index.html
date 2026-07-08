@@ -27,7 +27,7 @@
       <header class="titlebar">
         <button id="sideToggle" class="icon-btn" title="Toggle sidebar (⌘B)">☰</button>
         <div class="ctx">
-          <button id="dirBtn" class="chip" title="Working directory">📁 <span id="dirLabel">…</span></button>
+          <button id="dirBtn" class="chip" title="Working directory"><svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" style="vertical-align:-2px"><path d="M4 20h16a2 2 0 0 0 2-2V8a2 2 0 0 0-2-2h-7.9a2 2 0 0 1-1.7-.9L9.2 3.9A2 2 0 0 0 7.5 3H4a2 2 0 0 0-2 2v13c0 1.1.9 2 2 2Z"/></svg> <span id="dirLabel">…</span></button>
         </div>
         <div class="spacer"></div>
         <button id="usageLabel" class="usage" title="Context window & usage"></button>
@@ -49,7 +49,7 @@
           <div class="row"><button id="runStart" class="primary">▷ Start</button></div>
         </div>
         <div id="moreMenu" class="menu" style="display:none">
-          <div class="menu-item" data-act="files">🗂 Files <span class="mi-hint">⇧⌘F</span></div>
+          <div class="menu-item" data-act="files"><svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" style="vertical-align:-2px"><path d="M14 2H7a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h10a2 2 0 0 0 2-2V7Z"/><path d="M14 2v5h5"/></svg> Files <span class="mi-hint">⇧⌘F</span></div>
           <div class="menu-item" data-act="tasks">◎ Background tasks</div>
           <div class="menu-item" data-act="preview">▷ Preview</div>
           <div class="menu-sep"></div>
@@ -72,7 +72,7 @@
             <textarea id="input" rows="1" placeholder="Ask anything — @ to mention a file, / for commands…"></textarea>
             <div class="composer-foot">
               <button id="plusBtn" class="chip model-chip" title="Attach (⌘U)">＋</button>
-              <button id="micBtn" class="chip model-chip" title="Voice input (local whisper)">🎙</button>
+              <button id="micBtn" class="chip model-chip" title="Voice input (local whisper)"><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" style="vertical-align:-2px"><path d="M12 2a3 3 0 0 1 3 3v6a3 3 0 0 1-6 0V5a3 3 0 0 1 3-3Z"/><path d="M19 10v1a7 7 0 0 1-14 0v-1"/><path d="M12 18v4"/></svg></button>
               <button id="modeBtn" class="chip mode" title="Permission mode (⇧Tab)">🔨 Ask</button>
               <div class="spacer"></div>
               <button id="effortBtn" class="chip model-chip" title="Reasoning effort">Effort</button>
@@ -112,7 +112,7 @@
     <aside class="diffbar" id="rightPanel" style="display:none">
       <div class="diff-head">
         <button class="ptab" data-tab="changes">± Changes</button>
-        <button class="ptab" data-tab="files">🗂 Files</button>
+        <button class="ptab" data-tab="files">Files</button>
         <button class="ptab" data-tab="tasks">◎ Tasks<span id="taskBadge" class="task-badge" style="display:none"></span></button>
         <button class="ptab" data-tab="preview">▷ Preview</button>
         <div class="spacer"></div>

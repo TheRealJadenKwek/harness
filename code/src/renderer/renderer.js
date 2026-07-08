@@ -54,6 +54,16 @@ function md(src) {
   s = s.replace(/<\/(h2|h3|h4|pre)>\n/g, '</$1>');
   return s;
 }
+const svgIcon = (path, size = 13) => '<svg width="' + size + '" height="' + size + '" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" style="vertical-align:-2px">' + path + '</svg>';
+const UI_ICON = {
+  brain: svgIcon('<path d="M9.5 2A2.5 2.5 0 0 1 12 4.5v15a2.5 2.5 0 0 1-4.96.44A2.5 2.5 0 0 1 4.5 18a2.5 2.5 0 0 1-.5-4.95 2.5 2.5 0 0 1 .5-4.9A2.5 2.5 0 0 1 7 4.5 2.5 2.5 0 0 1 9.5 2Z"/><path d="M14.5 2A2.5 2.5 0 0 0 12 4.5v15a2.5 2.5 0 0 0 4.96.44A2.5 2.5 0 0 0 19.5 18a2.5 2.5 0 0 0 .5-4.95 2.5 2.5 0 0 0-.5-4.9A2.5 2.5 0 0 0 17 4.5 2.5 2.5 0 0 0 14.5 2Z"/>'),
+  image: svgIcon('<rect x="3" y="3" width="18" height="18" rx="3"/><circle cx="9" cy="9" r="1.8"/><path d="m21 15-4.5-4.5L6 21"/>'),
+  chip: svgIcon('<rect x="5" y="5" width="14" height="14" rx="2"/><path d="M9 2v3M15 2v3M9 19v3M15 19v3M2 9h3M2 15h3M19 9h3M19 15h3"/>'),
+  folder: svgIcon('<path d="M4 20h16a2 2 0 0 0 2-2V8a2 2 0 0 0-2-2h-7.9a2 2 0 0 1-1.7-.9L9.2 3.9A2 2 0 0 0 7.5 3H4a2 2 0 0 0-2 2v13c0 1.1.9 2 2 2Z"/>'),
+  mic: svgIcon('<path d="M12 2a3 3 0 0 1 3 3v6a3 3 0 0 1-6 0V5a3 3 0 0 1 3-3Z"/><path d="M19 10v1a7 7 0 0 1-14 0v-1"/><path d="M12 18v4"/>', 14),
+  files: svgIcon('<path d="M14 2H7a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h10a2 2 0 0 0 2-2V7Z"/><path d="M14 2v5h5"/>'),
+  paperclip: svgIcon('<path d="m21.4 11.05-9.19 9.19a6 6 0 0 1-8.49-8.49l8.57-8.57A4 4 0 1 1 18 8.84l-8.59 8.57a2 2 0 0 1-2.83-2.83l8.49-8.48"/>'),
+};
 document.addEventListener('click', (e) => {
   const a = e.target.closest && e.target.closest('a.ext');
   if (a) { e.preventDefault(); H.openExternal(a.href); }
@@ -945,7 +955,7 @@ $('micBtn').onclick = async () => {
     let b64 = '';
     for (let i = 0; i < buf.length; i += 0x8000) b64 += String.fromCharCode.apply(null, buf.subarray(i, i + 0x8000));
     const r = await H.transcribe(btoa(b64));
-    $('micBtn').textContent = '🎙';
+    $('micBtn').innerHTML = UI_ICON.mic;
     $('micBtn').classList.remove('rec');
     if (r.error) { const rec = active(); if (rec) addLine(rec, 'err', '⚠︎ ' + r.error); return; }
     if (r.text) {
@@ -992,7 +1002,7 @@ input.addEventListener('paste', (e) => {
   for (const item of e.clipboardData.items) {
     if (item.type && item.type.startsWith('image/')) {
       e.preventDefault();
-      if (!visionOk(rec)) { addLine(rec, 'err', '⚠︎ ' + shortModel(rec.meta.model) + ' can\'t see images — pick a vision model (🖼 in the picker)'); return; }
+      if (!visionOk(rec)) { addLine(rec, 'err', '⚠︎ ' + shortModel(rec.meta.model) + ' can\'t see images — pick a vision model (image icon in the picker)'); return; }
       const f = item.getAsFile();
       const fr = new FileReader();
       fr.onload = () => {
@@ -1121,7 +1131,7 @@ async function attachFiles() {
   const picked = await H.pickFiles(rec.meta.id, visionOk(rec));
   rec.attachments = rec.attachments || [];
   for (const f of picked) {
-    if (f.kind === 'image') { if (!visionOk(rec)) { addLine(rec, 'err', '⚠︎ ' + shortModel(rec.meta.model) + ' can\'t see images — pick a vision model (🖼 in the picker)'); continue; } rec.attachments.push({ name: f.name, dataUrl: f.dataUrl }); }
+    if (f.kind === 'image') { if (!visionOk(rec)) { addLine(rec, 'err', '⚠︎ ' + shortModel(rec.meta.model) + ' can\'t see images — pick a vision model (image icon in the picker)'); continue; } rec.attachments.push({ name: f.name, dataUrl: f.dataUrl }); }
     else if (f.kind === 'path') { const i = $('input'); i.value = (i.value ? i.value.replace(/\s?$/, ' ') : '') + '@' + f.path + ' '; }
     else if (f.kind === 'error') addLine(rec, 'err', '⚠︎ ' + f.name + ': ' + f.error);
   }
@@ -1144,8 +1154,8 @@ async function renderPlusMenu(view) {
   const sep = () => { const d = document.createElement('div'); d.className = 'menu-sep'; box.appendChild(d); };
   if (view === 'root') {
     const va = visionOk(active());
-    item('📎 Add files' + (va ? ' or photos' : '') + ' <span class="mi-hint">⌘U</span>' + (va ? '' : ' <span class="mi-hint">(no images — model can\'t see them)</span>'), () => { hideMenus(); attachFiles(); });
-    item('📁 Add folder', async () => {
+    item(UI_ICON.paperclip + ' Add files' + (va ? ' or photos' : '') + ' <span class="mi-hint">⌘U</span>' + (va ? '' : ' <span class="mi-hint">(no images — model can\'t see them)</span>'), () => { hideMenus(); attachFiles(); });
+    item(UI_ICON.folder + ' Add folder', async () => {
       hideMenus();
       const rec = active(); if (!rec) return;
       const p = await H.pickFolderPath(rec.meta.id);
@@ -1628,7 +1638,7 @@ function renderModels(q) {
     const row = document.createElement('div');
     row.className = 'model-row' + (rec && m.value === rec.meta.model ? ' sel' : '');
     const isFav = fav.includes(m.value);
-    row.innerHTML = '<div class="m-line"><span class="fav-star' + (isFav ? ' on' : '') + '" title="Favourite (or right-click the row)">' + (isFav ? '★' : '☆') + '</span><div>' + esc(m.label) + (m.reasoning ? ' <span class="mi-hint" title="Supports reasoning effort">🧠</span>' : '') + (m.vision ? ' <span class="mi-hint" title="Understands images">🖼</span>' : '') + (m.local ? ' <span class="mi-hint" title="Runs locally via Ollama — free">🖥</span>' : '') + '</div><div class="m-price">' + esc(priceStr(m)) + '</div></div>' +
+    row.innerHTML = '<div class="m-line"><span class="fav-star' + (isFav ? ' on' : '') + '" title="Favourite (or right-click the row)">' + (isFav ? '★' : '☆') + '</span><div>' + esc(m.label) + (m.reasoning ? ' <span class="mi-hint" title="Supports reasoning effort">' + UI_ICON.brain + '</span>' : '') + (m.vision ? ' <span class="mi-hint" title="Understands images">' + UI_ICON.image + '</span>' : '') + (m.local ? ' <span class="mi-hint" title="Runs locally via Ollama — free">' + UI_ICON.chip + '</span>' : '') + '</div><div class="m-price">' + esc(priceStr(m)) + '</div></div>' +
       '<div class="mv">' + esc(m.value) + (m.context ? ' · ' + Math.round(m.context / 1000) + 'k ctx' : '') + '</div>';
     row.onclick = () => chooseModel(m.value);
     row.oncontextmenu = (e) => { e.preventDefault(); toggleFavModel(m.value); renderModels($('modelSearch').value); };
@@ -1792,7 +1802,7 @@ $('pluginInstallBtn').onclick = async () => {
 // ---------------------------------------------------------------- appshot + agent-driven browser
 H.onAppshot((a) => {
   const rec = active(); if (!rec) return;
-  if (!visionOk(rec)) { addLine(rec, 'err', '⚠︎ appshot skipped — ' + shortModel(rec.meta.model) + ' can\'t see images (pick a vision model, 🖼 in the picker)'); return; }
+  if (!visionOk(rec)) { addLine(rec, 'err', '⚠︎ appshot skipped — ' + shortModel(rec.meta.model) + ' can\'t see images (pick a vision model — image icon in the picker)'); return; }
   rec.attachments = rec.attachments || [];
   rec.attachments.push({ name: a.name, dataUrl: a.dataUrl });
   renderAttachRow();
