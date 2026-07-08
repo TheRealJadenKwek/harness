@@ -19,6 +19,7 @@ struct ModelPickerView: View {
 
     private static let curated: [(id: String, desc: String)] = [
         ("minimax/minimax-m3", "default 🖼"),
+        ("x-ai/grok-4.5", "new + sharp 🖼"),
         ("deepseek/deepseek-v4-pro", "smart"),
         ("deepseek/deepseek-v4-flash", "cheapest + fastest"),
         ("nvidia/nemotron-3-ultra-550b-a55b:free", "free!"),
