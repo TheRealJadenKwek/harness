@@ -6,8 +6,10 @@ struct Msg: Codable, Identifiable, Hashable {
     var content: String
     var images: [String]? = nil   // data URLs (vision input)
     var ts: String? = nil         // ISO timestamp (web-compatible)
+    var files: [FileSpec]? = nil  // downloads the model created
+    var toolNotes: [String]? = nil
 
-    enum CodingKeys: String, CodingKey { case role, content, images, ts }
+    enum CodingKeys: String, CodingKey { case role, content, images, ts, files, toolNotes }
     init(role: String, content: String, images: [String]? = nil, ts: String? = nil) {
         self.role = role; self.content = content; self.images = images; self.ts = ts
     }
@@ -17,6 +19,8 @@ struct Msg: Codable, Identifiable, Hashable {
         content = (try? c.decode(String.self, forKey: .content)) ?? ""
         images = try? c.decodeIfPresent([String].self, forKey: .images)
         ts = try? c.decodeIfPresent(String.self, forKey: .ts)
+        files = try? c.decodeIfPresent([FileSpec].self, forKey: .files)
+        toolNotes = try? c.decodeIfPresent([String].self, forKey: .toolNotes)
     }
 }
 

@@ -11,6 +11,7 @@ final class Store: ObservableObject {
     @Published var live: Set<String> = []          // chat ids currently streaming (parallel)
     @Published var profile: Profile? = nil
     @Published var errors: [String: String] = [:]  // chat id → last error
+    @Published var toolStatus: [String: String] = [:]  // chat id → live tool line
     @AppStorage("defaultModel") var defaultModel = "minimax/minimax-m3"
 
     private var tasks: [String: Task<Void, Never>] = [:]
@@ -107,6 +108,9 @@ final class Store: ObservableObject {
                 var d: [String: Any] = ["role": m.role, "content": m.content]
                 if let ts = m.ts { d["ts"] = ts }
                 if let im = m.images, !im.isEmpty { d["images"] = im }
+                if let fs = m.files, !fs.isEmpty, let fd = try? JSONEncoder().encode(fs),
+                   let arr = try? JSONSerialization.jsonObject(with: fd) { d["files"] = arr }
+                if let tn = m.toolNotes, !tn.isEmpty { d["toolNotes"] = tn }
                 return d
             }
             _ = try? await Backend.request("/sync", method: "POST", body: ["chat": [
@@ -194,6 +198,25 @@ final class Store: ObservableObject {
                 }
                 for try await ev in try await Backend.chatStream(model: model, messages: msgs, effort: effort) {
                     if Task.isCancelled { break }
+                    if let e = ev.serverError { throw NSError(domain: "api", code: 1, userInfo: [NSLocalizedDescriptionKey: e]) }
+                    if let q = ev.toolRun { toolStatus[chatID] = "searching: " + q }
+                    if ev.toolDone != nil {
+                        toolStatus[chatID] = nil
+                        if !appended { appendDelta(chatID: chatID, acc: "", appended: &appended) }
+                        if let i = idx(chatID), let last = chats[i].messages.indices.last {
+                            var notes = chats[i].messages[last].toolNotes ?? []
+                            notes.append("searched the web")
+                            chats[i].messages[last].toolNotes = notes
+                        }
+                    }
+                    if let f = ev.file {
+                        if !appended { appendDelta(chatID: chatID, acc: acc, appended: &appended) }
+                        if let i = idx(chatID), let last = chats[i].messages.indices.last {
+                            var fs = chats[i].messages[last].files ?? []
+                            fs.append(f)
+                            chats[i].messages[last].files = fs
+                        }
+                    }
                     if let t = ev.text { acc += t; appendDelta(chatID: chatID, acc: acc, appended: &appended) }
                     if let i = idx(chatID) {
                         if let cost = ev.cost { chats[i].spend = (chats[i].spend ?? 0) + cost }
@@ -204,9 +227,13 @@ final class Store: ObservableObject {
         } catch {
             if !(error is CancellationError) { errors[chatID] = error.localizedDescription }
         }
+        toolStatus[chatID] = nil
         if let i = idx(chatID) {
             chats[i].updated = .now
-            if appended, acc.isEmpty { chats[i].messages.removeLast() }
+            if appended, acc.isEmpty,
+               let last = chats[i].messages.last, (last.files ?? []).isEmpty {
+                chats[i].messages.removeLast()
+            }
         }
         if !acc.isEmpty, let c = chat(chatID),
            let lastUser = c.messages.last(where: { $0.role == "user" }) {

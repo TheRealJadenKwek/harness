@@ -25,7 +25,12 @@ struct ChatView: View {
                                           onRewind: { idx in if let t = store.rewind(chatID: chatID, msgIndex: idx) { input = t } },
                                           onFork: { idx in _ = store.fork(chatID: chatID, msgIndex: idx) })
                         }
-                        if streaming && chat.messages.last?.role == "user" {
+                        if let ts = store.toolStatus[chatID] {
+                            HStack(spacing: 6) {
+                                Text("✳").foregroundStyle(Color(red: 0.79, green: 0.39, blue: 0.26))
+                                Text(ts).font(.caption).foregroundStyle(.secondary)
+                            }
+                        } else if streaming && chat.messages.last?.role == "user" {
                             HStack(spacing: 6) {
                                 Text("✳").foregroundStyle(Color(red: 0.79, green: 0.39, blue: 0.26))
                                 Text("Thinking…").font(.caption).foregroundStyle(.secondary)
@@ -205,6 +210,10 @@ struct MessageBubble: View {
             } else {
                 let parts = splitThink(msg.content)
                 VStack(alignment: .leading, spacing: 8) {
+                    ForEach(msg.toolNotes ?? [], id: \.self) { n in
+                        Label(n, systemImage: "checkmark").font(.caption).foregroundStyle(.secondary)
+                    }
+                    ForEach(msg.files ?? [], id: \.self) { f in FileCardView(spec: f) }
                     if let think = parts.think {
                         DisclosureGroup {
                             Text(think).font(.caption).foregroundStyle(.secondary).textSelection(.enabled)
@@ -271,6 +280,60 @@ struct AssistantText: View {
         if !tail.isEmpty { out.append((false, tail)) }
         return out.isEmpty ? [(false, text)] : out
     }
+}
+
+struct FileCardView: View {
+    let spec: FileSpec
+    @State private var building = false
+    @State private var shareURL: URL?
+    @State private var err: String?
+
+    private var icon: String {
+        switch spec.kind {
+        case "pdf": return "doc.richtext"
+        case "xlsx": return "tablecells"
+        case "pptx": return "rectangle.on.rectangle.angled"
+        default: return "doc.text"
+        }
+    }
+    var body: some View {
+        Button {
+            guard !building else { return }
+            building = true; err = nil
+            Task {
+                do { shareURL = try await FileBuilder.build(spec) }
+                catch { err = error.localizedDescription }
+                building = false
+            }
+        } label: {
+            HStack(spacing: 12) {
+                Image(systemName: icon).font(.system(size: 22)).foregroundStyle(Color(red: 0.79, green: 0.39, blue: 0.26))
+                VStack(alignment: .leading, spacing: 2) {
+                    Text(spec.filename).font(.subheadline.weight(.medium)).lineLimit(1)
+                    Text(err ?? (building ? "building…" : spec.kind.uppercased() + " · tap to save/share"))
+                        .font(.caption2).foregroundStyle(err == nil ? Color.secondary : Color.red)
+                }
+                Spacer(minLength: 8)
+                if building { ProgressView().controlSize(.small) }
+                else { Image(systemName: "square.and.arrow.down").foregroundStyle(.secondary) }
+            }
+            .padding(12)
+            .background(Color(.systemGray6), in: RoundedRectangle(cornerRadius: 14))
+        }
+        .buttonStyle(.plain)
+        .frame(maxWidth: 300, alignment: .leading)
+        .sheet(item: Binding(get: { shareURL.map(ShareItem.init) }, set: { _ in shareURL = nil })) { item in
+            ShareSheet(url: item.url)
+        }
+    }
+}
+struct ShareItem: Identifiable { let url: URL; var id: String { url.path } }
+struct ShareSheet: UIViewControllerRepresentable {
+    let url: URL
+    func makeUIViewController(context: Context) -> UIActivityViewController {
+        UIActivityViewController(activityItems: [url], applicationActivities: nil)
+    }
+    func updateUIViewController(_ vc: UIActivityViewController, context: Context) {}
 }
 
 struct DataURLImage: View {

@@ -72,7 +72,11 @@ enum Backend {
         return (data, (resp as? HTTPURLResponse)?.statusCode ?? 0)
     }
 
-    struct StreamEvent { var text: String?; var cost: Double?; var promptTokens: Int? }
+    struct StreamEvent {
+        var text: String?; var cost: Double?; var promptTokens: Int?
+        var toolRun: String?; var toolDone: String?
+        var file: FileSpec?; var serverError: String?
+    }
 
     static func chatStream(model: String, messages: [[String: Any]], effort: String?) async throws -> AsyncThrowingStream<StreamEvent, Error> {
         guard let t = await token() else { throw NSError(domain: "auth", code: 401, userInfo: [NSLocalizedDescriptionKey: "signed out"]) }
@@ -101,6 +105,17 @@ enum Backend {
                         guard let d = payload.data(using: .utf8),
                               let obj = try? JSONSerialization.jsonObject(with: d) as? [String: Any] else { continue }
                         var ev = StreamEvent()
+                        if let h = obj["harness"] as? [String: Any] {
+                            if let err = h["error"] as? String { ev.serverError = err }
+                            if let tool = h["tool"] as? String, tool == "web_search" {
+                                let detail = (h["detail"] as? String) ?? ""
+                                if (h["status"] as? String) == "run" { ev.toolRun = detail } else { ev.toolDone = detail }
+                            }
+                            if let f = h["file"], let fd = try? JSONSerialization.data(withJSONObject: f),
+                               let spec = try? JSONDecoder().decode(FileSpec.self, from: fd) { ev.file = spec }
+                            cont.yield(ev)
+                            continue
+                        }
                         if let u = obj["usage"] as? [String: Any] {
                             ev.cost = u["cost"] as? Double
                             ev.promptTokens = u["prompt_tokens"] as? Int
