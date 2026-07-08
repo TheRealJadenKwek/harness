@@ -209,7 +209,7 @@ class Session {
     let res;
     try {
       res = await streamChat({
-        apiKey: this.apiKey, baseUrl: this.baseUrl, model: 'deepseek/deepseek-v4-flash',
+        apiKey: this.apiKey, baseUrl: this.baseUrl, model: this.baseUrl ? this.model : 'deepseek/deepseek-v4-flash',
         messages: req, tools: null, signal,
         onText: (d) => this.emit({ type: 'text', delta: d }),
       });

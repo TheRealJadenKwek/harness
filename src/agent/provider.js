@@ -3,6 +3,7 @@
 // One turn = stream deltas, surfacing text as it arrives and accumulating any
 // tool calls (their `arguments` stream as partial JSON fragments per index).
 const https = require('https');
+const http = require('http');
 
 const OPENROUTER_URL = 'https://openrouter.ai/api/v1/chat/completions';
 
@@ -31,9 +32,11 @@ function streamChat(opts) {
   });
 
   return new Promise((resolve, reject) => {
-    const req = https.request({
+    const mod = url.protocol === 'http:' ? http : https;   // local endpoints (Ollama/LM Studio)
+    const req = mod.request({
       method: 'POST',
       hostname: url.hostname,
+      ...(url.port ? { port: url.port } : {}),
       path: url.pathname + url.search,
       headers: {
         'Authorization': 'Bearer ' + apiKey,

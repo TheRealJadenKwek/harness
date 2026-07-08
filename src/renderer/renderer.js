@@ -1575,7 +1575,7 @@ function renderModels(q) {
     const row = document.createElement('div');
     row.className = 'model-row' + (rec && m.value === rec.meta.model ? ' sel' : '');
     const isFav = fav.includes(m.value);
-    row.innerHTML = '<div class="m-line"><span class="fav-star' + (isFav ? ' on' : '') + '" title="Favourite (or right-click the row)">' + (isFav ? '★' : '☆') + '</span><div>' + esc(m.label) + (m.reasoning ? ' <span class="mi-hint" title="Supports reasoning effort">🧠</span>' : '') + (m.vision ? ' <span class="mi-hint" title="Understands images">🖼</span>' : '') + '</div><div class="m-price">' + esc(priceStr(m)) + '</div></div>' +
+    row.innerHTML = '<div class="m-line"><span class="fav-star' + (isFav ? ' on' : '') + '" title="Favourite (or right-click the row)">' + (isFav ? '★' : '☆') + '</span><div>' + esc(m.label) + (m.reasoning ? ' <span class="mi-hint" title="Supports reasoning effort">🧠</span>' : '') + (m.vision ? ' <span class="mi-hint" title="Understands images">🖼</span>' : '') + (m.local ? ' <span class="mi-hint" title="Runs locally via Ollama — free">🖥</span>' : '') + '</div><div class="m-price">' + esc(priceStr(m)) + '</div></div>' +
       '<div class="mv">' + esc(m.value) + (m.context ? ' · ' + Math.round(m.context / 1000) + 'k ctx' : '') + '</div>';
     row.onclick = () => chooseModel(m.value);
     row.oncontextmenu = (e) => { e.preventDefault(); toggleFavModel(m.value); renderModels($('modelSearch').value); };

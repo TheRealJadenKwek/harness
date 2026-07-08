@@ -141,6 +141,33 @@ function fetchModels(apiKey) {
     req.end();
   });
 }
+const LOCAL_URL = 'http://localhost:11434';   // Ollama default
+function fetchLocalModels() {
+  return new Promise((resolve) => {
+    const req = require('http').get(LOCAL_URL + '/api/tags', { timeout: 800 }, (res) => {
+      let b = '';
+      res.on('data', (c) => (b += c));
+      res.on('end', () => {
+        try {
+          resolve((JSON.parse(b).models || []).map((m) => ({
+            value: 'local/' + m.name,
+            label: m.name.replace(/^hf\.co\//, '').replace(/:latest$/, '') + ' · local',
+            context: 32768,
+            pricing: { prompt: 0, completion: 0 },
+            reasoning: false,
+            tools: false,          // tiny local models → ReAct text-tool fallback
+            vision: /(-v|vl|vision)\b|minicpm-v|-o\d/i.test(m.name),
+            local: true,
+          })));
+        } catch { resolve([]); }
+      });
+    });
+    req.on('error', () => resolve([]));
+    req.on('timeout', () => { req.destroy(); resolve([]); });
+  });
+}
+function isLocalModel(model) { return typeof model === 'string' && model.startsWith('local/'); }
+
 async function getModels(force) {
   if (!force && modelsMem) return modelsMem;
   if (!force) {
@@ -148,16 +175,17 @@ async function getModels(force) {
       const c = JSON.parse(fs.readFileSync(modelsCachePath(), 'utf8'));
       // invalidate caches from before the per-model `reasoning` flag existed
       if (c.items && c.items.length && c.items[0].reasoning !== undefined && c.items[0].tools !== undefined && c.items[0].vision !== undefined && Date.now() - c.fetchedAt < 24 * 3600 * 1000) {
-        modelsMem = c.items;
+        modelsMem = c.items.filter((m) => !m.local).concat(await fetchLocalModels());
         return modelsMem;
       }
     } catch {}
   }
   const items = await fetchModels(loadConfig().apiKey);
   if (items.length) {
-    modelsMem = items;
     try { fs.writeFileSync(modelsCachePath(), JSON.stringify({ fetchedAt: Date.now(), items })); } catch {}
   }
+  const local = await fetchLocalModels();
+  if (items.length || local.length) modelsMem = (items.length ? items : (modelsMem || []).filter((m) => !m.local)).concat(local);
   return modelsMem || [];
 }
 function priceOf(model) {
@@ -253,8 +281,11 @@ function onAgentEvent(rec, e) {
 function ensureAgent(rec) {
   const cfg = loadConfig();
   if (!rec.agent) {
+    const local = isLocalModel(rec.model);
     rec.agent = new Session({
-      apiKey: cfg.apiKey, model: rec.model, cwd: rec.cwd, mode: rec.mode, effort: rec.effort || null,
+      apiKey: local ? 'ollama' : cfg.apiKey,
+      baseUrl: local ? LOCAL_URL + '/v1/chat/completions' : undefined,
+      model: local ? rec.model.slice(6) : rec.model, cwd: rec.cwd, mode: rec.mode, effort: rec.effort || null,
       goal: rec.goal || null,
       textTools: !supportsTools(rec.model),
       ctxLimit: ctxLimitOf(rec.model),
@@ -277,7 +308,7 @@ function ensureAgent(rec) {
     if (rec.savedMessages && rec.savedMessages.length) rec.agent.loadMessages(rec.savedMessages);
     rec.savedMessages = null;
   }
-  rec.agent.apiKey = cfg.apiKey;
+  if (!isLocalModel(rec.model)) rec.agent.apiKey = cfg.apiKey;
   return rec.agent;
 }
 
@@ -1664,7 +1695,10 @@ ipcMain.handle('session-config', (_e, { id, patch }) => {
   if (rec.agent) {
     if (patch.model) {
       const oldLimit = rec.agent.ctxLimit || 0;
-      rec.agent.setModel(rec.model);
+      const local = isLocalModel(rec.model);
+      rec.agent.baseUrl = local ? LOCAL_URL + '/v1/chat/completions' : undefined;
+      rec.agent.apiKey = local ? 'ollama' : loadConfig().apiKey;
+      rec.agent.setModel(local ? rec.model.slice(6) : rec.model);
       rec.agent.textTools = !supportsTools(rec.model);
       rec.agent.setCtxLimit(ctxLimitOf(rec.model));
       // moving up in context: refill the model's memory from the full transcript
@@ -1720,7 +1754,7 @@ function maybeGoalContinue(rec, wasAborted, errored) {
 // `remote` additionally mirrors the user bubble into the desktop UI.
 function beginTurn(rec, { text, images, modelText, remote, goalAuto }) {
   const cfg = loadConfig();
-  if (!cfg.apiKey) {
+  if (!cfg.apiKey && !isLocalModel(rec.model)) {
     sendToUI('agent-event', { sessionId: rec.id, type: 'error', message: 'No OpenRouter API key set — open Settings.' });
     return { ok: false, error: 'no key' };
   }
