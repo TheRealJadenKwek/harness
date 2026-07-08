@@ -25,7 +25,7 @@ body {
 /* ---------- sidebar ---------- */
 .sidebar {
   width: 240px; min-width: 240px; border-right: 1px solid var(--border);
-  background: color-mix(in srgb, var(--panel) 62%, transparent);   /* NSVisualEffectView shows through */
+  background: color-mix(in srgb, var(--panel) 45%, transparent);   /* NSVisualEffectView shows through */
   display: flex; flex-direction: column;
 }
 .sidebar.hidden { display: none; }
@@ -544,7 +544,7 @@ h3 { margin: 2px 0 4px; }
 
 /* ================= liquid glass pass (wave 4) ================= */
 :root {
-  --glass: rgba(251,251,250,.72);
+  --glass: rgba(251,251,250,.52);
   --glass-brd: rgba(255,255,255,.6);
   --edge: rgba(28,28,30,.10);
   --glass-shadow: 0 1px 2px rgba(0,0,0,.05), 0 10px 32px rgba(0,0,0,.10);
@@ -552,7 +552,7 @@ h3 { margin: 2px 0 4px; }
 }
 @media (prefers-color-scheme: dark) {
   :root {
-    --glass: rgba(32,32,38,.64);
+    --glass: rgba(32,32,38,.46);
     --glass-brd: rgba(255,255,255,.09);
     --edge: rgba(255,255,255,.08);
     --glass-shadow: 0 1px 2px rgba(0,0,0,.35), 0 12px 40px rgba(0,0,0,.45);
@@ -581,7 +581,7 @@ h3 { margin: 2px 0 4px; }
 
 /* titlebar: frosted strip */
 .titlebar {
-  background: color-mix(in srgb, var(--panel) 58%, transparent);
+  background: color-mix(in srgb, var(--panel) 42%, transparent);
   -webkit-backdrop-filter: blur(20px) saturate(1.4); backdrop-filter: blur(20px) saturate(1.4);
   border-bottom: 1px solid var(--edge);
 }
