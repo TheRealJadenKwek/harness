@@ -1,0 +1,144 @@
+import Foundation
+import AuthenticationServices
+
+// Google sign-in via Supabase + the harness-chat-web backend. The phone and the
+// web app share one account: same chats, same memory, same OpenRouter key.
+enum Backend {
+    static let api = "https://harness-chat-web.vercel.app/api"
+    static let supa = "https://kwcjxhjcsitgalinikal.supabase.co"
+    static let anon = "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6Imt3Y2p4aGpjc2l0Z2FsaW5pa2FsIiwicm9sZSI6ImFub24iLCJpYXQiOjE3ODM0OTA1ODYsImV4cCI6MjA5OTA2NjU4Nn0.EVZvDD5LzQsEcQy6XjLvHXEYVmA0JIn7FVfP8H1tRLU"
+
+    struct Session: Codable {
+        var accessToken: String
+        var refreshToken: String
+        var expiresAt: Date
+    }
+
+    static var session: Session? {
+        get {
+            guard let d = UserDefaults.standard.data(forKey: "supaSession") else { return nil }
+            return try? JSONDecoder().decode(Session.self, from: d)
+        }
+        set {
+            if let s = newValue, let d = try? JSONEncoder().encode(s) { UserDefaults.standard.set(d, forKey: "supaSession") }
+            else { UserDefaults.standard.removeObject(forKey: "supaSession") }
+        }
+    }
+
+    static func handleCallback(_ url: URL) -> Bool {
+        // harnesschat://auth#access_token=…&refresh_token=…&expires_in=…
+        guard let frag = URLComponents(url: url, resolvingAgainstBaseURL: false)?.fragment else { return false }
+        var p: [String: String] = [:]
+        for pair in frag.split(separator: "&") {
+            let kv = pair.split(separator: "=", maxSplits: 1)
+            if kv.count == 2 { p[String(kv[0])] = String(kv[1]).removingPercentEncoding }
+        }
+        guard let at = p["access_token"], let rt = p["refresh_token"] else { return false }
+        session = Session(accessToken: at, refreshToken: rt,
+                          expiresAt: Date().addingTimeInterval(Double(p["expires_in"] ?? "3600")! - 60))
+        return true
+    }
+
+    static func signOut() { session = nil }
+
+    static func token() async -> String? {
+        guard var s = session else { return nil }
+        if Date() > s.expiresAt {
+            var req = URLRequest(url: URL(string: supa + "/auth/v1/token?grant_type=refresh_token")!)
+            req.httpMethod = "POST"
+            req.setValue(anon, forHTTPHeaderField: "apikey")
+            req.setValue("application/json", forHTTPHeaderField: "Content-Type")
+            req.httpBody = try? JSONSerialization.data(withJSONObject: ["refresh_token": s.refreshToken])
+            guard let (data, resp) = try? await URLSession.shared.data(for: req),
+                  (resp as? HTTPURLResponse)?.statusCode == 200,
+                  let j = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+                  let at = j["access_token"] as? String, let rt = j["refresh_token"] as? String
+            else { session = nil; return nil }
+            s = Session(accessToken: at, refreshToken: rt,
+                        expiresAt: Date().addingTimeInterval(((j["expires_in"] as? Double) ?? 3600) - 60))
+            session = s
+        }
+        return s.accessToken
+    }
+
+    static func request(_ path: String, method: String = "GET", body: [String: Any]? = nil) async throws -> (Data, Int) {
+        guard let t = await token() else { throw NSError(domain: "auth", code: 401, userInfo: [NSLocalizedDescriptionKey: "signed out"]) }
+        var req = URLRequest(url: URL(string: api + path)!)
+        req.httpMethod = method
+        req.setValue("Bearer " + t, forHTTPHeaderField: "Authorization")
+        req.setValue("application/json", forHTTPHeaderField: "Content-Type")
+        if let b = body { req.httpBody = try JSONSerialization.data(withJSONObject: b) }
+        let (data, resp) = try await URLSession.shared.data(for: req)
+        return (data, (resp as? HTTPURLResponse)?.statusCode ?? 0)
+    }
+
+    struct StreamEvent { var text: String?; var cost: Double?; var promptTokens: Int? }
+
+    static func chatStream(model: String, messages: [[String: Any]], effort: String?) async throws -> AsyncThrowingStream<StreamEvent, Error> {
+        guard let t = await token() else { throw NSError(domain: "auth", code: 401, userInfo: [NSLocalizedDescriptionKey: "signed out"]) }
+        var req = URLRequest(url: URL(string: api + "/chat")!)
+        req.httpMethod = "POST"
+        req.setValue("Bearer " + t, forHTTPHeaderField: "Authorization")
+        req.setValue("application/json", forHTTPHeaderField: "Content-Type")
+        var body: [String: Any] = ["model": model, "messages": messages]
+        if let e = effort { body["effort"] = e }
+        req.httpBody = try JSONSerialization.data(withJSONObject: body)
+        let (bytes, resp) = try await URLSession.shared.bytes(for: req)
+        let code = (resp as? HTTPURLResponse)?.statusCode ?? 0
+        if code == 402 { throw NSError(domain: "key", code: 402, userInfo: [NSLocalizedDescriptionKey: "add your OpenRouter key in Settings first"]) }
+        if code >= 300 {
+            var err = ""
+            for try await line in bytes.lines { err += line; if err.count > 400 { break } }
+            throw NSError(domain: "api", code: code, userInfo: [NSLocalizedDescriptionKey: "HTTP \(code): \(err.prefix(200))"])
+        }
+        return AsyncThrowingStream { cont in
+            let task = Task {
+                do {
+                    for try await line in bytes.lines {
+                        guard line.hasPrefix("data:") else { continue }
+                        let payload = line.dropFirst(5).trimmingCharacters(in: .whitespaces)
+                        if payload == "[DONE]" { continue }
+                        guard let d = payload.data(using: .utf8),
+                              let obj = try? JSONSerialization.jsonObject(with: d) as? [String: Any] else { continue }
+                        var ev = StreamEvent()
+                        if let u = obj["usage"] as? [String: Any] {
+                            ev.cost = u["cost"] as? Double
+                            ev.promptTokens = u["prompt_tokens"] as? Int
+                        }
+                        if let ch = (obj["choices"] as? [[String: Any]])?.first,
+                           let delta = ch["delta"] as? [String: Any],
+                           let text = delta["content"] as? String, !text.isEmpty { ev.text = text }
+                        if ev.text != nil || ev.cost != nil { cont.yield(ev) }
+                    }
+                    cont.finish()
+                } catch { cont.finish(throwing: error) }
+            }
+            cont.onTermination = { _ in task.cancel() }
+        }
+    }
+}
+
+// ASWebAuthenticationSession wrapper for the Google flow. Supabase redirects to
+// the allow-listed web origin's /mobile-auth.html, which bounces the tokens back
+// into the app via the harnesschat:// scheme.
+final class GoogleSignIn: NSObject, ASWebAuthenticationPresentationContextProviding {
+    static let shared = GoogleSignIn()
+    private var session: ASWebAuthenticationSession?
+
+    func start(completion: @escaping (Bool) -> Void) {
+        let redirect = "https://harness-chat-web.vercel.app/mobile-auth.html"
+        let url = URL(string: Backend.supa + "/auth/v1/authorize?provider=google&redirect_to=" +
+                      redirect.addingPercentEncoding(withAllowedCharacters: .alphanumerics)!)!
+        let s = ASWebAuthenticationSession(url: url, callbackURLScheme: "harnesschat") { cb, _ in
+            completion(cb.flatMap { Backend.handleCallback($0) } ?? false)
+        }
+        s.presentationContextProvider = self
+        s.prefersEphemeralWebBrowserSession = false
+        session = s
+        s.start()
+    }
+
+    func presentationAnchor(for session: ASWebAuthenticationSession) -> ASPresentationAnchor {
+        UIApplication.shared.connectedScenes.compactMap { ($0 as? UIWindowScene)?.keyWindow }.first ?? ASPresentationAnchor()
+    }
+}

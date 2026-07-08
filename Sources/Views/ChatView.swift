@@ -4,30 +4,34 @@ import UIKit
 
 struct ChatView: View {
     @EnvironmentObject var store: Store
-    @State var chat: Chat
+    let chatID: String
     @State private var input = ""
-    @State private var streaming = false
-    @State private var errorText: String?
     @State private var showPicker = false
-    @State private var pendingImages: [String] = []     // data URLs awaiting send
+    @State private var pendingImages: [String] = []
     @State private var photoItems: [PhotosPickerItem] = []
     @State private var showCamera = false
     @AppStorage("ondeviceThink") private var ondeviceThink = true
-    @StateObject private var local = LocalLLM.shared
+
+    private var chat: Chat { store.chat(chatID) ?? Chat(model: store.defaultModel) }
+    private var streaming: Bool { store.live.contains(chatID) }
 
     var body: some View {
         VStack(spacing: 0) {
             ScrollViewReader { proxy in
                 ScrollView {
                     LazyVStack(alignment: .leading, spacing: 14) {
-                        ForEach(chat.messages) { m in MessageBubble(msg: m) }
+                        ForEach(Array(chat.messages.enumerated()), id: \.offset) { i, m in
+                            MessageBubble(msg: m, index: i, chatID: chatID, streaming: streaming,
+                                          onRewind: { idx in if let t = store.rewind(chatID: chatID, msgIndex: idx) { input = t } },
+                                          onFork: { idx in _ = store.fork(chatID: chatID, msgIndex: idx) })
+                        }
                         if streaming && chat.messages.last?.role == "user" {
                             HStack(spacing: 6) {
                                 Text("✳").foregroundStyle(Color(red: 0.79, green: 0.39, blue: 0.26))
                                 Text("Thinking…").font(.caption).foregroundStyle(.secondary)
                             }
                         }
-                        if let e = errorText {
+                        if let e = store.errors[chatID] {
                             Text("⚠︎ " + e).font(.caption).foregroundStyle(.red)
                         }
                         Color.clear.frame(height: 1).id("end")
@@ -69,7 +73,7 @@ struct ChatView: View {
                         .padding(.horizontal, 14).padding(.vertical, 9)
                         .background(Color(.systemGray6), in: RoundedRectangle(cornerRadius: 20))
                         .onSubmit(send)
-                    Button(action: send) {
+                    Button(action: sendOrStop) {
                         Image(systemName: streaming ? "stop.circle.fill" : "arrow.up.circle.fill")
                             .font(.system(size: 30))
                     }
@@ -86,6 +90,20 @@ struct ChatView: View {
                                 .font(.caption)
                                 .foregroundStyle(ondeviceThink ? Color(red: 0.79, green: 0.39, blue: 0.26) : .secondary)
                         }
+                    } else {
+                        Menu {
+                            ForEach([nil, "low", "medium", "high"], id: \.self) { e in
+                                Button((e ?? "auto") + (chat.effort == e ? " ✓" : "")) {
+                                    var c = chat; c.effort = e; store.update(c)
+                                }
+                            }
+                        } label: {
+                            Label(chat.effort ?? "auto", systemImage: "brain")
+                                .font(.caption).foregroundStyle(.secondary)
+                        }
+                    }
+                    if let stat = statText {
+                        Text(stat).font(.caption2).foregroundStyle(.secondary)
                     }
                 }
             }
@@ -93,12 +111,11 @@ struct ChatView: View {
         }
         .navigationTitle(chat.title).navigationBarTitleDisplayMode(.inline)
         .sheet(isPresented: $showPicker) {
-            ModelPickerView(selected: $chat.model)
-                .onDisappear {
-                    store.defaultModel = chat.model
-                    store.update(chat)
-                    if !modelSupportsVision { pendingImages = [] }
-                }
+            ModelPickerView(selected: Binding(
+                get: { chat.model },
+                set: { v in var c = chat; c.model = v; store.update(c); store.defaultModel = v }
+            ))
+            .onDisappear { if !modelSupportsVision { pendingImages = [] } }
         }
         .fullScreenCover(isPresented: $showCamera) {
             CameraPicker { img in addImage(img) }.ignoresSafeArea()
@@ -114,6 +131,16 @@ struct ChatView: View {
                 photoItems = []
             }
         }
+    }
+
+    private var statText: String? {
+        var parts: [String] = []
+        if let s = chat.spend, s > 0 { parts.append(String(format: s < 0.1 ? "$%.4f" : "$%.2f", s)) }
+        if let t = chat.ctxTokens, t > 0,
+           let ctx = store.models.first(where: { $0.id == chat.model })?.context, ctx > 0 {
+            parts.append("\(Int(Double(t) / Double(ctx) * 100))% ctx")
+        }
+        return parts.isEmpty ? nil : parts.joined(separator: " · ")
     }
 
     private var modelSupportsVision: Bool {
@@ -138,45 +165,26 @@ struct ChatView: View {
         }
     }
 
-    private var streamTask: Task<Void, Never>? { nil }
-
+    func sendOrStop() { if streaming { store.stop(chatID) } else { send() } }
     func send() {
-        if streaming { return }   // stop handled implicitly by task cancel on nav; keep simple
+        if streaming { return }
         let text = input.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !text.isEmpty || !pendingImages.isEmpty else { return }
         input = ""
-        errorText = nil
-        chat.messages.append(Msg(role: "user", content: text.isEmpty ? "What's in this image?" : text,
-                                 images: pendingImages.isEmpty ? nil : pendingImages))
+        let imgs = modelSupportsVision ? pendingImages : []
         pendingImages = []
-        if chat.title == "New chat" { chat.title = String(text.prefix(42)) }
-        chat.updated = .now
-        store.update(chat)
-        streaming = true
-        Task {
-            var reply = Msg(role: "assistant", content: "")
-            var appended = false
-            do {
-                let source = LocalModels.isLocal(chat.model)
-                    ? local.stream(modelId: chat.model, messages: chat.messages, think: ondeviceThink)
-                    : OpenRouter.stream(model: chat.model, messages: chat.messages, key: store.apiKey)
-                for try await delta in source {
-                    reply.content += delta
-                    if !appended { chat.messages.append(reply); appended = true }
-                    else { chat.messages[chat.messages.count - 1] = reply }
-                }
-            } catch {
-                errorText = error.localizedDescription
-            }
-            streaming = false
-            chat.updated = .now
-            store.update(chat)
-        }
+        store.send(chatID: chatID, text: text, images: imgs)
     }
 }
 
 struct MessageBubble: View {
     let msg: Msg
+    let index: Int
+    let chatID: String
+    let streaming: Bool
+    var onRewind: (Int) -> Void = { _ in }
+    var onFork: (Int) -> Void = { _ in }
+
     var body: some View {
         HStack {
             if msg.role == "user" { Spacer(minLength: 40) }
@@ -213,7 +221,13 @@ struct MessageBubble: View {
             }
         }
         .frame(maxWidth: .infinity, alignment: msg.role == "user" ? .trailing : .leading)
-        .contextMenu { Button("Copy") { UIPasteboard.general.string = msg.content } }
+        .contextMenu {
+            Button { UIPasteboard.general.string = msg.content } label: { Label("Copy", systemImage: "doc.on.doc") }
+            if msg.role == "user" && !streaming {
+                Button { onRewind(index) } label: { Label("Rewind to here", systemImage: "arrow.uturn.backward") }
+                Button { onFork(index) } label: { Label("Fork from here", systemImage: "arrow.triangle.branch") }
+            }
+        }
     }
 }
 
@@ -244,7 +258,7 @@ struct AssistantText: View {
             let before = String(rest[..<open.lowerBound]).trimmingCharacters(in: .newlines)
             if !before.isEmpty { out.append((false, before)) }
             rest = rest[open.upperBound...]
-            if let nl = rest.firstIndex(of: "\n") { rest = rest[rest.index(after: nl)...] }   // drop language tag
+            if let nl = rest.firstIndex(of: "\n") { rest = rest[rest.index(after: nl)...] }
             if let close = rest.range(of: "```") {
                 out.append((true, String(rest[..<close.lowerBound]).trimmingCharacters(in: .newlines)))
                 rest = rest[close.upperBound...]
@@ -258,7 +272,6 @@ struct AssistantText: View {
         return out.isEmpty ? [(false, text)] : out
     }
 }
-
 
 struct DataURLImage: View {
     let url: String

@@ -32,5 +32,8 @@ targets:
       path: Info.plist
       properties:
         UILaunchScreen: {}
+        CFBundleURLTypes:
+          - CFBundleURLSchemes: [harnesschat]
+            CFBundleURLName: com.jadenkwek.harnesschat.auth
         NSCameraUsageDescription: Take a photo to send to the model.
         NSPhotoLibraryUsageDescription: Attach photos to your messages.
