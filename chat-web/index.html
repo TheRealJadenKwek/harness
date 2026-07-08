@@ -255,6 +255,7 @@
   <h3>⚙︎ Settings</h3>
   <div class="opt" style="cursor:default"><span>Total API spend</span><span class="d" id="setSpend"></span></div>
   <div class="opt" id="setKey"><span>OpenRouter key</span><span class="d" id="setKeyTail"></span></div>
+  <div class="opt" id="setExport"><span>Export my data</span><span class="d">chats + memories → JSON</span></div>
   <div class="opt" id="setOut"><span>Sign out</span><span class="d" id="setEmail"></span></div>
 </div>
 
@@ -890,6 +891,33 @@ $('setBtn').onclick = async () => {
   } catch {}
 };
 $('setKey').onclick = () => { closeSheets(); openSheet('keySheet'); };
+$('setExport').onclick = async () => {
+  const el = $('setExport').querySelector('.d');
+  el.textContent = 'gathering…';
+  try {
+    // full server copies, not just this browser's cache
+    const [syncR, memR] = await Promise.all([
+      fetch('/api/sync', { headers: await H() }),
+      fetch('/api/memorize', { headers: await H() }),
+    ]);
+    const serverChats = syncR.ok ? (await syncR.json()).chats : [];
+    const memories = memR.ok ? (await memR.json()).memories : [];
+    const byId = new Map(serverChats.map((c) => [c.id, c]));
+    for (const c of chats) if (!byId.has(c.id)) byId.set(c.id, c);   // include local-only too
+    const data = {
+      exported: new Date().toISOString(),
+      app: 'Harness Chat',
+      chats: [...byId.values()],
+      memories,
+    };
+    saveBlob(new Blob([JSON.stringify(data, null, 2)], { type: 'application/json' }),
+             'harness-chat-export-' + new Date().toISOString().slice(0, 10) + '.json');
+    el.textContent = 'exported ✓';
+    setTimeout(() => (el.textContent = 'chats + memories → JSON'), 2500);
+  } catch (e) {
+    el.textContent = 'failed — try again';
+  }
+};
 $('setOut').onclick = signOut;
 $('keySave').onclick = async () => {
   $('keyErr').textContent = '';
