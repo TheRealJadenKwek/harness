@@ -1080,7 +1080,7 @@ H.onEvent((e) => {
   if (stick) scrollLog(rec);
 });
 
-// ---- live working indicator: terracotta ✳ + status + elapsed time (Claude-style)
+// ---- live working indicator: cobalt ✳ + status + elapsed time
 function startWorking(rec) {
   if (rec.workEl) return;
   const el = document.createElement('div');
