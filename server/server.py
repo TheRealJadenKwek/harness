@@ -346,7 +346,8 @@ def fetch_provider_models(p):
 
 def _provider_public(p):
     """Projection sent to the app — never the key value, just whether one is set."""
-    return {'id': p.get('id'), 'label': p.get('label'), 'engine': p.get('engine'),
+    eng = 'codex' if p.get('engine') == 'harness-code' else p.get('engine')
+    return {'id': p.get('id'), 'label': p.get('label'), 'engine': eng,
             'model': p.get('model'), 'enabled': p.get('enabled'),
             'models': p.get('models'), 'default_model': default_model_label(p),
             'default_effort': default_effort_label(p),
@@ -2827,7 +2828,7 @@ class Handler(BaseHTTPRequestHandler):
             effort = 'default'
         now = time.time()
         t = {'id': uuid.uuid4().hex, 'title': (body.get('title') or '').strip()[:80],
-             'engine': prov['engine'], 'provider': pid,
+             'engine': 'codex' if prov['engine'] == 'harness-code' else prov['engine'], 'provider': pid,
              'model': (body.get('model') or prov.get('model')),
              'cwd': cwd, 'permission_mode': mode, 'effort': effort, 'session_id': None,
              'created': now, 'updated': now, 'messages': []}
