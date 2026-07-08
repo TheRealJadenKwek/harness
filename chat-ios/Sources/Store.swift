@@ -238,7 +238,12 @@ final class Store: ObservableObject {
                     persist()
                 }
                 guard let c = chat(chatID) else { return }
-                let msgs: [[String: Any]] = c.messages.map { m in
+                // artifact iteration: latest html file per filename rides along as text
+                var lastHtml: [String: Int] = [:]
+                for (j, m) in c.messages.enumerated() {
+                    for f in m.files ?? [] where f.kind == "html" && f.content != nil { lastHtml[f.filename] = j }
+                }
+                let msgs: [[String: Any]] = c.messages.enumerated().map { (j, m) in
                     if let im = m.images, !im.isEmpty {
                         if !vis {
                             if let d = m.bridgeDesc { return ["role": m.role, "content": m.content + d] }
@@ -250,7 +255,17 @@ final class Store: ObservableObject {
                         parts += im.map { ["type": "image_url", "image_url": ["url": $0]] }
                         return ["role": m.role, "content": parts]
                     }
-                    return ["role": m.role, "content": m.content]
+                    var content = m.content
+                    if m.role == "assistant" {
+                        for f in m.files ?? [] where f.filename != "" {
+                            if f.kind == "html", lastHtml[f.filename] == j, let body = f.content {
+                                content += "\n\n[You created the artifact \"" + f.filename + "\" (html). Its CURRENT full content:]\n```html\n" + String(body.prefix(60000)) + "\n```"
+                            } else {
+                                content += "\n\n[You created the file \"" + f.filename + "\" (" + f.kind + ") earlier in this conversation.]"
+                            }
+                        }
+                    }
+                    return ["role": m.role, "content": content]
                 }
                 let stream: AsyncThrowingStream<Backend.StreamEvent, Error>
                 if authed {

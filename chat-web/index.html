@@ -49,6 +49,20 @@
   .foot-btn:hover { background:var(--panel2); color:var(--text); }
   /* ---- main column ---- */
   #main { flex:1; display:flex; flex-direction:column; min-width:0; }
+  #artpane { display:none; flex:1.15; min-width:0; border-left:1px solid var(--line); flex-direction:column; background:var(--bg); }
+  .app.arted #artpane { display:flex; }
+  #artpane .abar { display:flex; align-items:center; gap:8px; padding:9px 12px; border-bottom:1px solid var(--line); font-size:13px; flex:none; }
+  #artpane .aname { font-weight:600; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+  #artpane .atabs { display:flex; gap:2px; background:var(--panel, rgba(125,125,125,.08)); border-radius:9px; padding:2px; margin-left:auto; }
+  #artpane .atabs button { border:0; background:transparent; color:var(--muted); font-size:12px; padding:4px 12px; border-radius:7px; cursor:pointer; }
+  #artpane .atabs button.on { background:var(--bg); color:var(--fg, inherit); box-shadow:0 1px 3px rgba(0,0,0,.12); }
+  #artpane .abtn { border:0; background:transparent; color:var(--muted); cursor:pointer; font-size:15px; padding:4px 6px; border-radius:7px; }
+  #artpane .abtn:hover { color:inherit; }
+  #artpane iframe { flex:1; border:0; width:100%; background:#fff; }
+  #artpane pre { flex:1; margin:0; padding:14px 16px; overflow:auto; font:12px/1.55 ui-monospace,SFMono-Regular,Menlo,monospace; white-space:pre; }
+  @media (max-width: 900px) {
+    #artpane { position:fixed; inset:0; z-index:250; border-left:0; }
+  }
   header { display:flex; align-items:center; gap:8px; padding:10px 12px 6px;
            padding-top:calc(10px + env(safe-area-inset-top)); border-bottom:1px solid var(--border); background:var(--panel); }
   header .title { font-weight:600; font-size:15px; letter-spacing:-.1px; flex:1; text-align:center; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
@@ -239,6 +253,20 @@
         <div id="modelHint" style="display:none">☝︎ tap here to switch AI models</div>
       </div>
     </div>
+  </div>
+  <div id="artpane">
+    <div class="abar">
+      <span class="aname" id="artName"></span>
+      <div class="atabs">
+        <button id="artTabPrev" class="on">Preview</button>
+        <button id="artTabCode">Code</button>
+      </div>
+      <button class="abtn" id="artTab" title="Open in new tab">⧉</button>
+      <button class="abtn" id="artDl" title="Download">⤓</button>
+      <button class="abtn" id="artClose" title="Close">✕</button>
+    </div>
+    <iframe id="artFrame" sandbox="allow-scripts allow-pointer-lock allow-popups allow-modals"></iframe>
+    <pre id="artCode" style="display:none"><code id="artCodeIn"></code></pre>
   </div>
 </div>
 <input type="file" id="filePick" accept="image/*,.pdf,.txt,.md,.csv,.json,.log,.html,.js,.py,.ts,.xlsx,.xls,.docx,.pptx" multiple style="display:none">
@@ -530,13 +558,42 @@ function fileCard(spec) {
     + '<span style="min-width:0"><div class="fn">' + esc(spec.filename) + '</div><div class="fk">' + spec.kind.toUpperCase() + ' · ' + hint + '</div></span>'
     + '<span class="dl" title="Download">⤓</span>';
   if (spec.kind === 'html') {
-    card.onclick = () => openPreview(spec);
+    card.onclick = () => openArtifact(spec);
     card.querySelector('.dl').onclick = (e) => { e.stopPropagation(); downloadFile(spec).catch((e2) => alert(e2.message)); };
   } else {
     card.onclick = () => downloadFile(spec).catch((e) => alert('could not build the file: ' + e.message));
   }
   return card;
 }
+let artifact = null;      // { filename, content } currently in the side panel
+function openArtifact(spec) {
+  artifact = { filename: spec.filename || 'app.html', content: spec.content || '' };
+  document.querySelector('.app').classList.add('arted');
+  $('artName').textContent = artifact.filename;
+  $('artFrame').srcdoc = artifact.content;
+  $('artCodeIn').textContent = artifact.content;
+  renderArtTab();
+}
+function closeArtifact() { artifact = null; document.querySelector('.app').classList.remove('arted'); }
+let artTab = 'preview';
+function renderArtTab() {
+  $('artTabPrev').classList.toggle('on', artTab === 'preview');
+  $('artTabCode').classList.toggle('on', artTab === 'code');
+  $('artFrame').style.display = artTab === 'preview' ? '' : 'none';
+  $('artCode').style.display = artTab === 'code' ? '' : 'none';
+}
+$('artTabPrev').onclick = () => { artTab = 'preview'; renderArtTab(); };
+$('artTabCode').onclick = () => { artTab = 'code'; renderArtTab(); };
+$('artClose').onclick = closeArtifact;
+$('artTab').onclick = () => {
+  if (!artifact) return;
+  const url = URL.createObjectURL(new Blob([artifact.content], { type: 'text/html' }));
+  window.open(url, '_blank'); setTimeout(() => URL.revokeObjectURL(url), 60000);
+};
+$('artDl').onclick = () => {
+  if (!artifact) return;
+  saveBlob(new Blob([artifact.content], { type: 'text/html' }), artifact.filename);
+};
 function openPreview(spec) {
   const ov = document.createElement('div');
   ov.style.cssText = 'position:fixed;inset:0;z-index:300;background:var(--bg);display:flex;flex-direction:column';
@@ -622,7 +679,7 @@ function chatRow(c) {
   const x = document.createElement('button'); x.className = 'x'; x.textContent = '✕';
   x.onclick = (e) => { e.stopPropagation(); deleteChat(c); };
   row.appendChild(x);
-  row.onclick = () => { cur = c; render(); if (innerWidth < 900) closeSheets(); };
+  row.onclick = () => { cur = c; closeArtifact(); render(); if (innerWidth < 900) closeSheets(); };
   row.oncontextmenu = (e) => { e.preventDefault(); openCtxMenu(c, e.clientX, e.clientY); };
   return row;
 }
@@ -907,6 +964,7 @@ async function send() {
             reply.files.push(h.file);
             if (!appended) { chat.messages.push(reply); appended = true; }
             if (cur === chat) { const log = $('log'); log.appendChild(fileCard(h.file)); log.scrollTop = log.scrollHeight; }
+            if (h.file.kind === 'html' && cur === chat) openArtifact(h.file);   // live side-by-side artifact
           }
           continue;
         }
@@ -970,7 +1028,7 @@ async function describeImages(urls, key) {
   const r = await fetch('https://openrouter.ai/api/v1/chat/completions', {
     method: 'POST',
     headers: { 'Content-Type': 'application/json', 'Authorization': 'Bearer ' + key },
-    body: JSON.stringify({ model: 'google/gemini-3.1-flash', max_tokens: 2000,
+    body: JSON.stringify({ model: 'google/gemini-3.1-flash-lite', max_tokens: 2000,
       messages: [{ role: 'user', content: [
         { type: 'text', text: 'Describe the attached image(s) exhaustively for a text-only AI that must answer questions about them. Transcribe ALL visible text verbatim, describe layout, charts with their values, people, objects, and colors. Organized, no preamble.' },
         ...urls.map((u) => ({ type: 'image_url', image_url: { url: u } })),

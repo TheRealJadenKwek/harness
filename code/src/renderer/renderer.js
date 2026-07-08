@@ -728,7 +728,7 @@ async function onSend(opts) {
   const rec = active(); if (!rec) return;
   const text = $('input').value.trim();
   let images = (rec.attachments || []).map((a) => a.dataUrl).filter(Boolean);
-  if (images.length && !visionOk(rec)) { addLine(rec, 'err', '⚠︎ attachments dropped — ' + shortModel(rec.meta.model) + ' can\'t see images'); images = []; rec.attachments = []; renderAttachRow(); }
+  if (images.length && !visionOk(rec)) addLine(rec, 'done', '🖼 ' + shortModel(rec.meta.model) + ' can\'t see images — they\'ll be auto-described by a vision model');
   if (!text && !images.length) return;
   $('input').value = ''; $('input').style.height = 'auto'; hidePopup();
   rec.suggestion = null; showSuggestion(rec);
@@ -1031,7 +1031,6 @@ input.addEventListener('paste', (e) => {
   for (const item of e.clipboardData.items) {
     if (item.type && item.type.startsWith('image/')) {
       e.preventDefault();
-      if (!visionOk(rec)) { addLine(rec, 'err', '⚠︎ ' + shortModel(rec.meta.model) + ' can\'t see images — pick a vision model (image icon in the picker)'); return; }
       const f = item.getAsFile();
       const fr = new FileReader();
       fr.onload = () => {
@@ -1086,9 +1085,7 @@ async function setSessionConfig(patch) {
   const m = await H.sessionConfig(rec.meta.id, patch);
   if (m) rec.meta = m;
   if (patch.model && !visionOk(rec) && (rec.attachments || []).some((a) => a.dataUrl)) {
-    rec.attachments = rec.attachments.filter((a) => !a.dataUrl);
-    renderAttachRow();
-    addLine(rec, 'done', '🖼 image attachments removed — ' + shortModel(rec.meta.model) + ' can\'t see images');
+    addLine(rec, 'done', '🖼 ' + shortModel(rec.meta.model) + ' can\'t see images — attachments will be auto-described by a vision model');
   }
   updateTitlebar(); renderSidebar();
 }
@@ -1160,7 +1157,7 @@ async function attachFiles() {
   const picked = await H.pickFiles(rec.meta.id, visionOk(rec));
   rec.attachments = rec.attachments || [];
   for (const f of picked) {
-    if (f.kind === 'image') { if (!visionOk(rec)) { addLine(rec, 'err', '⚠︎ ' + shortModel(rec.meta.model) + ' can\'t see images — pick a vision model (image icon in the picker)'); continue; } rec.attachments.push({ name: f.name, dataUrl: f.dataUrl }); }
+    if (f.kind === 'image') rec.attachments.push({ name: f.name, dataUrl: f.dataUrl });
     else if (f.kind === 'path') { const i = $('input'); i.value = (i.value ? i.value.replace(/\s?$/, ' ') : '') + '@' + f.path + ' '; }
     else if (f.kind === 'error') addLine(rec, 'err', '⚠︎ ' + f.name + ': ' + f.error);
   }

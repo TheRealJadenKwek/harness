@@ -222,18 +222,12 @@ DEFAULT_PROVIDERS = [
     {"id": "glm", "label": "GLM (Z.ai coding)", "engine": "claude", "model": "glm-4.6",
      "base_url": "https://api.z.ai/api/anthropic", "api_key_env": "GLM_API_KEY", "enabled": False,
      "models": [{"label": "GLM-4.6", "value": "glm-4.6"}, {"label": "GLM-5.2", "value": "glm-5.2"}]},
-    # OpenRouter via Codex's custom-provider mechanism (OpenAI-compatible). Set `model` to any
-    # OpenRouter model id (e.g. "z-ai/glm-4.6", "anthropic/claude-3.7-sonnet", "deepseek/deepseek-chat").
-    # If it errors on startup, change "wire_api" to "chat".
     {"id": "harness-code", "label": "Harness Code", "engine": "harness-code", "enabled": True,
      "model": "deepseek/deepseek-v4-pro",
      "models": [{"label": "DeepSeek V4 Pro", "value": "deepseek/deepseek-v4-pro"},
                 {"label": "Claude Fable 5", "value": "anthropic/claude-fable-5"},
                 {"label": "GLM-5", "value": "z-ai/glm-5"},
                 {"label": "GPT-4o-mini", "value": "openai/gpt-4o-mini"}]},
-    {"id": "openrouter", "label": "OpenRouter", "engine": "codex", "model": "z-ai/glm-4.6",
-     "base_url": "https://openrouter.ai/api/v1", "api_key_env": "OPENROUTER_API_KEY",
-     "wire_api": "responses", "enabled": False},
 ]
 
 def load_providers():
@@ -1527,17 +1521,33 @@ def _hc_url():
     candidates = ([filed] if filed else []) + [p for p in ('8799', '8798', '8797', '8796', '8795') if p != filed]
     import urllib.request
     tok = _hc_token()
-    for port in candidates:
-        try:
-            rq = urllib.request.Request('http://127.0.0.1:%s/api/sessions' % port,
-                                        headers={'X-HC-Token': tok})
-            with urllib.request.urlopen(rq, timeout=0.6) as r:
-                if r.headers.get('Content-Type', '').startswith('application/json'):
-                    json.load(r)          # really Harness Code, really ours
-                    _HC_PORT_CACHE.update(port=port, at=time.time())
-                    return 'http://127.0.0.1:%s' % port
-        except Exception:
-            continue
+    def probe():
+        for port in candidates:
+            try:
+                rq = urllib.request.Request('http://127.0.0.1:%s/api/sessions' % port,
+                                            headers={'X-HC-Token': tok})
+                with urllib.request.urlopen(rq, timeout=0.6) as r:
+                    if r.headers.get('Content-Type', '').startswith('application/json'):
+                        json.load(r)          # really Harness Code, really ours
+                        _HC_PORT_CACHE.update(port=port, at=time.time())
+                        return 'http://127.0.0.1:%s' % port
+            except Exception:
+                continue
+        return None
+    u = probe()
+    if u:
+        return u
+    # app not running — launch it and give it a few seconds to bring the API up
+    try:
+        log('harness-code app not reachable, auto-launching')
+        subprocess.run(['open', '-a', 'Harness Code'], timeout=10)
+        for _ in range(10):
+            time.sleep(1.5)
+            u = probe()
+            if u:
+                return u
+    except Exception as e:
+        log('harness-code auto-launch failed: %s' % e)
     return 'http://127.0.0.1:%s' % (filed or '8799')
 HC_MODES = {'bypass': 'bypass', 'default': 'ask', 'acceptEdits': 'edits', 'plan': 'plan'}
 

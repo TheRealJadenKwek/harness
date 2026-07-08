@@ -116,7 +116,7 @@ async function supportsVision(model, key) {
   await supportsTools(model, key);            // fills the shared catalog cache
   return visionModels ? visionModels.has(model) : true;
 }
-const BRIDGE_PREFS = ['google/gemini-3.1-flash', 'google/gemini-2.5-flash', 'openai/gpt-4o-mini', 'anthropic/claude-3.5-haiku'];
+const BRIDGE_PREFS = ['google/gemini-3.1-flash-lite', 'google/gemini-3.5-flash', 'google/gemini-3-flash-preview', 'openai/gpt-4o-mini'];
 const BRIDGE_PROMPT = 'Describe the attached image(s) exhaustively for a text-only AI that must answer questions about them. Transcribe ALL visible text verbatim, describe layout, charts with their values, people, objects, and colors. Organized, no preamble.';
 
 module.exports = async (req, res) => {
@@ -145,6 +145,26 @@ module.exports = async (req, res) => {
     return { role, content: String(m.content || '').slice(0, 60000) };
   });
 
+  // artifact iteration: hand the model back the files it created, so "change X"
+  // works across turns. Full content only for the LATEST version of each html artifact.
+  const lastHtml = {};
+  messages.forEach((m, i) => (Array.isArray(m.files) ? m.files : []).forEach((f) => {
+    if (f && f.kind === 'html' && f.filename) lastHtml[f.filename] = i;
+  }));
+  messages.forEach((m, i) => {
+    if (!Array.isArray(m.files) || !m.files.length || convo[i].role !== 'assistant') return;
+    let note = '';
+    for (const f of m.files) {
+      if (!f || !f.filename) continue;
+      if (f.kind === 'html' && lastHtml[f.filename] === i && typeof f.content === 'string') {
+        note += '\n\n[You created the artifact "' + f.filename + '" (html). Its CURRENT full content:]\n```html\n' + f.content.slice(0, 60000) + '\n```';
+      } else {
+        note += '\n\n[You created the file "' + f.filename + '" (' + (f.kind || 'file') + ') earlier in this conversation.]';
+      }
+    }
+    if (note) convo[i] = { role: 'assistant', content: (typeof convo[i].content === 'string' ? convo[i].content : '') + note };
+  });
+
   const toolsOK = await supportsTools(model, key);
   const tools = toolsOK ? TOOLS.concat(vidModel ? [{
     type: 'function',
@@ -162,7 +182,7 @@ module.exports = async (req, res) => {
   convo.unshift({
     role: 'system',
     content: 'You are Harness, the user\'s personal assistant — warm, sharp, and quick. You are especially good at writing and improving emails: match their natural voice, keep them concise and human, never stiff or corporate unless asked. For other tasks, be direct and genuinely useful.'
-      + (toolsOK ? '\n\nYou have tools. Use web_search for current information, then fetch_page to actually read a promising result (search snippets alone are shallow — read before you summarize or cite). Use generate_image when asked to draw or create a picture. Use run_code for calculations, data analysis, or anything better computed than guessed. Use create_file whenever the user wants a document, spreadsheet, presentation, web page, app, game, or any file: deliver a real artifact (pdf/xlsx/pptx/html with live preview/zip for multi-file projects/plain text) instead of pasting long content into the chat, then briefly say what you made.' : '')
+      + (toolsOK ? '\n\nYou have tools. Use web_search for current information, then fetch_page to actually read a promising result (search snippets alone are shallow — read before you summarize or cite). Use generate_image when asked to draw or create a picture. Use run_code for calculations, data analysis, or anything better computed than guessed. Use create_file whenever the user wants a document, spreadsheet, presentation, web page, app, game, or any file: deliver a real artifact (pdf/xlsx/pptx/html with live preview/zip for multi-file projects/plain text) instead of pasting long content into the chat, then briefly say what you made. html files open in a live side-by-side artifact panel; when the user asks you to change or extend an html file you already created, call create_file again with the SAME filename and the FULL updated content — their preview updates in place (never a diff or partial file).' : '')
       + memoryBlock,
   });
 

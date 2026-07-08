@@ -82,7 +82,7 @@ enum Backend {
         var parts: [[String: Any]] = [["type": "text", "text": "Describe the attached image(s) exhaustively for a text-only AI that must answer questions about them. Transcribe ALL visible text verbatim, describe layout, charts with their values, people, objects, and colors. Organized, no preamble."]]
         parts += urls.map { ["type": "image_url", "image_url": ["url": $0]] }
         req.httpBody = try JSONSerialization.data(withJSONObject: [
-            "model": "google/gemini-3.1-flash", "max_tokens": 2000,
+            "model": "google/gemini-3.1-flash-lite", "max_tokens": 2000,
             "messages": [["role": "user", "content": parts]],
         ])
         let (data, _) = try await URLSession.shared.data(for: req)

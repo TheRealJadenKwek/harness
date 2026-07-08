@@ -512,12 +512,32 @@ struct HTMLPreviewSheet: View {
     let spec: FileSpec
     @Environment(\.dismiss) private var dismiss
     @State private var shareURL: URL?
+    @State private var tab = 0
     var body: some View {
         NavigationStack {
-            HTMLWebView(html: spec.content ?? "")
+            Group {
+                if tab == 0 {
+                    HTMLWebView(html: spec.content ?? "")
+                } else {
+                    ScrollView([.vertical, .horizontal]) {
+                        Text(spec.content ?? "")
+                            .font(.system(size: 11, design: .monospaced))
+                            .padding(14)
+                            .frame(maxWidth: .infinity, alignment: .leading)
+                            .textSelection(.enabled)
+                    }
+                }
+            }
                 .ignoresSafeArea(edges: .bottom)
-                .navigationTitle(spec.filename)
                 .navigationBarTitleDisplayMode(.inline)
+                .toolbar {
+                    ToolbarItem(placement: .principal) {
+                        Picker("", selection: $tab) {
+                            Text("Preview").tag(0)
+                            Text("Code").tag(1)
+                        }.pickerStyle(.segmented).frame(width: 180)
+                    }
+                }
                 .toolbar {
                     ToolbarItem(placement: .topBarLeading) { Button("Close") { dismiss() } }
                     ToolbarItem(placement: .topBarTrailing) {

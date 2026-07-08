@@ -1723,13 +1723,12 @@ ipcMain.handle('pick-files', async (_e, arg) => {
   const rec = sessions.get(id);
   const r = await dialog.showOpenDialog(win, {
     properties: ['openFile', 'multiSelections'],
-    ...(vision === false ? { message: 'This model can\'t see images — image files will be skipped (text files are fine).' } : {}),
+    ...(vision === false ? { message: 'This model can\'t see images — attached images get auto-described by a vision model.' } : {}),
   });
   if (r.canceled) return [];
   return r.filePaths.slice(0, 8).map((p) => {
     const ext = path.extname(p).toLowerCase();
     if (IMG_EXT.includes(ext)) {
-      if (vision === false) return { kind: 'error', name: path.basename(p), error: 'skipped — this model can\'t see images' };
       try {
         const buf = fs.readFileSync(p);
         if (buf.length <= 6 * 1024 * 1024) {
@@ -2133,6 +2132,25 @@ ipcMain.handle('automation-run-now', (_e, id) => {
 
 // One turn pipeline shared by the renderer (IPC) and the remote API (iOS harness).
 // `remote` additionally mirrors the user bubble into the desktop UI.
+// vision bridge: a vision model describes attached images so text-only models can use them
+async function describeImagesBridge(images, cfg) {
+  const model = cfg.bridgeModel || 'google/gemini-3.1-flash-lite';
+  try {
+    const r = await fetch('https://openrouter.ai/api/v1/chat/completions', {
+      method: 'POST',
+      headers: { 'Authorization': 'Bearer ' + cfg.apiKey, 'Content-Type': 'application/json' },
+      body: JSON.stringify({ model, max_tokens: 2500, messages: [{ role: 'user', content: [
+        { type: 'text', text: 'Describe the attached image(s) exhaustively for a text-only coding AI. Transcribe ALL visible text VERBATIM — code, error messages, terminal output, UI labels, log lines. Describe layout, colors, and anything a developer would need. Organized, no preamble.' },
+        ...images.map((u) => ({ type: 'image_url', image_url: { url: u } })),
+      ] }] }),
+    });
+    const j = await r.json();
+    const desc = j && j.choices && j.choices[0] && j.choices[0].message && j.choices[0].message.content;
+    if (desc) return '[' + images.length + ' attached image(s), auto-described by ' + model + ' because the active model cannot see images:]\n' + desc;
+  } catch {}
+  return '[an image was attached but the vision bridge failed — ask the user to paste the text instead]';
+}
+
 function beginTurn(rec, { text, images, modelText, remote, goalAuto }) {
   const cfg = loadConfig();
   if (!cfg.apiKey && !isLocalModel(rec.model)) {
@@ -2171,7 +2189,19 @@ function beginTurn(rec, { text, images, modelText, remote, goalAuto }) {
         try { await agent.compact(rec.abort.signal); } catch {}
         rec.usage.context = 0;
       }
-      await agent.send(payload, rec.abort.signal);
+      let toSend = payload;
+      if (typeof payload === 'object' && payload.images && payload.images.length && !supportsVision(rec.model)) {
+        if (cfg.apiKey) {
+          rec.transcript.push({ t: 'note', text: '🖼 ' + rec.model + ' can\'t see images — describing them via a vision model' });
+          sendToUI('agent-event', { sessionId: rec.id, type: 'control_note', message: '🖼 describing image(s) for this text-only model…' });
+          const desc = await describeImagesBridge(payload.images, cfg);
+          toSend = { text: (payload.text || '') + '\n\n' + desc };
+        } else {
+          sendToUI('agent-event', { sessionId: rec.id, type: 'control_note', message: '⚠︎ images dropped — no OpenRouter key for the vision bridge' });
+          toSend = payload.text || '';
+        }
+      }
+      await agent.send(toSend, rec.abort.signal);
     }
     catch (err) { rec.turnErrored = true; onAgentEvent(rec, { type: 'error', message: String((err && err.message) || err) }); }
     finally {
