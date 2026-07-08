@@ -225,6 +225,12 @@ DEFAULT_PROVIDERS = [
     # OpenRouter via Codex's custom-provider mechanism (OpenAI-compatible). Set `model` to any
     # OpenRouter model id (e.g. "z-ai/glm-4.6", "anthropic/claude-3.7-sonnet", "deepseek/deepseek-chat").
     # If it errors on startup, change "wire_api" to "chat".
+    {"id": "harness-code", "label": "Harness Code", "engine": "harness-code",
+     "model": "deepseek/deepseek-v4-pro",
+     "models": [{"label": "DeepSeek V4 Pro", "value": "deepseek/deepseek-v4-pro"},
+                {"label": "Claude Fable 5", "value": "anthropic/claude-fable-5"},
+                {"label": "GLM-5", "value": "z-ai/glm-5"},
+                {"label": "GPT-4o-mini", "value": "openai/gpt-4o-mini"}]},
     {"id": "openrouter", "label": "OpenRouter", "engine": "codex", "model": "z-ai/glm-4.6",
      "base_url": "https://openrouter.ai/api/v1", "api_key_env": "OPENROUTER_API_KEY",
      "wire_api": "responses", "enabled": False},
@@ -1397,12 +1403,100 @@ def run_gemini_stream(thread, provider, text, images=None):
         yield {'type': 'text', 'delta': result}
     yield {'type': 'done', 'text': result or '(no output)', 'session_id': thread.get('session_id')}
 
+
+# ---------------------------------------------------------------- harness-code engine
+# Fronts the Harness Code desktop app (github.com/TheRealJadenKwek/harness-code) over
+# its localhost API. The session LIVES in Harness Code, so every message sent from the
+# phone streams live in the desktop app too — one chat, two screens.
+def _hc_url():
+    u = CFG.get('HARNESS_CODE_URL', '').strip()
+    if u:
+        return u
+    try:
+        port = open(os.path.expanduser('~/.harness-code/api-port')).read().strip()
+    except Exception:
+        port = '8799'
+    return 'http://127.0.0.1:%s' % (port or '8799')
+HC_MODES = {'bypass': 'bypass', 'default': 'ask', 'acceptEdits': 'edits', 'plan': 'plan'}
+
+def _hc_token():
+    try:
+        return open(os.path.expanduser('~/.harness-code/api-token')).read().strip()
+    except Exception:
+        return ''
+
+def run_harnesscode_stream(thread, provider, text, images=None):
+    import urllib.request, urllib.error
+    tok = _hc_token()
+    hdrs = {'X-HC-Token': tok, 'Content-Type': 'application/json'}
+    mode = HC_MODES.get(thread.get('permission_mode') or 'bypass', 'ask')
+    model = thread.get('model') or provider.get('model')
+    img_urls = []
+    for pth in (images or []):
+        try:
+            raw = open(pth, 'rb').read()
+            mime = 'image/jpeg' if raw[:3] == b'\xff\xd8\xff' else 'image/png'
+            img_urls.append('data:%s;base64,%s' % (mime, base64.b64encode(raw).decode()))
+        except Exception:
+            pass
+    try:
+        sid = thread.get('session_id')
+        if not sid:
+            req = urllib.request.Request(_hc_url() + '/api/sessions', headers=hdrs,
+                data=json.dumps({'cwd': thread.get('cwd') or HOME, 'model': model, 'mode': mode}).encode())
+            meta = json.load(urllib.request.urlopen(req, timeout=10))
+            sid = meta['id']
+            yield {'type': 'session', 'id': sid}
+        payload = {'text': text, 'mode': mode}
+        if model:
+            payload['model'] = model
+        if img_urls:
+            payload['images'] = img_urls
+        req = urllib.request.Request(_hc_url() + '/api/sessions/%s/send' % sid, headers=hdrs,
+                                     data=json.dumps(payload).encode())
+        resp = urllib.request.urlopen(req, timeout=JOB_TIMEOUT)
+        final = []
+        for line in resp:
+            try:
+                e = json.loads(line.decode('utf-8', 'replace'))
+            except Exception:
+                continue
+            t = e.get('type')
+            if t == 'text':
+                final.append(e.get('delta', ''))
+                yield {'type': 'text', 'delta': e.get('delta', '')}
+            elif t == 'reasoning':
+                yield {'type': 'thinking', 'delta': e.get('delta', '')}
+            elif t == 'tool_call':
+                yield {'type': 'tool', 'name': e.get('name', ''),
+                       'summary': json.dumps(e.get('args') or {})[:140], 'detail': None}
+            elif t == 'approval_request':
+                yield {'type': 'thinking', 'delta': '\n[approval needed on the Mac: %s %s]\n' %
+                       (e.get('kind', ''), str(e.get('detail', ''))[:80])}
+            elif t == 'done':
+                yield {'type': 'done', 'text': e.get('text') or ''.join(final) or '(no output)',
+                       'session_id': sid}
+                return
+            elif t == 'aborted':
+                yield {'type': 'done', 'text': ''.join(final) or '(stopped)', 'session_id': sid}
+                return
+            elif t == 'error':
+                yield {'type': 'error', 'message': e.get('message', 'harness-code error')}
+                return
+        yield {'type': 'done', 'text': ''.join(final) or '(no output)', 'session_id': sid}
+    except urllib.error.HTTPError as ex:
+        yield {'type': 'error', 'message': 'harness-code HTTP %s: %s' % (ex.code, ex.read()[:150])}
+    except Exception as ex:
+        yield {'type': 'error', 'message': 'harness-code: %s — is the Harness Code app open on the Mac?' % ex}
+
 def run_thread(thread, provider, text, images=None):
     eng = provider.get('engine')
     if eng == 'codex':
         yield from run_codex_stream(thread, provider, text, images)
     elif eng == 'gemini':
         yield from run_gemini_stream(thread, provider, text, images)
+    elif eng == 'harness-code':
+        yield from run_harnesscode_stream(thread, provider, text, images)
     else:
         yield from run_claude_stream(thread, provider, text, images)
 
