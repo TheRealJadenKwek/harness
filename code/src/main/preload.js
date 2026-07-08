@@ -17,6 +17,7 @@ contextBridge.exposeInMainWorld('harness', {
   sessionConfig: (id, patch) => ipcRenderer.invoke('session-config', { id, patch }),
   sessionSend: (id, text, images, modelText) => ipcRenderer.invoke('session-send', { id, text, images, modelText }),
   sideChat: (id, q) => ipcRenderer.invoke('side-chat', { id, q }),
+  sideClear: (id) => ipcRenderer.invoke('side-clear', id),
   sessionAbort: (id) => ipcRenderer.invoke('session-abort', id),
   sessionClear: (id) => ipcRenderer.invoke('session-clear', id),
   sessionCompact: (id) => ipcRenderer.invoke('session-compact', id),

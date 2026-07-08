@@ -179,13 +179,70 @@ function addMedia(rec, p, kind) {
   if (kind !== 'video') el.querySelector('img').onclick = () => H.revealFile(p);
   logOf(rec).appendChild(el); scrollLog(rec);
 }
-function addSideChat(rec, q, a) {
+function addSideChat(rec, q, a) {   // legacy inline replay of old {t:'sidechat'} items
   clearEmpty(rec);
   const el = document.createElement('div'); el.className = 'sidechat';
-  el.innerHTML = '<div class="sc-head">◦ side chat <span class="sc-hint">not part of the session context</span></div><div class="sc-q"></div><div class="sc-a"></div>';
+  el.innerHTML = '<div class="sc-head">◦ side chat</div><div class="sc-q"></div><div class="sc-a"></div>';
   el.querySelector('.sc-q').textContent = q;
   el.querySelector('.sc-a').textContent = a || '';
   logOf(rec).appendChild(el); scrollLog(rec); return el;
+}
+
+// ---- side chat popup (/btw): its own thread, never touches the agent context ----
+function scEl() { return document.getElementById('scpop'); }
+function scScroll() { const b = document.getElementById('scBody'); if (b) b.scrollTop = b.scrollHeight; }
+function openSidePopup(rec) {
+  let pop = scEl();
+  if (!pop) {
+    pop = document.createElement('div');
+    pop.id = 'scpop';
+    pop.innerHTML = '<div class="sc-bar"><span>Side chat</span><span class="sc-note">separate from the session</span><span style="flex:1"></span>'
+      + '<button class="sc-btn" id="scClear" title="Clear side chat">🗑</button><button class="sc-btn" id="scClose" title="Close">✕</button></div>'
+      + '<div id="scBody"></div>'
+      + '<div class="sc-inrow"><textarea id="scInput" rows="1" placeholder="Ask on the side…"></textarea><button class="sc-btn" id="scSend" title="Send">↵</button></div>';
+    document.body.appendChild(pop);
+    document.getElementById('scClose').onclick = () => { pop.style.display = 'none'; };
+    document.getElementById('scClear').onclick = () => {
+      const r = active(); if (!r) return;
+      r.side = []; document.getElementById('scBody').innerHTML = '';
+      H.sideClear(r.meta.id);
+    };
+    const inp = document.getElementById('scInput');
+    document.getElementById('scSend').onclick = () => { const r = active(); if (r && inp.value.trim()) { sideSend(r, inp.value.trim()); inp.value = ''; } };
+    inp.addEventListener('keydown', (e) => {
+      if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); document.getElementById('scSend').click(); }
+      if (e.key === 'Escape') pop.style.display = 'none';
+    });
+  }
+  pop.style.display = 'flex';
+  const body = document.getElementById('scBody');
+  body.innerHTML = '';
+  rec.side = rec.side || [];
+  for (const m of rec.side) scBubble(m.role, m.content);
+  scScroll();
+  document.getElementById('scInput').focus();
+}
+function scBubble(role, text) {
+  const body = document.getElementById('scBody');
+  const el = document.createElement('div');
+  el.className = 'sc-msg ' + (role === 'user' ? 'me' : 'bot');
+  if (role === 'assistant') { el.innerHTML = md(text); el.classList.add('md'); }
+  else el.textContent = text;
+  body.appendChild(el);
+  return el;
+}
+function sideSend(rec, q) {
+  if (!scEl() || scEl().style.display === 'none') openSidePopup(rec);
+  rec.side = rec.side || [];
+  rec.side.push({ role: 'user', content: q });
+  scBubble('user', q);
+  const el = scBubble('assistant', '');
+  el.classList.add('live');
+  rec.sideStream = { el, acc: '' };
+  scScroll();
+  H.sideChat(rec.meta.id, q).then((r) => {
+    if (r && !r.ok) { el.textContent = '⚠︎ ' + (r.error || 'side chat failed'); el.classList.remove('live'); rec.sideStream = null; }
+  });
 }
 function clearEmpty(rec) {
   const eh = logOf(rec).querySelector('.empty-home');
@@ -584,7 +641,7 @@ async function activate(id) {
   if (!rec.loaded) {
     rec.loaded = true;
     const d = await H.sessionGet(id);
-    if (d) { rec.meta = d.meta; for (const item of d.transcript) renderItem(rec, item); rec.cur = null; }
+    if (d) { rec.meta = d.meta; rec.side = d.side || []; for (const item of d.transcript) renderItem(rec, item); rec.cur = null; }
     rec.logEl.scrollTop = rec.logEl.scrollHeight;
   }
   renderSidebar();
@@ -722,8 +779,18 @@ H.onEvent((e) => {
   else if (e.type === 'auto_approved') addLine(rec, 'done', '⚡ auto-approved ' + e.kind + ': ' + String(e.detail || '').slice(0, 80));
   else if (e.type === 'control_note') addLine(rec, 'done', e.message);
   else if (e.type === 'remote_user') { addUser(rec, '📱 ' + e.text, (e.thumbs || []).length, { ts: Date.now(), raw: e.text, thumbs: e.thumbs }); rec.streaming = true; startWorking(rec); updateComposer(); renderSidebar(); }
-  else if (e.type === 'sidechat_delta') { if (rec.sideEl) { rec.sideEl.querySelector('.sc-a').textContent += e.text; scrollLog(rec); } }
-  else if (e.type === 'sidechat_done') { if (rec.sideEl) { if (e.error) rec.sideEl.querySelector('.sc-a').textContent = '⚠︎ ' + e.error; rec.sideEl.classList.remove('live'); rec.sideEl = null; } }
+  else if (e.type === 'sidechat_delta') {
+    if (rec.sideStream) { rec.sideStream.acc += e.text; rec.sideStream.el.textContent = rec.sideStream.acc; scScroll(); }
+  }
+  else if (e.type === 'sidechat_done') {
+    if (rec.sideStream) {
+      const { el, acc } = rec.sideStream;
+      if (e.error) { el.textContent = '⚠︎ ' + e.error; rec.side.push({ role: 'assistant', content: '⚠︎ ' + e.error }); }
+      else { el.innerHTML = md(acc); el.classList.add('md'); rec.side.push({ role: 'assistant', content: acc }); }
+      el.classList.remove('live');
+      rec.sideStream = null; scScroll();
+    }
+  }
   else if (e.type === 'auto_user') { addUser(rec, '🎯 ' + e.text, 0, { ts: Date.now(), raw: e.text }); rec.streaming = true; startWorking(rec); updateComposer(); renderSidebar(); }
   else if (e.type === 'plan') renderPlan(rec, e.items);
   else if (e.type === 'checkpoint') addCkptLine(rec, e.ckptId, e.files);
@@ -912,19 +979,15 @@ const SLASH = [
   { cmd: '/fork', desc: 'Duplicate this chat into a new session' },
   { cmd: '/goal <text>', desc: 'Set a standing goal (empty = clear)' },
   { cmd: '/loop <min> <prompt>', desc: 'Re-send a prompt on an interval · /loop stop' },
+  { cmd: '/btw <question>', desc: 'Side chat — quick asides in a popup, never touches the session context' },
   { cmd: '/help', desc: 'Show available commands' },
 ];
 function runSlash(rec, text) {
   const [cmd, ...rest] = text.split(/\s+/);
   const arg = rest.join(' ');
   if (cmd === '/btw' || cmd === '/sidechat') {
-    if (!arg) { addLine(rec, 'err', 'usage: /btw <quick aside question — answered on the side, never touches the session context>'); return true; }
-    const el = addSideChat(rec, arg, '');
-    el.classList.add('live');
-    rec.sideEl = el;
-    H.sideChat(rec.meta.id, arg).then((r) => {
-      if (r && !r.ok) { el.querySelector('.sc-a').textContent = '⚠︎ ' + (r.error || 'side chat failed'); el.classList.remove('live'); rec.sideEl = null; }
-    });
+    openSidePopup(rec);
+    if (arg) sideSend(rec, arg);
     return true;
   }
   if (cmd === '/new') { newChat(); return true; }

@@ -85,6 +85,7 @@ function saveSession(rec) {
       },
       messages: rec.agent ? rec.agent.messages : (rec.savedMessages || []),
       transcript: rec.transcript,
+      side: (rec.side || []).slice(-40),
       checkpoints: (rec.checkpoints || []).slice(-10),
     }));
   } catch {}
@@ -101,7 +102,7 @@ function loadSessionsFromDisk() {
       sessions.set(d.meta.id, {
         ...d.meta,
         usage: d.meta.usage || { prompt_tokens: 0, completion_tokens: 0, cost: 0 },
-        agent: null, savedMessages: d.messages || [], transcript: d.transcript || [],
+        agent: null, savedMessages: d.messages || [], transcript: d.transcript || [], side: d.side || [], side: d.side || [],
         checkpoints: d.checkpoints || [],
         abort: null, cur: null,
       });
@@ -1856,7 +1857,7 @@ ipcMain.handle('trash-purge', (_e, id) => {
 
 ipcMain.handle('session-get', (_e, id) => {
   const rec = sessions.get(id);
-  return rec ? { meta: metaOf(rec), transcript: rec.transcript } : null;
+  return rec ? { meta: metaOf(rec), transcript: rec.transcript, side: rec.side || [] } : null;
 });
 
 // Generic sidebar-metadata patch: pin, unread, group, archive, title.
@@ -2225,6 +2226,12 @@ function beginTurn(rec, { text, images, modelText, remote, goalAuto }) {
   return { ok: true };
 }
 
+ipcMain.handle('side-clear', (_e, id) => {
+  const rec = sessions.get(id);
+  if (rec) { rec.side = []; saveSession(rec); }
+  return { ok: true };
+});
+
 ipcMain.handle('side-chat', async (_e, { id, q }) => {
   const rec = sessions.get(id);
   if (!rec) return { ok: false, error: 'no session' };
@@ -2233,6 +2240,9 @@ ipcMain.handle('side-chat', async (_e, { id, q }) => {
   if (!cfg.apiKey && !local) return { ok: false, error: 'no OpenRouter key' };
   const ctx = rec.transcript.filter((i) => i.t === 'user' || i.t === 'assistant').slice(-12)
     .map((i) => (i.t === 'user' ? 'User: ' : 'Assistant: ') + String(i.text || '').slice(0, 1500)).join('\n');
+  rec.side = rec.side || [];
+  const history = rec.side.slice(-16);
+  rec.side.push({ role: 'user', content: q });
   (async () => {
     let acc = '';
     try {
@@ -2242,7 +2252,8 @@ ipcMain.handle('side-chat', async (_e, { id, q }) => {
         body: JSON.stringify({
           model: local ? rec.model.slice(6) : rec.model, stream: true, max_tokens: 2000,
           messages: [
-            { role: 'system', content: 'You are a quick side-channel assistant inside a coding session. Answer the aside question directly and concisely (a few sentences, no preamble). The recent session transcript follows as reference context only — the question may or may not relate to it.\n\n' + ctx },
+            { role: 'system', content: 'You are a quick side-channel assistant inside a coding session. Answer aside questions directly and concisely (a few sentences, no preamble). The recent session transcript follows as reference context only — questions may or may not relate to it.\n\n' + ctx },
+            ...history,
             { role: 'user', content: q },
           ],
         }),
@@ -2266,10 +2277,12 @@ ipcMain.handle('side-chat', async (_e, { id, q }) => {
           if (t) { acc += t; sendToUI('agent-event', { sessionId: rec.id, type: 'sidechat_delta', text: t }); }
         }
       }
-      rec.transcript.push({ t: 'sidechat', q, a: acc, ts: Date.now() });
+      rec.side.push({ role: 'assistant', content: acc });
       saveSession(rec);
       sendToUI('agent-event', { sessionId: rec.id, type: 'sidechat_done' });
     } catch (e) {
+      rec.side.push({ role: 'assistant', content: '⚠︎ ' + String((e && e.message) || e) });
+      saveSession(rec);
       sendToUI('agent-event', { sessionId: rec.id, type: 'sidechat_done', error: String((e && e.message) || e) });
     }
   })();
