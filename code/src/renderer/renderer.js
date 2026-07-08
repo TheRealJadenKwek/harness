@@ -901,12 +901,19 @@ function maybeEmptyState(rec) {
   log.appendChild(el);
 }
 
+const MODE_ICON = {
+  plan: svgIcon('<path d="M8 6h13M8 12h13M8 18h13"/><path d="M3 6h.01M3 12h.01M3 18h.01"/>'),
+  ask: svgIcon('<path d="M20 13c0 5-3.5 7.5-7.66 8.95a1 1 0 0 1-.68 0C7.5 20.5 4 18 4 13V6a1 1 0 0 1 .65-.94l7-2.63a1 1 0 0 1 .7 0l7 2.63A1 1 0 0 1 20 6Z"/>'),
+  edits: svgIcon('<path d="M12 20h9"/><path d="M16.5 3.5a2.1 2.1 0 0 1 3 3L7 19l-4 1 1-4Z"/>'),
+  auto: svgIcon('<polygon points="13 2 3 14 12 14 11 22 21 10 12 10 13 2"/>'),
+  bypass: svgIcon('<path d="m21.73 18-8-14a2 2 0 0 0-3.48 0l-8 14A2 2 0 0 0 4 20h16a2 2 0 0 0 1.73-2Z"/><path d="M12 9v4M12 17h.01"/>'),
+};
 const MODES = [
-  { key: 'plan', label: '📋 Plan mode', chip: '📋 Plan' },
-  { key: 'ask', label: '🔨 Manual permissions', chip: '🔨 Ask' },
-  { key: 'edits', label: '✎ Accept edits', chip: '✎ Edits' },
-  { key: 'auto', label: '⚡ Auto mode', chip: '⚡ Auto' },
-  { key: 'bypass', label: '⚠ Bypass permissions', chip: '⚠ Bypass' },
+  { key: 'plan', label: 'Plan mode', chip: 'Plan' },
+  { key: 'ask', label: 'Manual permissions', chip: 'Ask' },
+  { key: 'edits', label: 'Accept edits', chip: 'Edits' },
+  { key: 'auto', label: 'Auto mode', chip: 'Auto' },
+  { key: 'bypass', label: 'Bypass permissions', chip: 'Bypass' },
 ];
 function updateTitlebar() {
   const rec = active(); if (!rec) return;
@@ -915,7 +922,7 @@ function updateTitlebar() {
   $('modelLabel').textContent = shortModel(m.model);
   const mb = $('modeBtn');
   const md = MODES.find((x) => x.key === m.mode) || MODES[1];
-  mb.textContent = md.chip;
+  mb.innerHTML = MODE_ICON[md.key] + ' ' + md.chip;
   mb.className = 'chip mode ' + m.mode;
   // effort only exists for reasoning-capable models — hide the chip otherwise
   const mm = S.models.find((x) => x.value === m.model);
