@@ -1834,6 +1834,12 @@ async function showFileDiff(file) {
 const MENU_IDS = ['runPop', 'moreMenu', 'modeMenu', 'plusMenu', 'effortMenu', 'usageMenu'];
 const MENU_TRIGGERS = ['#runBtn', '#moreBtn', '#modeBtn', '#plusBtn', '#effortBtn', '#usageLabel'];
 function hideMenus() { for (const id of MENU_IDS) $(id).style.display = 'none'; }
+// click the scrim (outside the box) to dismiss any sheet — approvals still require a decision
+document.addEventListener('mousedown', (e) => {
+  if (e.target.classList && e.target.classList.contains('sheet') && e.target.id !== 'approvalModal') {
+    e.target.style.display = 'none';
+  }
+});
 document.addEventListener('mousedown', (e) => {
   if (!e.target.closest('.menu') && !MENU_TRIGGERS.some((sel) => e.target.closest(sel))) hideMenus();
 });
