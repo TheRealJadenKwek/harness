@@ -411,13 +411,23 @@ function copyBtn(text) {
   };
   return b;
 }
-const FILE_ICON = { pdf: '📄', xlsx: '📊', pptx: '📽', text: '📝' };
+const FILE_ICON = { pdf: '📄', xlsx: '📊', pptx: '📽', text: '📝', html: '🌐', zip: '🗜' };
 function fileCard(spec) {
   const card = document.createElement('div'); card.className = 'filecard';
+  const hint = spec.kind === 'html' ? 'tap to preview · ⤓ downloads' : 'tap to download';
   card.innerHTML = '<span class="fic">' + (FILE_ICON[spec.kind] || '📎') + '</span>'
-    + '<span style="min-width:0"><div class="fn">' + esc(spec.filename) + '</div><div class="fk">' + spec.kind.toUpperCase() + ' · tap to download</div></span>'
-    + '<span class="dl">⤓</span>';
-  card.onclick = () => downloadFile(spec).catch((e) => alert('could not build the file: ' + e.message));
+    + '<span style="min-width:0"><div class="fn">' + esc(spec.filename) + '</div><div class="fk">' + spec.kind.toUpperCase() + ' · ' + hint + '</div></span>'
+    + '<span class="dl" title="Download">⤓</span>';
+  if (spec.kind === 'html') {
+    card.onclick = () => {   // live preview in a new tab
+      const url = URL.createObjectURL(new Blob([spec.content || ''], { type: 'text/html' }));
+      window.open(url, '_blank');
+      setTimeout(() => URL.revokeObjectURL(url), 60000);
+    };
+    card.querySelector('.dl').onclick = (e) => { e.stopPropagation(); downloadFile(spec).catch((e2) => alert(e2.message)); };
+  } else {
+    card.onclick = () => downloadFile(spec).catch((e) => alert('could not build the file: ' + e.message));
+  }
   return card;
 }
 function toolLine(text, done) {
@@ -948,7 +958,15 @@ function saveBlob(blob, filename) {
   setTimeout(() => URL.revokeObjectURL(a.href), 4000);
 }
 async function downloadFile(spec) {
-  if (spec.kind === 'text') {
+  if (spec.kind === 'html') {
+    saveBlob(new Blob([spec.content || ''], { type: 'text/html;charset=utf-8' }), spec.filename.endsWith('.html') ? spec.filename : spec.filename + '.html');
+  } else if (spec.kind === 'zip') {
+    const JSZip = await loadLib('jszip', 'https://cdnjs.cloudflare.com/ajax/libs/jszip/3.10.1/jszip.min.js', 'JSZip');
+    const z = new JSZip();
+    for (const f of spec.files || []) z.file(f.path, f.content || '');
+    const blob = await z.generateAsync({ type: 'blob' });
+    saveBlob(blob, spec.filename.endsWith('.zip') ? spec.filename : spec.filename + '.zip');
+  } else if (spec.kind === 'text') {
     saveBlob(new Blob([spec.content || ''], { type: 'text/plain;charset=utf-8' }), spec.filename);
   } else if (spec.kind === 'pdf') {
     await loadLib('jspdf', 'https://cdnjs.cloudflare.com/ajax/libs/jspdf/2.5.1/jspdf.umd.min.js', 'jspdf');

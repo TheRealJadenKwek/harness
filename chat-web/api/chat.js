@@ -19,13 +19,15 @@ const TOOLS = [
     type: 'function',
     function: {
       name: 'create_file',
-      description: 'Create a downloadable file for the user. kind "text" (any plain text: .txt/.md/.csv/code) needs {filename, content}. kind "pdf" needs {filename, title, body} (body = plain text, blank lines separate paragraphs). kind "xlsx" needs {filename, sheets:[{name, rows:[[cell,…],…]}]} — first row is the header. kind "pptx" needs {filename, slides:[{title, bullets:[…], notes?}]}. Prefer this over pasting long documents/tables/decks into chat.',
+      description: 'Create a downloadable file for the user. kind "text" (any single plain-text file: .txt/.md/.csv/.py/code) needs {filename, content}. kind "html" (a web page, game, or interactive app — the user gets a LIVE PREVIEW button plus download; make it fully self-contained, inline CSS/JS) needs {filename, content}. kind "zip" (multi-file projects: a Python app, a game with several modules, a website) needs {filename, files:[{path, content}]}. kind "pdf" needs {filename, title, body} (plain text, blank lines separate paragraphs). kind "xlsx" needs {filename, sheets:[{name, rows:[[cell,…],…]}]} — first row is the header. kind "pptx" needs {filename, slides:[{title, bullets:[…], notes?}]}. Prefer this over pasting long content into chat.',
       parameters: { type: 'object', properties: {
-        kind: { type: 'string', enum: ['text', 'pdf', 'xlsx', 'pptx'] },
+        kind: { type: 'string', enum: ['text', 'html', 'zip', 'pdf', 'xlsx', 'pptx'] },
         filename: { type: 'string' },
         content: { type: 'string' },
         title: { type: 'string' },
         body: { type: 'string' },
+        files: { type: 'array', items: { type: 'object', properties: {
+          path: { type: 'string' }, content: { type: 'string' } }, required: ['path', 'content'] } },
         sheets: { type: 'array', items: { type: 'object', properties: {
           name: { type: 'string' }, rows: { type: 'array', items: { type: 'array' } } } } },
         slides: { type: 'array', items: { type: 'object', properties: {
@@ -102,7 +104,7 @@ module.exports = async (req, res) => {
   convo.unshift({
     role: 'system',
     content: 'You are Harness, the user\'s personal assistant — warm, sharp, and quick. You are especially good at writing and improving emails: match their natural voice, keep them concise and human, never stiff or corporate unless asked. For other tasks, be direct and genuinely useful.'
-      + (toolsOK ? '\n\nYou have tools. Use web_search whenever current or verifiable information would help — news, prices, facts, links. Use create_file whenever the user wants a document, spreadsheet, presentation, or any file: deliver a real download (pdf/xlsx/pptx/text) instead of pasting long content into the chat, then briefly say what you made.' : '')
+      + (toolsOK ? '\n\nYou have tools. Use web_search whenever current or verifiable information would help — news, prices, facts, links. Use create_file whenever the user wants a document, spreadsheet, presentation, web page, app, game, or any file: deliver a real artifact (pdf/xlsx/pptx/html with live preview/zip for multi-file projects/plain text) instead of pasting long content into the chat, then briefly say what you made.' : '')
       + memoryBlock,
   });
 
@@ -179,11 +181,12 @@ module.exports = async (req, res) => {
           send({ harness: { tool: 'web_search', status: 'done', detail: result.results ? result.results.length + ' results' : (result.error || '') } });
         } else if (tc.function.name === 'create_file') {
           const spec = {
-            kind: ['text', 'pdf', 'xlsx', 'pptx'].includes(args.kind) ? args.kind : 'text',
+            kind: ['text', 'html', 'zip', 'pdf', 'xlsx', 'pptx'].includes(args.kind) ? args.kind : 'text',
             filename: String(args.filename || 'file.txt').slice(0, 80),
             content: typeof args.content === 'string' ? args.content.slice(0, 400000) : undefined,
             title: typeof args.title === 'string' ? args.title.slice(0, 200) : undefined,
             body: typeof args.body === 'string' ? args.body.slice(0, 400000) : undefined,
+            files: Array.isArray(args.files) ? args.files.slice(0, 40).map((f) => ({ path: String(f.path || 'file.txt').slice(0, 120), content: String(f.content || '').slice(0, 400000) })) : undefined,
             sheets: Array.isArray(args.sheets) ? args.sheets.slice(0, 10) : undefined,
             slides: Array.isArray(args.slides) ? args.slides.slice(0, 40) : undefined,
           };

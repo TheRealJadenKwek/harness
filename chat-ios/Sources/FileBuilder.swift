@@ -11,6 +11,12 @@ struct FileSpec: Codable, Hashable {
     var body: String?
     var sheets: [Sheet]?
     var slides: [Slide]?
+    var files: [Entry]?
+
+    struct Entry: Codable, Hashable {
+        var path: String
+        var content: String
+    }
 
     struct Sheet: Codable, Hashable {
         var name: String?
@@ -51,15 +57,16 @@ enum FileBuilder {
         case "pdf":  if !name.hasSuffix(".pdf") { name += ".pdf" }
         case "xlsx": if !name.hasSuffix(".xlsx") { name += ".xlsx" }
         case "pptx": if !name.hasSuffix(".pptx") { name += ".pptx" }
+        case "html": if !name.hasSuffix(".html") { name += ".html" }
+        case "zip":  if !name.hasSuffix(".zip") { name += ".zip" }
         default: break
         }
         let url = dir.appendingPathComponent(name)
         let data: Data
         switch spec.kind {
         case "pdf":  data = try buildPDF(spec)
-        case "xlsx": data = try await WebArtifactBuilder.shared.build(spec)
-        case "pptx": data = try await WebArtifactBuilder.shared.build(spec)
-        default:     data = Data((spec.content ?? spec.body ?? "").utf8)
+        case "xlsx", "pptx", "zip": data = try await WebArtifactBuilder.shared.build(spec)
+        default:     data = Data((spec.content ?? spec.body ?? "").utf8)   // text + html
         }
         try data.write(to: url)
         return url
@@ -113,6 +120,7 @@ final class WebArtifactBuilder: NSObject, WKNavigationDelegate {
         <html><head>
         <script src="https://cdn.sheetjs.com/xlsx-0.20.2/package/dist/xlsx.full.min.js"></script>
         <script src="https://cdn.jsdelivr.net/npm/pptxgenjs@3.12.0/dist/pptxgen.bundle.js"></script>
+        <script src="https://cdnjs.cloudflare.com/ajax/libs/jszip/3.10.1/jszip.min.js"></script>
         </head><body></body></html>
         """
         try await withCheckedThrowingContinuation { (c: CheckedContinuation<Void, Error>) in
@@ -134,7 +142,11 @@ final class WebArtifactBuilder: NSObject, WKNavigationDelegate {
         let specJSON = String(data: try JSONEncoder().encode(spec), encoding: .utf8)!
         let js = """
         const spec = \(specJSON);
-        if (spec.kind === 'xlsx') {
+        if (spec.kind === 'zip') {
+          const z = new JSZip();
+          for (const f of spec.files || []) z.file(f.path, f.content || '');
+          return await z.generateAsync({ type: 'base64' });
+        } else if (spec.kind === 'xlsx') {
           const wb = XLSX.utils.book_new();
           for (const sh of spec.sheets || [{name:'Sheet1', rows:[[spec.content || '']]}]) {
             XLSX.utils.book_append_sheet(wb, XLSX.utils.aoa_to_sheet(sh.rows || []), String(sh.name || 'Sheet').slice(0, 31));

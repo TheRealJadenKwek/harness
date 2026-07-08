@@ -293,6 +293,8 @@ struct FileCardView: View {
         case "pdf": return "doc.richtext"
         case "xlsx": return "tablecells"
         case "pptx": return "rectangle.on.rectangle.angled"
+        case "html": return "globe"
+        case "zip": return "shippingbox"
         default: return "doc.text"
         }
     }
