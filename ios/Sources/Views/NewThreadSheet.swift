@@ -4,6 +4,7 @@ struct NewThreadSheet: View {
     @EnvironmentObject var app: AppState
     @Environment(\.dismiss) var dismiss
     @State private var provider = "claude"
+    @State private var seeded = false
     @State private var title = ""
     @State private var cwd = ""
     @State private var permissionMode = "bypass"
@@ -90,6 +91,11 @@ struct NewThreadSheet: View {
                 }
             }
             .onAppear {
+                // onAppear re-fires when navigating back from the model picker —
+                // only seed the defaults on the sheet's FIRST appearance, or the
+                // user's engine choice gets silently reset.
+                guard !seeded else { return }
+                seeded = true
                 let ids = app.enabledProviders.map { $0.id }
                 provider = ids.contains(app.defaultProvider) ? app.defaultProvider : (ids.first ?? "claude")
                 permissionMode = app.defaultPermission

@@ -310,6 +310,28 @@ def fetch_provider_models(p):
     app can search ANY model the key unlocks (e.g. all of OpenRouter). Cached 1h; falls
     back to the static providers.json list on failure or for the built-in claude/codex."""
     pid, static = p.get('id'), (p.get('models') or [])
+    if p.get('engine') == 'harness-code':
+        # proxy the Harness Code app's full OpenRouter catalog (343+ models)
+        with _models_lock:
+            c = _MODELS_CACHE.get(pid)
+            if c and time.time() - c[0] < 3600:
+                return c[1]
+        try:
+            rq = urllib.request.Request(_hc_url() + '/api/models',
+                                        headers={'X-HC-Token': _hc_token(), 'Accept': 'application/json'})
+            with urllib.request.urlopen(rq, timeout=10) as r:
+                items = json.load(r)
+            models = [{'label': str(m.get('label') or m.get('value'))[:70], 'value': m['value']}
+                      for m in (items or []) if isinstance(m, dict) and m.get('value')]
+            models.sort(key=lambda m: m['value'])
+            if models:
+                with _models_lock:
+                    _MODELS_CACHE[pid] = (time.time(), models)
+                log('fetched %d models for %s (harness-code)' % (len(models), pid))
+                return models
+        except Exception as e:
+            log('harness-code model fetch failed: %s' % e)
+        return static
     base = p.get('base_url')
     if not base:
         return static
