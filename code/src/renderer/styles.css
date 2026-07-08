@@ -541,3 +541,85 @@ h3 { margin: 2px 0 4px; }
 #sctab:hover { transform: translateY(1px); box-shadow: 0 3px 12px rgba(0,0,0,.16); }
 #sctab .sct-dot { width: 7px; height: 7px; border-radius: 50%; background: var(--accent, #2f63e8); display: none; }
 #sctab.unread .sct-dot { display: block; }
+
+/* ================= liquid glass pass (wave 4) ================= */
+:root {
+  --glass: rgba(251,251,250,.72);
+  --glass-brd: rgba(255,255,255,.6);
+  --edge: rgba(28,28,30,.10);
+  --glass-shadow: 0 1px 2px rgba(0,0,0,.05), 0 10px 32px rgba(0,0,0,.10);
+  --glass-shadow-hi: 0 2px 6px rgba(0,0,0,.07), 0 16px 48px rgba(0,0,0,.14);
+}
+@media (prefers-color-scheme: dark) {
+  :root {
+    --glass: rgba(32,32,38,.64);
+    --glass-brd: rgba(255,255,255,.09);
+    --edge: rgba(255,255,255,.08);
+    --glass-shadow: 0 1px 2px rgba(0,0,0,.35), 0 12px 40px rgba(0,0,0,.45);
+    --glass-shadow-hi: 0 2px 8px rgba(0,0,0,.4), 0 18px 56px rgba(0,0,0,.55);
+  }
+}
+
+/* composer: floating glass card over the conversation */
+.composer-wrap { border-top: 0; background: transparent; }
+.composer { padding: 6px 18px 16px; }
+.composer-box {
+  background: var(--glass);
+  -webkit-backdrop-filter: blur(26px) saturate(1.5); backdrop-filter: blur(26px) saturate(1.5);
+  border: 1px solid var(--edge); border-radius: 18px;
+  box-shadow: var(--glass-shadow), inset 0 1px 0 var(--glass-brd);
+  transition: box-shadow .18s ease, border-color .18s ease;
+}
+.composer-box:focus-within {
+  border-color: color-mix(in srgb, var(--text) 20%, transparent);
+  box-shadow: var(--glass-shadow-hi), inset 0 1px 0 var(--glass-brd);
+}
+
+/* sidebar: soft depth against the content pane */
+.sidebar { box-shadow: 6px 0 22px rgba(0,0,0,.055), inset -1px 0 0 var(--edge); border-right: 0; }
+@media (prefers-color-scheme: dark) { .sidebar { box-shadow: 6px 0 26px rgba(0,0,0,.32), inset -1px 0 0 var(--edge); } }
+
+/* titlebar: frosted strip */
+.titlebar {
+  background: color-mix(in srgb, var(--panel) 58%, transparent);
+  -webkit-backdrop-filter: blur(20px) saturate(1.4); backdrop-filter: blur(20px) saturate(1.4);
+  border-bottom: 1px solid var(--edge);
+}
+
+/* menus + popovers: glass */
+.menu {
+  background: var(--glass);
+  -webkit-backdrop-filter: blur(26px) saturate(1.5); backdrop-filter: blur(26px) saturate(1.5);
+  border: 1px solid var(--edge); border-radius: 14px;
+  box-shadow: var(--glass-shadow-hi), inset 0 1px 0 var(--glass-brd);
+}
+
+/* sheets + modals: frosted scrim, glass card */
+.sheet, .modal { background: rgba(0,0,0,.30); -webkit-backdrop-filter: blur(7px); backdrop-filter: blur(7px); }
+.sheet-inner {
+  background: var(--glass);
+  -webkit-backdrop-filter: blur(30px) saturate(1.5); backdrop-filter: blur(30px) saturate(1.5);
+  border: 1px solid var(--edge); border-radius: 18px;
+  box-shadow: var(--glass-shadow-hi), inset 0 1px 0 var(--glass-brd);
+}
+
+/* command palette + side chat: same material */
+#cmdk { background: rgba(0,0,0,.24); -webkit-backdrop-filter: blur(6px); backdrop-filter: blur(6px); }
+#cmdk .ck-box {
+  background: var(--glass);
+  -webkit-backdrop-filter: blur(30px) saturate(1.5); backdrop-filter: blur(30px) saturate(1.5);
+  border: 1px solid var(--edge); border-radius: 16px;
+  box-shadow: var(--glass-shadow-hi), inset 0 1px 0 var(--glass-brd);
+}
+#scpop {
+  background: var(--glass);
+  -webkit-backdrop-filter: blur(30px) saturate(1.5); backdrop-filter: blur(30px) saturate(1.5);
+  border: 1px solid var(--edge); border-radius: 18px;
+  box-shadow: var(--glass-shadow-hi), inset 0 1px 0 var(--glass-brd);
+}
+#sctab {
+  background: var(--glass);
+  -webkit-backdrop-filter: blur(20px) saturate(1.4); backdrop-filter: blur(20px) saturate(1.4);
+  border: 1px solid var(--edge);
+  box-shadow: var(--glass-shadow), inset 0 1px 0 var(--glass-brd);
+}
