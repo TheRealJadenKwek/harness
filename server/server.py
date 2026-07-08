@@ -225,7 +225,7 @@ DEFAULT_PROVIDERS = [
     # OpenRouter via Codex's custom-provider mechanism (OpenAI-compatible). Set `model` to any
     # OpenRouter model id (e.g. "z-ai/glm-4.6", "anthropic/claude-3.7-sonnet", "deepseek/deepseek-chat").
     # If it errors on startup, change "wire_api" to "chat".
-    {"id": "harness-code", "label": "Harness Code", "engine": "harness-code",
+    {"id": "harness-code", "label": "Harness Code", "engine": "harness-code", "enabled": True,
      "model": "deepseek/deepseek-v4-pro",
      "models": [{"label": "DeepSeek V4 Pro", "value": "deepseek/deepseek-v4-pro"},
                 {"label": "Claude Fable 5", "value": "anthropic/claude-fable-5"},
@@ -348,7 +348,7 @@ def _provider_public(p):
     """Projection sent to the app — never the key value, just whether one is set."""
     eng = 'codex' if p.get('engine') == 'harness-code' else p.get('engine')
     return {'id': p.get('id'), 'label': p.get('label'), 'engine': eng,
-            'model': p.get('model'), 'enabled': p.get('enabled'),
+            'model': p.get('model'), 'enabled': bool(p.get('enabled', True)),
             'models': p.get('models'), 'default_model': default_model_label(p),
             'default_effort': default_effort_label(p),
             'requires_key': bool(p.get('api_key_env')),
