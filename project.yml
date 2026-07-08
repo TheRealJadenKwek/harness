@@ -32,6 +32,7 @@ targets:
       path: Info.plist
       properties:
         UILaunchScreen: {}
+        CFBundleDisplayName: Harness Chat
         CFBundleURLTypes:
           - CFBundleURLSchemes: [harnesschat]
             CFBundleURLName: com.jadenkwek.harnesschat.auth
