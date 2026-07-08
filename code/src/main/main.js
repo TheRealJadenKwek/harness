@@ -2,7 +2,7 @@
 // Electron main process: owns MANY agent Sessions (one per chat in the sidebar),
 // persists each to disk, and bridges them to the renderer over IPC — including the
 // approval round-trip that gates mutating tool calls.
-const { app, BrowserWindow, ipcMain, dialog, shell, nativeTheme, globalShortcut } = require('electron');
+const { app, BrowserWindow, ipcMain, dialog, shell, nativeTheme, globalShortcut, nativeImage } = require('electron');
 const path = require('path');
 const fs = require('fs');
 const https = require('https');
@@ -2163,8 +2163,11 @@ function beginTurn(rec, { text, images, modelText, remote, goalAuto }) {
     rec.title = text.split('\n')[0].slice(0, 48) || 'New chat';
     sessionsChanged();
   }
-  rec.transcript.push({ t: 'user', text, ts: Date.now(), images: images && images.length ? images.length : 0, remote: !!remote, auto: !!goalAuto });
-  if (remote) sendToUI('agent-event', { sessionId: rec.id, type: 'remote_user', text });
+  const thumbs = (images || []).slice(0, 4).map((u) => {
+    try { return nativeImage.createFromDataURL(u).resize({ width: 240 }).toDataURL(); } catch { return null; }
+  }).filter(Boolean);
+  rec.transcript.push({ t: 'user', text, ts: Date.now(), images: images && images.length ? images.length : 0, ...(thumbs.length ? { thumbs } : {}), remote: !!remote, auto: !!goalAuto });
+  if (remote) sendToUI('agent-event', { sessionId: rec.id, type: 'remote_user', text, thumbs });
   if (goalAuto) sendToUI('agent-event', { sessionId: rec.id, type: 'auto_user', text, n: rec.goalAuto, max: GOAL_MAX_AUTO });
   rec.updatedAt = Date.now();
   const agent = ensureAgent(rec);
@@ -2221,6 +2224,57 @@ function beginTurn(rec, { text, images, modelText, remote, goalAuto }) {
   })();
   return { ok: true };
 }
+
+ipcMain.handle('side-chat', async (_e, { id, q }) => {
+  const rec = sessions.get(id);
+  if (!rec) return { ok: false, error: 'no session' };
+  const cfg = loadConfig();
+  const local = isLocalModel(rec.model);
+  if (!cfg.apiKey && !local) return { ok: false, error: 'no OpenRouter key' };
+  const ctx = rec.transcript.filter((i) => i.t === 'user' || i.t === 'assistant').slice(-12)
+    .map((i) => (i.t === 'user' ? 'User: ' : 'Assistant: ') + String(i.text || '').slice(0, 1500)).join('\n');
+  (async () => {
+    let acc = '';
+    try {
+      const r = await fetch(local ? LOCAL_URL + '/v1/chat/completions' : 'https://openrouter.ai/api/v1/chat/completions', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', ...(local ? {} : { 'Authorization': 'Bearer ' + cfg.apiKey }) },
+        body: JSON.stringify({
+          model: local ? rec.model.slice(6) : rec.model, stream: true, max_tokens: 2000,
+          messages: [
+            { role: 'system', content: 'You are a quick side-channel assistant inside a coding session. Answer the aside question directly and concisely (a few sentences, no preamble). The recent session transcript follows as reference context only — the question may or may not relate to it.\n\n' + ctx },
+            { role: 'user', content: q },
+          ],
+        }),
+      });
+      if (!r.ok) throw new Error('HTTP ' + r.status + ': ' + (await r.text()).slice(0, 160));
+      const reader = r.body.getReader();
+      const dec = new TextDecoder();
+      let buf = '';
+      while (true) {
+        const { done, value } = await reader.read();
+        if (done) break;
+        buf += dec.decode(value, { stream: true });
+        let nl;
+        while ((nl = buf.indexOf('\n')) >= 0) {
+          const line = buf.slice(0, nl).trim(); buf = buf.slice(nl + 1);
+          if (!line.startsWith('data:')) continue;
+          const payload = line.slice(5).trim();
+          if (payload === '[DONE]') continue;
+          let d; try { d = JSON.parse(payload); } catch { continue; }
+          const t = d.choices && d.choices[0] && d.choices[0].delta && d.choices[0].delta.content;
+          if (t) { acc += t; sendToUI('agent-event', { sessionId: rec.id, type: 'sidechat_delta', text: t }); }
+        }
+      }
+      rec.transcript.push({ t: 'sidechat', q, a: acc, ts: Date.now() });
+      saveSession(rec);
+      sendToUI('agent-event', { sessionId: rec.id, type: 'sidechat_done' });
+    } catch (e) {
+      sendToUI('agent-event', { sessionId: rec.id, type: 'sidechat_done', error: String((e && e.message) || e) });
+    }
+  })();
+  return { ok: true };
+});
 
 ipcMain.handle('session-send', (_e, { id, text, images, modelText }) => {
   const rec = sessions.get(id);

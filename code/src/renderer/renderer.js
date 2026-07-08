@@ -86,9 +86,16 @@ function timeago(ts) {
   return new Date(ts).toLocaleDateString();
 }
 function addUser(rec, text, imageCount, meta) {
+  clearEmpty(rec);
   const wrap = document.createElement('div'); wrap.className = 'msg-wrap';
+  const thumbs = (meta && meta.thumbs) || [];
+  if (thumbs.length) {
+    const tr = document.createElement('div'); tr.className = 'user-thumbs';
+    for (const u of thumbs) { const im = document.createElement('img'); im.src = u; tr.appendChild(im); }
+    wrap.appendChild(tr);
+  }
   const el = document.createElement('div'); el.className = 'msg user';
-  el.textContent = (imageCount ? '🖼 ' + imageCount + ' image' + (imageCount > 1 ? 's' : '') + '\n' : '') + text;
+  el.textContent = (imageCount && !thumbs.length ? '🖼 ' + imageCount + ' image' + (imageCount > 1 ? 's' : '') + '\n' : '') + text;
   wrap.appendChild(el);
   const n = meta && meta.n !== undefined ? meta.n : rec.userN++;
   const raw = (meta && meta.raw !== undefined) ? meta.raw : text;
@@ -141,13 +148,27 @@ function addMedia(rec, p, kind) {
   if (kind !== 'video') el.querySelector('img').onclick = () => H.revealFile(p);
   logOf(rec).appendChild(el); scrollLog(rec);
 }
+function addSideChat(rec, q, a) {
+  clearEmpty(rec);
+  const el = document.createElement('div'); el.className = 'sidechat';
+  el.innerHTML = '<div class="sc-head">◦ side chat <span class="sc-hint">not part of the session context</span></div><div class="sc-q"></div><div class="sc-a"></div>';
+  el.querySelector('.sc-q').textContent = q;
+  el.querySelector('.sc-a').textContent = a || '';
+  logOf(rec).appendChild(el); scrollLog(rec); return el;
+}
+function clearEmpty(rec) {
+  const eh = logOf(rec).querySelector('.empty-home');
+  if (eh) eh.remove();
+}
 function addLine(rec, cls, text) {
+  clearEmpty(rec);
   const el = document.createElement('div'); el.className = cls; el.textContent = text;
   logOf(rec).appendChild(el); scrollLog(rec); return el;
 }
 
 function ensureAssistant(rec) {
   if (rec.cur) return rec.cur;
+  clearEmpty(rec);
   const el = document.createElement('div'); el.className = 'msg assistant';
   const think = document.createElement('div'); think.className = 'think'; think.style.display = 'none';
   const thinkHead = document.createElement('div'); thinkHead.className = 'think-head'; thinkHead.textContent = '✳ thinking…';
@@ -280,7 +301,8 @@ function addCkptLine(rec, ckptId, files) {
 }
 
 function renderItem(rec, item) {
-  if (item.t === 'user') addUser(rec, (item.auto ? '🎯 ' : '') + (item.remote ? '📱 ' : '') + (item.steered ? '↳ ' : '') + item.text, item.images, { n: rec.userN++, ts: item.ts, raw: item.text });
+  if (item.t === 'user') addUser(rec, (item.auto ? '🎯 ' : '') + (item.remote ? '📱 ' : '') + (item.steered ? '↳ ' : '') + item.text, item.images, { n: rec.userN++, ts: item.ts, raw: item.text, thumbs: item.thumbs });
+  else if (item.t === 'sidechat') addSideChat(rec, item.q, item.a);
   else if (item.t === 'plan') { renderPlan(rec, item.items); rec.planEl = null; }
   else if (item.t === 'ckpt') addCkptLine(rec, item.id, item.files);
   else if (item.t === 'assistant') {
@@ -545,7 +567,39 @@ async function activate(id) {
   if (S.panel === 'changes') refreshGit();
   else if (S.panel === 'files') refreshFiles();
   showSuggestion(rec);
+  maybeEmptyState(rec);
   $('input').focus();
+}
+
+const EMPTY_IDEAS = [
+  { icon: 'plan', title: 'Start with a plan', sub: 'Align on the approach before writing code', fill: '/mode plan ' },
+  { icon: 'bug', title: 'Debug an issue', sub: 'Find the root cause and fix it', fill: 'Help me debug: ' },
+  { icon: 'spark', title: 'Build something', sub: 'A dashboard, a script, an app — describe it', fill: 'Build me ' },
+];
+const EMPTY_ICON = {
+  plan: '<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M8 6h13M8 12h13M8 18h13"/><path d="M3 6h.01M3 12h.01M3 18h.01"/></svg>',
+  bug: '<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="m8 2 1.88 1.88M14.12 3.88 16 2M9 7.13v-1a3.003 3.003 0 1 1 6 0v1"/><path d="M12 20c-3.3 0-6-2.7-6-6v-3a4 4 0 0 1 4-4h4a4 4 0 0 1 4 4v3c0 3.3-2.7 6-6 6z"/><path d="M12 20v-9M6.53 9C4.6 8.8 3 7.1 3 5M6 13H2M3 21c0-2.1 1.7-3.9 3.8-4M17.47 9c1.93-.2 3.53-1.9 3.53-4M22 13h-4M20.97 21c0-2.1-1.6-3.9-3.8-4"/></svg>',
+  spark: '<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="m12 3 1.9 5.8a2 2 0 0 0 1.3 1.3L21 12l-5.8 1.9a2 2 0 0 0-1.3 1.3L12 21l-1.9-5.8a2 2 0 0 0-1.3-1.3L3 12l5.8-1.9a2 2 0 0 0 1.3-1.3z"/></svg>',
+};
+function maybeEmptyState(rec) {
+  const log = logOf(rec);
+  if (log.childElementCount > 0 || log.querySelector('.empty-home')) return;
+  const el = document.createElement('div');
+  el.className = 'empty-home';
+  el.innerHTML = '<div class="eh-logo"><svg width="34" height="34" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><polygon points="12 2 20.5 7 20.5 17 12 22 3.5 17 3.5 7"/><path d="m8.5 9.5 2.5 2.5-2.5 2.5M13.5 15h3"/></svg></div>'
+    + '<div class="eh-title">What are we building?</div>'
+    + '<div class="eh-sub">' + esc(rec.meta.cwd || '') + '</div>'
+    + '<div class="eh-rows">' + EMPTY_IDEAS.map((x, i) =>
+        '<button class="eh-row" data-i="' + i + '"><span class="eh-ic">' + EMPTY_ICON[x.icon] + '</span><span class="eh-tx"><b>' + x.title + '</b><i>' + x.sub + '</i></span><span class="eh-go">›</span></button>').join('') + '</div>';
+  el.querySelectorAll('.eh-row').forEach((b) => {
+    b.onclick = () => {
+      const idea = EMPTY_IDEAS[+b.dataset.i];
+      if (idea.fill.startsWith('/mode plan')) { setSessionConfig({ mode: 'plan' }); $('input').value = ''; }
+      else $('input').value = idea.fill;
+      $('input').focus();
+    };
+  });
+  log.appendChild(el);
 }
 
 const MODES = [
@@ -636,7 +690,9 @@ H.onEvent((e) => {
   }
   else if (e.type === 'auto_approved') addLine(rec, 'done', '⚡ auto-approved ' + e.kind + ': ' + String(e.detail || '').slice(0, 80));
   else if (e.type === 'control_note') addLine(rec, 'done', e.message);
-  else if (e.type === 'remote_user') { addUser(rec, '📱 ' + e.text, 0, { ts: Date.now(), raw: e.text }); rec.streaming = true; startWorking(rec); updateComposer(); renderSidebar(); }
+  else if (e.type === 'remote_user') { addUser(rec, '📱 ' + e.text, (e.thumbs || []).length, { ts: Date.now(), raw: e.text, thumbs: e.thumbs }); rec.streaming = true; startWorking(rec); updateComposer(); renderSidebar(); }
+  else if (e.type === 'sidechat_delta') { if (rec.sideEl) { rec.sideEl.querySelector('.sc-a').textContent += e.text; scrollLog(rec); } }
+  else if (e.type === 'sidechat_done') { if (rec.sideEl) { if (e.error) rec.sideEl.querySelector('.sc-a').textContent = '⚠︎ ' + e.error; rec.sideEl.classList.remove('live'); rec.sideEl = null; } }
   else if (e.type === 'auto_user') { addUser(rec, '🎯 ' + e.text, 0, { ts: Date.now(), raw: e.text }); rec.streaming = true; startWorking(rec); updateComposer(); renderSidebar(); }
   else if (e.type === 'plan') renderPlan(rec, e.items);
   else if (e.type === 'checkpoint') addCkptLine(rec, e.ckptId, e.files);
@@ -719,7 +775,7 @@ async function sendText(rec, text, images, modelText, opts) {
   }
   rec.streaming = true; rec.cur = null;
   const r = await H.sessionSend(rec.meta.id, text, images && images.length ? images : undefined, modelText);
-  if (r.ok) { addUser(rec, text, images ? images.length : 0, { ts: Date.now(), raw: text }); startWorking(rec); }
+  if (r.ok) { addUser(rec, text, images ? images.length : 0, { ts: Date.now(), raw: text, thumbs: images }); startWorking(rec); }
   else if (r.error === 'busy') rec.queued.push({ text, images, modelText });
   else rec.streaming = false;
   updateComposer(); renderSidebar();
@@ -830,6 +886,16 @@ const SLASH = [
 function runSlash(rec, text) {
   const [cmd, ...rest] = text.split(/\s+/);
   const arg = rest.join(' ');
+  if (cmd === '/btw' || cmd === '/sidechat') {
+    if (!arg) { addLine(rec, 'err', 'usage: /btw <quick aside question — answered on the side, never touches the session context>'); return true; }
+    const el = addSideChat(rec, arg, '');
+    el.classList.add('live');
+    rec.sideEl = el;
+    H.sideChat(rec.meta.id, arg).then((r) => {
+      if (r && !r.ok) { el.querySelector('.sc-a').textContent = '⚠︎ ' + (r.error || 'side chat failed'); el.classList.remove('live'); rec.sideEl = null; }
+    });
+    return true;
+  }
   if (cmd === '/new') { newChat(); return true; }
   if (cmd === '/clear') { H.sessionClear(rec.meta.id).then(() => { rec.logEl.innerHTML = ''; rec.cur = null; rec.userN = 0; addLine(rec, 'done', 'conversation cleared.'); }); return true; }
   if (cmd === '/compact') {
