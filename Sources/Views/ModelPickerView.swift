@@ -15,9 +15,47 @@ struct ModelPickerView: View {
         }
     }
 
+    @StateObject private var local = LocalLLM.shared
+
     var body: some View {
         NavigationStack {
             List {
+                if query.isEmpty {
+                    Section("On-device (free, offline)") {
+                        ForEach(LocalModels.specs) { spec in
+                            HStack {
+                                VStack(alignment: .leading, spacing: 2) {
+                                    HStack(spacing: 4) {
+                                        Text(spec.name).foregroundStyle(.primary)
+                                        Text("📱").font(.caption2)
+                                    }
+                                    Text(local.ready.contains(spec.repo)
+                                         ? "downloaded · hybrid reasoning · $0"
+                                         : spec.size + " download · runs on this iPhone")
+                                        .font(.caption2).foregroundStyle(.secondary)
+                                }
+                                Spacer()
+                                if let p = local.progress[spec.repo], p < 1 {
+                                    ProgressView(value: p).frame(width: 70)
+                                } else if local.ready.contains(spec.repo) {
+                                    if selected == spec.id { Image(systemName: "checkmark").foregroundStyle(.secondary) }
+                                    Button(role: .destructive) { local.remove(spec.repo) } label: {
+                                        Image(systemName: "trash").font(.caption)
+                                    }.buttonStyle(.borderless).foregroundStyle(.secondary)
+                                } else if local.loading.contains(spec.repo) {
+                                    ProgressView()
+                                } else {
+                                    Image(systemName: "icloud.and.arrow.down").foregroundStyle(.secondary)
+                                }
+                            }
+                            .contentShape(Rectangle())
+                            .onTapGesture {
+                                if local.ready.contains(spec.repo) { selected = spec.id; dismiss() }
+                                else { Task { _ = try? await local.container(for: spec.repo); selected = spec.id } }
+                            }
+                        }
+                    }
+                }
                 if !query.isEmpty && !store.models.contains(where: { $0.id == query }) {
                     Button { selected = query; dismiss() } label: {
                         Label("Use \"\(query)\"", systemImage: "keyboard")

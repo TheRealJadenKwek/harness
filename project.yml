@@ -1,4 +1,8 @@
 name: HarnessChat
+packages:
+  MLXLibraries:
+    url: https://github.com/ml-explore/mlx-swift-examples
+    exactVersion: 2.29.1
 options:
   bundleIdPrefix: com.jadenkwek
   deploymentTarget:
@@ -8,6 +12,11 @@ targets:
     type: application
     platform: iOS
     sources: [Sources]
+    dependencies:
+      - package: MLXLibraries
+        product: MLXLLM
+      - package: MLXLibraries
+        product: MLXLMCommon
     settings:
       base:
         PRODUCT_BUNDLE_IDENTIFIER: com.jadenkwek.harnesschat

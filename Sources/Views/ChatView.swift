@@ -12,6 +12,8 @@ struct ChatView: View {
     @State private var pendingImages: [String] = []     // data URLs awaiting send
     @State private var photoItems: [PhotosPickerItem] = []
     @State private var showCamera = false
+    @AppStorage("ondeviceThink") private var ondeviceThink = true
+    @StateObject private var local = LocalLLM.shared
 
     var body: some View {
         VStack(spacing: 0) {
@@ -73,9 +75,18 @@ struct ChatView: View {
                     }
                     .disabled(input.trimmingCharacters(in: .whitespaces).isEmpty && pendingImages.isEmpty && !streaming)
                 }
-                Button { showPicker = true } label: {
-                    Label(shortModel(chat.model), systemImage: "cpu")
-                        .font(.caption).foregroundStyle(.secondary)
+                HStack(spacing: 14) {
+                    Button { showPicker = true } label: {
+                        Label(shortModel(chat.model), systemImage: LocalModels.isLocal(chat.model) ? "iphone" : "cpu")
+                            .font(.caption).foregroundStyle(.secondary)
+                    }
+                    if LocalModels.isLocal(chat.model) {
+                        Button { ondeviceThink.toggle() } label: {
+                            Label(ondeviceThink ? "Think" : "No think", systemImage: "brain")
+                                .font(.caption)
+                                .foregroundStyle(ondeviceThink ? Color(red: 0.79, green: 0.39, blue: 0.26) : .secondary)
+                        }
+                    }
                 }
             }
             .padding(.horizontal, 12).padding(.vertical, 8)
@@ -106,7 +117,8 @@ struct ChatView: View {
     }
 
     private var modelSupportsVision: Bool {
-        store.models.first { $0.id == chat.model }?.vision ?? false
+        if LocalModels.isLocal(chat.model) { return false }
+        return store.models.first { $0.id == chat.model }?.vision ?? false
     }
 
     private var photoPickerButton: some View {
@@ -145,7 +157,10 @@ struct ChatView: View {
             var reply = Msg(role: "assistant", content: "")
             var appended = false
             do {
-                for try await delta in OpenRouter.stream(model: chat.model, messages: chat.messages, key: store.apiKey) {
+                let source = LocalModels.isLocal(chat.model)
+                    ? local.stream(modelId: chat.model, messages: chat.messages, think: ondeviceThink)
+                    : OpenRouter.stream(model: chat.model, messages: chat.messages, key: store.apiKey)
+                for try await delta in source {
                     reply.content += delta
                     if !appended { chat.messages.append(reply); appended = true }
                     else { chat.messages[chat.messages.count - 1] = reply }
@@ -180,7 +195,20 @@ struct MessageBubble: View {
                         .background(Color(.systemGray5), in: RoundedRectangle(cornerRadius: 18))
                 }
             } else {
-                AssistantText(text: msg.content)
+                let parts = splitThink(msg.content)
+                VStack(alignment: .leading, spacing: 8) {
+                    if let think = parts.think {
+                        DisclosureGroup {
+                            Text(think).font(.caption).foregroundStyle(.secondary).textSelection(.enabled)
+                        } label: {
+                            Label(parts.answer.isEmpty ? "thinking…" : "thought", systemImage: "brain")
+                                .font(.caption).foregroundStyle(.secondary)
+                        }
+                    }
+                    if !parts.answer.isEmpty || parts.think == nil {
+                        AssistantText(text: parts.think == nil ? msg.content : parts.answer)
+                    }
+                }
                 Spacer(minLength: 40)
             }
         }
