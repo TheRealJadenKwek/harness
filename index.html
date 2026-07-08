@@ -243,7 +243,6 @@ const MODELS = [
   { id: 'deepseek/deepseek-v4-pro',          name: 'DeepSeek V4 Pro',   desc: 'smart', vision: false, reasoning: true, price: [0.43, 0.87] },
   { id: 'deepseek/deepseek-v4-flash',        name: 'DeepSeek V4 Flash', desc: 'cheapest + fastest', vision: false, reasoning: true, price: [0.09, 0.18] },
   { id: 'nvidia/nemotron-3-ultra-550b-a55b:free', name: 'Nemotron 3 Ultra', desc: 'free!', vision: false, reasoning: true, price: [0, 0] },
-  { id: 'qwen/qwen3.6-27b',                  name: 'Qwen 3.6 27B',      desc: 'sees photos 🖼', vision: true, reasoning: true, price: [0.29, 2.40] },
 ];
 const priceStr = (m) => m.price[0] === 0 && m.price[1] === 0 ? 'free' : '$' + m.price[0].toFixed(2) + ' in / $' + m.price[1].toFixed(2) + ' out per M';
 let catalog = [];   // full OpenRouter list (fetched with the user's key, cached)
