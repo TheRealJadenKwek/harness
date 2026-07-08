@@ -96,7 +96,10 @@ class Session {
     const limit = this.ctxLimit || 0;
     if (!limit || limit > 40000) return null;
     const room = limit - this._estTokens() - 400;
-    return Math.max(600, Math.min(4096, room));
+    // local thinking models spend reasoning tokens INSIDE this cap — give them
+    // headroom; API models keep 4096 (gpt-3.5's hard completion max)
+    const cap = this.baseUrl ? 8192 : 4096;
+    return Math.max(600, Math.min(cap, room));
   }
 
   // Hard context fitting: providers reserve ~4k completion tokens on top of the
@@ -305,7 +308,7 @@ class Session {
         } catch (e) {
           const msg = String((e && e.message) || e);
           // estimator was optimistic — force-shrink and retry rather than strand the user
-          if (attempt < 3 && this.ctxLimit && /context.length|maximum context|too many tokens|context_length_exceeded/i.test(msg)) {
+          if (attempt < 3 && this.ctxLimit && /context.length|maximum context|too many tokens|context_length_exceeded|context size|exceed_context/i.test(msg)) {
             this.ctxLimit = Math.round(this.ctxLimit * 0.8);
             this._fit();
             continue;
@@ -326,7 +329,7 @@ class Session {
       let textParseError = null;
       if (this.textTools) {
         toolCalls = [];
-        const m = (res.content || '').match(/```tool\s*\n([\s\S]*?)```/);
+        const m = (res.content || '').match(/```tool\s*([\s\S]*?)```/);
         if (m) {
           try {
             const j = JSON.parse(m[1]);

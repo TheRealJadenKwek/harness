@@ -22,12 +22,15 @@ const OPENROUTER_URL = 'https://openrouter.ai/api/v1/chat/completions';
 function streamChat(opts) {
   const { apiKey, model, messages, tools, onText, onReasoning, signal } = opts;
   const url = new URL(opts.baseUrl || OPENROUTER_URL);
+  const local = url.protocol === 'http:';
   const body = JSON.stringify({
     model,
     messages,
     stream: true,
+    ...(local ? { stream_options: { include_usage: true } } : {}),
     ...(tools && tools.length ? { tools, tool_choice: 'auto' } : {}),
-    ...(opts.reasoning ? { reasoning: opts.reasoning } : {}),   // {effort:'low'|'medium'|'high'}
+    ...(opts.reasoning && !local ? { reasoning: opts.reasoning } : {}),   // {effort:'low'|'medium'|'high'}
+    ...(opts.reasoning && local ? { reasoning_effort: opts.reasoning.effort } : {}),   // Ollama dialect; 'none' disables thinking
     ...(opts.maxTokens ? { max_tokens: opts.maxTokens } : {}),
   });
 

@@ -146,12 +146,15 @@ const localCaps = new Map();   // model name → capabilities[] (Ollama /api/sho
 function ollamaShow(name) {
   if (localCaps.has(name)) return Promise.resolve(localCaps.get(name));
   return new Promise((resolve) => {
-    const req = require('http').request(LOCAL_URL + '/api/show', { method: 'POST', timeout: 1500 }, (res) => {
+    const req = require('http').request(LOCAL_URL + '/api/show', { method: 'POST', timeout: 8000 }, (res) => {
       let b = '';
       res.on('data', (c) => (b += c));
       res.on('end', () => {
-        try { const caps = JSON.parse(b).capabilities || []; localCaps.set(name, caps); resolve(caps); }
-        catch { resolve([]); }
+        try {
+          const caps = JSON.parse(b).capabilities || [];
+          if (caps.length) localCaps.set(name, caps);   // never cache a failed probe
+          resolve(caps);
+        } catch { resolve([]); }
       });
     });
     req.on('error', () => resolve([]));
@@ -174,7 +177,7 @@ function fetchLocalModels() {
               label: m.name.replace(/^hf\.co\//, '').replace(/:latest$/, '') + ' · local',
               context: 16384,   // matches OLLAMA_CONTEXT_LENGTH in the brew service plist
               pricing: { prompt: 0, completion: 0 },
-              reasoning: false,                      // Ollama thinks natively; no effort knob
+              reasoning: caps.includes('thinking'),  // effort maps to Ollama reasoning_effort ('none' kills runaway thinking)
               tools: caps.includes('tools'),
               vision: caps.includes('vision'),
               local: true,
