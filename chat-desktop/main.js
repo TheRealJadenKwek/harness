@@ -4,6 +4,8 @@
 // dock icon, menu, shortcuts, and window chrome.
 const { app, BrowserWindow, Menu, shell, session } = require('electron');
 
+app.setAsDefaultProtocolClient('harnesschat-desktop');
+
 const APP_URL = 'https://harness-chat-web.vercel.app/';
 let win = null;
 
@@ -32,6 +34,20 @@ function createWindow() {
 
   win.loadURL(APP_URL);
 
+  // Google refuses OAuth inside app shells — do the sign-in in the user's real
+  // browser instead; desktop-auth.html bounces the tokens back via our scheme.
+  win.webContents.on('will-navigate', (e, url) => {
+    if (url.includes('/auth/v1/authorize')) {
+      e.preventDefault();
+      const u = new URL(url);
+      u.searchParams.set('redirect_to', 'https://harness-chat-web.vercel.app/desktop-auth.html');
+      shell.openExternal(u.toString());
+      win.webContents.executeJavaScript(
+        "document.getElementById('gateErr') && (document.getElementById('gateErr').textContent = 'Finishing sign-in in your browser — come back here after.')"
+      ).catch(() => {});
+    }
+  });
+
   // make the app's header the drag region + room for traffic lights
   win.webContents.on('did-finish-load', () => {
     win.webContents.insertCSS(`
@@ -54,6 +70,20 @@ function createWindow() {
 }
 
 function js(code) { if (win) win.webContents.executeJavaScript(code).catch(() => {}); }
+
+app.on('open-url', (_e, url) => {
+  const hashAt = url.indexOf('#');
+  if (hashAt < 0 || !win) return;
+  const p = new URLSearchParams(url.slice(hashAt + 1));
+  const at = p.get('access_token'), rt = p.get('refresh_token');
+  if (!at || !rt) return;
+  const sess = JSON.stringify({ access_token: at, refresh_token: rt,
+                                expires_at: Date.now() + (Number(p.get('expires_in') || 3600) - 60) * 1000 });
+  win.webContents.executeJavaScript(
+    'localStorage.sess = ' + JSON.stringify(sess) + '; location.href = ' + JSON.stringify(APP_URL) + ';'
+  ).catch(() => {});
+  win.show(); win.focus();
+});
 
 app.whenReady().then(() => {
   Menu.setApplicationMenu(Menu.buildFromTemplate([
