@@ -191,6 +191,9 @@
 <div class="sheet" id="modelSheet">
   <h3>Model</h3>
   <div id="modelOpts"></div>
+  <h3 style="margin-top:14px;font-size:13px;color:var(--muted)">Other models</h3>
+  <input type="text" id="modelSearch" placeholder="Search 300+ OpenRouter models…" autocomplete="off">
+  <div id="modelResults" style="max-height:32vh;overflow-y:auto;margin-top:6px"></div>
 </div>
 <div class="sheet" id="keySheet">
   <h3>Your OpenRouter key</h3>
@@ -223,6 +226,29 @@ const MODELS = [
   { id: 'qwen/qwen3.6-27b',                  name: 'Qwen 3.6 27B',      desc: 'sees photos 🖼', vision: true, reasoning: true, price: [0.29, 2.40] },
 ];
 const priceStr = (m) => m.price[0] === 0 && m.price[1] === 0 ? 'free' : '$' + m.price[0].toFixed(2) + ' in / $' + m.price[1].toFixed(2) + ' out per M';
+let catalog = [];   // full OpenRouter list (fetched with the user's key, cached)
+async function loadCatalog() {
+  if (catalog.length) return;
+  try {
+    const cached = JSON.parse(localStorage.catalog || 'null');
+    if (cached && Date.now() - cached.at < 3600e3) { catalog = cached.models; return; }
+  } catch {}
+  try {
+    const r = await fetch('/api/models', { headers: await H() });
+    if (!r.ok) return;
+    catalog = (await r.json()).models || [];
+    try { localStorage.catalog = JSON.stringify({ at: Date.now(), models: catalog }); } catch {}
+  } catch {}
+}
+// unified lookup: curated defaults first, then the full catalog
+function findModel(id) {
+  const m = MODELS.find((x) => x.id === id);
+  if (m) return { ...m, ctx: CTX[id] || 128000 };
+  const c = catalog.find((x) => x.id === id);
+  if (c) return { id: c.id, name: c.name, desc: '', vision: c.vision, reasoning: c.reasoning,
+                  price: [c.promptPrice * 1e6, c.completionPrice * 1e6], ctx: c.context || 128000 };
+  return { id, name: id.split('/').pop(), desc: '', vision: false, reasoning: true, price: [0, 0], ctx: 128000 };
+}
 const EFFORTS = [null, 'low', 'medium', 'high'];
 const CTX = { 'minimax/minimax-m3': 1048576, 'deepseek/deepseek-v4-pro': 1048576, 'deepseek/deepseek-v4-flash': 1048576,
               'nvidia/nemotron-3-ultra-550b-a55b:free': 1000000, 'qwen/qwen3.6-27b': 262144 };
@@ -302,16 +328,15 @@ function md(s) {
 function render() {
   const log = $('log'); log.innerHTML = '';
   $('title').textContent = cur ? cur.title : 'Harness Chat';
-  const m = MODELS.find((x) => x.id === (cur ? cur.model : '')) || MODELS[0];
+  const m = findModel(cur ? cur.model : MODELS[0].id);
   $('modelBtn').textContent = '◆ ' + m.name;
   $('attachBtn').classList.toggle('off', !m.vision);
-  const em = MODELS.find((x) => x.id === (cur ? cur.model : '')) || MODELS[0];
-  $('effortBtn').style.display = em.reasoning ? '' : 'none';
+  $('effortBtn').style.display = m.reasoning ? '' : 'none';
   $('effortBtn').textContent = '🧠 ' + (cur && cur.effort ? cur.effort : 'auto');
   let stat = '';
   if (cur && cur.spend) stat += '$' + cur.spend.toFixed(cur.spend < 0.1 ? 4 : 2) + ' this chat';
   if (cur && cur.ctxTokens) {
-    const pct = Math.round(cur.ctxTokens / (CTX[cur.model] || 128000) * 100);
+    const pct = Math.round(cur.ctxTokens / m.ctx * 100);
     stat += (stat ? ' · ' : '') + pct + '% context';
   }
   $('statChip').textContent = stat;
@@ -578,8 +603,7 @@ async function send() {
     await compactChat(chat).catch(() => false);
     w.remove(); save(); render(); syncPush(chat);
   }
-  const model = MODELS.find((m) => m.id === chat.model) || MODELS[0];
-  const images = model.vision ? pendingImages.slice(0, 4) : [];
+  const images = findModel(chat.model).vision ? pendingImages.slice(0, 4) : [];
   $('input').value = ''; autosize();
   pendingImages = [];
   chat.err = null;
@@ -660,8 +684,7 @@ $('newBtn').onclick = newChat;
 $('sideNew').onclick = newChat;
 $('send').onclick = send;
 $('attachBtn').onclick = () => {
-  const m = MODELS.find((x) => x.id === (cur ? cur.model : '')) || MODELS[0];
-  if (!m.vision) { openSheet('modelSheet'); return; }   // nudge to a vision model
+  if (!findModel(cur ? cur.model : '').vision) { openSheet('modelSheet'); return; }   // nudge to a vision model
   $('filePick').click();
 };
 $('filePick').onchange = async (e) => {
@@ -689,24 +712,45 @@ function downscale(file) {
 document.addEventListener('paste', async (e) => {
   const items = [...((e.clipboardData || {}).items || [])].filter((i) => i.type.startsWith('image/'));
   if (!items.length) return;
-  const m = MODELS.find((x) => x.id === (cur ? cur.model : '')) || MODELS[0];
-  if (!m.vision) return;
+  if (!findModel(cur ? cur.model : '').vision) return;
   for (const it of items.slice(0, 4)) {
     const url = await downscale(it.getAsFile());
     if (url) pendingImages.push(url);
   }
   renderAttach();
 });
+function pickModel(id) { if (cur) cur.model = id; localStorage.model = id; save(); render(); closeSheets(); }
 $('modelBtn').onclick = () => {
   const box = $('modelOpts'); box.innerHTML = '';
-  for (const m of MODELS) {
+  const curated = new Set(MODELS.map((m) => m.id));
+  const rows = [...MODELS];
+  if (cur && cur.model && !curated.has(cur.model)) rows.unshift(findModel(cur.model));   // custom pick stays visible
+  for (const m of rows) {
     const o = document.createElement('div'); o.className = 'opt';
-    o.innerHTML = '<span>' + m.name + (cur && cur.model === m.id ? ' ✓' : '') + '</span><span class="d">' + m.desc + ' · ' + priceStr(m) + '</span>';
-    o.onclick = () => { if (cur) cur.model = m.id; localStorage.model = m.id; save(); render(); closeSheets(); };
+    o.innerHTML = '<span>' + m.name + (cur && cur.model === m.id ? ' ✓' : '') + '</span><span class="d">' + (m.desc ? m.desc + ' · ' : '') + priceStr(m) + '</span>';
+    o.onclick = () => pickModel(m.id);
     box.appendChild(o);
   }
+  $('modelSearch').value = ''; $('modelResults').innerHTML = '';
   openSheet('modelSheet');
+  loadCatalog();
 };
+$('modelSearch').addEventListener('input', () => {
+  const q = $('modelSearch').value.trim().toLowerCase();
+  const box = $('modelResults'); box.innerHTML = '';
+  if (!q) return;
+  if (!catalog.length) { box.innerHTML = '<div class="muted" style="padding:8px">loading catalog…</div>'; loadCatalog().then(() => $('modelSearch').dispatchEvent(new Event('input'))); return; }
+  const hits = catalog.filter((c) => c.id.toLowerCase().includes(q) || c.name.toLowerCase().includes(q)).slice(0, 30);
+  if (!hits.length) { box.innerHTML = '<div class="muted" style="padding:8px">no matches</div>'; return; }
+  for (const c of hits) {
+    const o = document.createElement('div'); o.className = 'opt';
+    const price = c.promptPrice === 0 && c.completionPrice === 0 ? 'free' : '$' + (c.promptPrice * 1e6).toFixed(2) + '/$' + (c.completionPrice * 1e6).toFixed(2) + ' per M';
+    o.innerHTML = '<span style="overflow:hidden;text-overflow:ellipsis;white-space:nowrap">' + c.name + (c.vision ? ' 🖼' : '') + (cur && cur.model === c.id ? ' ✓' : '') + '</span><span class="d">' + Math.round((c.context || 0) / 1000) + 'k · ' + price + '</span>';
+    o.title = c.id;
+    o.onclick = () => pickModel(c.id);
+    box.appendChild(o);
+  }
+});
 $('memBtn').onclick = async () => {
   closeSheets();
   const box = $('memList'); box.innerHTML = '<div class="muted" style="padding:8px">loading…</div>';
