@@ -829,6 +829,84 @@ def thread_summary(t):
         s['awaiting'] = bool(last.get('role') == 'assistant' and last.get('questions'))
     return s
 
+
+# ---- desktop→phone sync: mirror Harness Code sessions into threads ------------------
+HC_MODES_REV = {'bypass': 'bypass', 'ask': 'default', 'edits': 'acceptEdits', 'plan': 'plan'}
+_HC_SYNC = {'at': 0.0}
+
+def _sync_hc_threads():
+    """Any session created in the Harness Code desktop app appears as a phone thread.
+    Called from GET /threads (throttled); best-effort — silent if the app is closed."""
+    import urllib.request
+    if time.time() - _HC_SYNC['at'] < 5:
+        return
+    _HC_SYNC['at'] = time.time()
+    try:
+        rq = urllib.request.Request(_hc_url() + '/api/sessions',
+                                    headers={'X-HC-Token': _hc_token()})
+        hc_sessions = json.load(urllib.request.urlopen(rq, timeout=2))
+    except Exception:
+        return
+    known = {}
+    for fp in glob.glob(os.path.join(THREADS_DIR, '*.json')):
+        try:
+            t = json.load(open(fp))
+        except Exception:
+            continue
+        if t.get('session_id'):
+            known[t['session_id']] = t
+    live_ids = set()
+    for m in hc_sessions:
+        sid = m.get('id')
+        if not sid:
+            continue
+        live_ids.add(sid)
+        t = known.get(sid)
+        if t is None:
+            t = {'id': uuid.uuid4().hex, 'title': (m.get('title') or 'Desktop chat')[:80],
+                 'engine': 'codex', 'provider': 'harness-code', 'session_id': sid,
+                 'model': m.get('model'), 'cwd': m.get('cwd'),
+                 'permission_mode': HC_MODES_REV.get(m.get('mode'), 'bypass'),
+                 'effort': 'default', 'messages': [], 'hc_synced': True,
+                 'created': (m.get('createdAt') or 0) / 1000.0,
+                 'updated': (m.get('updatedAt') or 0) / 1000.0}
+            save_thread(t)
+        elif t.get('hc_synced'):
+            upd = (m.get('updatedAt') or 0) / 1000.0
+            if t.get('title') != m.get('title') or abs((t.get('updated') or 0) - upd) > 1:
+                t['title'] = (m.get('title') or t.get('title'))[:80]
+                t['updated'] = upd
+                t['archived'] = False
+                save_thread(t)
+    # sessions deleted on the desktop -> archive their synced threads
+    for sid, t in known.items():
+        if t.get('hc_synced') and sid not in live_ids and not t.get('archived'):
+            t['archived'] = True
+            save_thread(t)
+
+def _hc_mirror_messages(t):
+    """Refresh a harness-code thread's messages from the desktop app's transcript."""
+    import urllib.request
+    try:
+        rq = urllib.request.Request(_hc_url() + '/api/sessions/%s' % t['session_id'],
+                                    headers={'X-HC-Token': _hc_token()})
+        d = json.load(urllib.request.urlopen(rq, timeout=3))
+    except Exception:
+        return t
+    msgs = []
+    for it in (d.get('transcript') or []):
+        if it.get('t') == 'user':
+            msgs.append({'role': 'user', 'text': it.get('text', ''), 'ts': None})
+        elif it.get('t') == 'assistant' and (it.get('text') or '').strip():
+            msgs.append({'role': 'assistant', 'text': it.get('text', ''), 'ts': None})
+    if msgs:
+        t['messages'] = msgs[-120:]
+        meta = d.get('meta') or {}
+        if meta.get('title'):
+            t['title'] = meta['title'][:80]
+        save_thread(t)
+    return t
+
 def list_threads(view='active'):
     """view: 'active' (non-archived), 'archived', or 'trash' (soft-deleted)."""
     directory = TRASH_DIR if view == 'trash' else THREADS_DIR
@@ -1431,15 +1509,36 @@ def run_gemini_stream(thread, provider, text, images=None):
 # Fronts the Harness Code desktop app (github.com/TheRealJadenKwek/harness-code) over
 # its localhost API. The session LIVES in Harness Code, so every message sent from the
 # phone streams live in the desktop app too — one chat, two screens.
+_HC_PORT_CACHE = {'port': None, 'at': 0.0}
+
 def _hc_url():
     u = CFG.get('HARNESS_CODE_URL', '').strip()
     if u:
         return u
+    # trust the api-port file, but verify — a dead instance can leave a stale value.
+    # probe the candidate then the whole range; cache the winner for 60s.
+    import socket
+    if _HC_PORT_CACHE['port'] and time.time() - _HC_PORT_CACHE['at'] < 60:
+        return 'http://127.0.0.1:%s' % _HC_PORT_CACHE['port']
     try:
-        port = open(os.path.expanduser('~/.harness-code/api-port')).read().strip()
+        filed = open(os.path.expanduser('~/.harness-code/api-port')).read().strip()
     except Exception:
-        port = '8799'
-    return 'http://127.0.0.1:%s' % (port or '8799')
+        filed = ''
+    candidates = ([filed] if filed else []) + [p for p in ('8799', '8798', '8797', '8796', '8795') if p != filed]
+    import urllib.request
+    tok = _hc_token()
+    for port in candidates:
+        try:
+            rq = urllib.request.Request('http://127.0.0.1:%s/api/sessions' % port,
+                                        headers={'X-HC-Token': tok})
+            with urllib.request.urlopen(rq, timeout=0.6) as r:
+                if r.headers.get('Content-Type', '').startswith('application/json'):
+                    json.load(r)          # really Harness Code, really ours
+                    _HC_PORT_CACHE.update(port=port, at=time.time())
+                    return 'http://127.0.0.1:%s' % port
+        except Exception:
+            continue
+    return 'http://127.0.0.1:%s' % (filed or '8799')
 HC_MODES = {'bypass': 'bypass', 'default': 'ask', 'acceptEdits': 'edits', 'plan': 'plan'}
 
 def _hc_token():
@@ -2468,6 +2567,7 @@ class Handler(BaseHTTPRequestHandler):
                 return self._json(404, {'error': 'unknown provider'})
             return self._json(200, fetch_provider_models(p))
         if path == '/threads':
+            _sync_hc_threads()   # desktop-created Harness Code chats appear on the phone
             q = urllib.parse.parse_qs(urllib.parse.urlparse(self.path).query)
             view = 'archived' if q.get('view', [''])[0] == 'archived' else 'active'
             return self._json(200, list_threads(view))
@@ -2514,6 +2614,8 @@ class Handler(BaseHTTPRequestHandler):
             t = load_thread(tid)
             if not t:
                 return self._json(404, {'error': 'no such thread'})
+            if t.get('provider') == 'harness-code' and t.get('session_id'):
+                t = _hc_mirror_messages(t)   # pull the desktop transcript into the thread
             t['running'] = job_for(tid) is not None
             return self._json(200, t)
         return self._json(404, {'error': 'not found'})
