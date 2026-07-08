@@ -671,7 +671,7 @@ h3 { margin: 2px 0 4px; }
 .worked.open .chev { transform: rotate(90deg); }
 
 /* centered reading column (Codex/Claude style) — no more edge-to-edge in wide windows */
-.log { align-items: center; }
+.log { align-items: center; scrollbar-gutter: stable both-edges; }   /* one-sided scrollbar skews the centering otherwise */
 .log > * { width: min(100%, 830px); flex: none; align-self: center; }
 .log > .msg.assistant { align-self: center; }   /* .msg.assistant's own align-self outranks .log>* — match its specificity */
 .msg-wrap { max-width: none; }          /* the column caps it; internal flex-end keeps user bubbles right */
