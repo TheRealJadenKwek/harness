@@ -154,6 +154,16 @@
   .arch-toggle { padding:9px 12px; font-size:12px; color:var(--muted); cursor:pointer; border-radius:10px; }
   .arch-toggle:hover { background:var(--panel2); }
   .chat-row .pin { font-size:11px; }
+  .toolline { display:flex; align-items:center; gap:7px; align-self:flex-start; font-size:12.5px; color:var(--muted); }
+  .toolline .ok { color:var(--muted); }
+  .filecard { display:flex; align-items:center; gap:12px; align-self:flex-start; background:var(--panel);
+              border:1px solid var(--border); border-radius:14px; padding:12px 14px; cursor:pointer;
+              transition:background .13s; max-width:340px; }
+  .filecard:hover { background:var(--panel2); }
+  .filecard .fic { font-size:24px; }
+  .filecard .fn { font-size:14px; font-weight:550; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+  .filecard .fk { font-size:11.5px; color:var(--muted); }
+  .filecard .dl { margin-left:auto; color:var(--muted); font-size:16px; }
   /* auth gate */
   #gate { position:fixed; inset:0; background:var(--bg); z-index:50; display:flex; align-items:center; justify-content:center; }
   #gate .card { width:min(360px, 88vw); text-align:center; }
@@ -401,6 +411,20 @@ function copyBtn(text) {
   };
   return b;
 }
+const FILE_ICON = { pdf: '📄', xlsx: '📊', pptx: '📽', text: '📝' };
+function fileCard(spec) {
+  const card = document.createElement('div'); card.className = 'filecard';
+  card.innerHTML = '<span class="fic">' + (FILE_ICON[spec.kind] || '📎') + '</span>'
+    + '<span style="min-width:0"><div class="fn">' + esc(spec.filename) + '</div><div class="fk">' + spec.kind.toUpperCase() + ' · tap to download</div></span>'
+    + '<span class="dl">⤓</span>';
+  card.onclick = () => downloadFile(spec).catch((e) => alert('could not build the file: ' + e.message));
+  return card;
+}
+function toolLine(text, done) {
+  const el = document.createElement('div'); el.className = 'toolline';
+  el.innerHTML = (done ? '<span class="ok">✓</span>' : '<span class="star" style="color:#c96442">✳</span>') + '<span>' + esc(text) + '</span>';
+  return el;
+}
 function bubble(msg, chat, idx) {
   const wrap = document.createElement('div');
   wrap.className = 'mwrap ' + (msg.role === 'user' ? 'right' : 'left');
@@ -411,6 +435,10 @@ function bubble(msg, chat, idx) {
     el.appendChild(document.createTextNode(msg.content));
   } else el.innerHTML = md(msg.content);
   wrap.appendChild(el);
+  if (msg.role === 'assistant') {
+    for (const n of msg.toolNotes || []) wrap.insertBefore(toolLine(n, true), el);
+    for (const f of msg.files || []) wrap.appendChild(fileCard(f));
+  }
   const ctl = document.createElement('div'); ctl.className = 'mctl';
   ctl.appendChild(copyBtn(msg.content));
   if (msg.role === 'user' && chat) {
@@ -673,6 +701,28 @@ async function send() {
         const data = line.slice(5).trim();
         if (data === '[DONE]') continue;
         let d; try { d = JSON.parse(data); } catch { continue; }
+        if (d.harness) {
+          const h = d.harness;
+          if (h.error) throw new Error(h.error);
+          if (h.tool && cur === chat) {
+            const log = $('log');
+            if (h.status === 'run') {
+              const el = toolLine('searching: ' + h.detail, false); el.dataset.pending = '1';
+              log.appendChild(el); log.scrollTop = log.scrollHeight;
+            } else {
+              const pend = log.querySelector('.toolline[data-pending]');
+              if (pend) { pend.replaceWith(toolLine('searched: ' + (pend.textContent.replace('✳','').replace('searching: ','').trim()) + ' — ' + h.detail, true)); }
+            }
+          }
+          if (h.tool && h.status === 'done') { reply.toolNotes = reply.toolNotes || []; reply.toolNotes.push('searched the web'); }
+          if (h.file) {
+            reply.files = reply.files || [];
+            reply.files.push(h.file);
+            if (!appended) { chat.messages.push(reply); appended = true; }
+            if (cur === chat) { const log = $('log'); log.appendChild(fileCard(h.file)); log.scrollTop = log.scrollHeight; }
+          }
+          continue;
+        }
         if (d.usage) {
           chat.spend = (chat.spend || 0) + (d.usage.cost || 0);
           chat.ctxTokens = d.usage.prompt_tokens || chat.ctxTokens;
@@ -697,7 +747,7 @@ async function send() {
   } catch (e) {
     if (e.name !== 'AbortError') chat.err = e.message;
   }
-  if (appended && !acc) chat.messages.pop();
+  if (appended && !acc && !(reply.files && reply.files.length)) chat.messages.pop();
   live.delete(chat.id);
   chat.updatedAt = new Date().toISOString();
   save(); syncPush(chat);
@@ -876,6 +926,68 @@ $('effortBtn').onclick = () => {
   cur.effort = EFFORTS[(i + 1) % EFFORTS.length];
   save(); render();
 };
+
+// ---- downloadable artifacts: built in the browser from the model's spec
+const _libs = {};
+function loadLib(name, url, globalKey) {
+  if (_libs[name]) return _libs[name];
+  _libs[name] = new Promise((ok, bad) => {
+    const sc = document.createElement('script');
+    sc.src = url;
+    sc.onload = () => ok(window[globalKey]);
+    sc.onerror = () => { delete _libs[name]; bad(new Error('could not load ' + name)); };
+    document.head.appendChild(sc);
+  });
+  return _libs[name];
+}
+function saveBlob(blob, filename) {
+  const a = document.createElement('a');
+  a.href = URL.createObjectURL(blob);
+  a.download = filename;
+  a.click();
+  setTimeout(() => URL.revokeObjectURL(a.href), 4000);
+}
+async function downloadFile(spec) {
+  if (spec.kind === 'text') {
+    saveBlob(new Blob([spec.content || ''], { type: 'text/plain;charset=utf-8' }), spec.filename);
+  } else if (spec.kind === 'pdf') {
+    await loadLib('jspdf', 'https://cdnjs.cloudflare.com/ajax/libs/jspdf/2.5.1/jspdf.umd.min.js', 'jspdf');
+    const doc = new window.jspdf.jsPDF({ unit: 'pt', format: 'letter' });
+    const W = 612, margin = 64, maxW = W - margin * 2;
+    let y = 76;
+    if (spec.title) { doc.setFont('helvetica', 'bold'); doc.setFontSize(19); doc.text(doc.splitTextToSize(spec.title, maxW), margin, y); y += 34; }
+    doc.setFont('helvetica', 'normal'); doc.setFontSize(11.5);
+    for (const para of String(spec.body || spec.content || '').split(/\n\s*\n/)) {
+      const lines = doc.splitTextToSize(para.replace(/\n/g, ' '), maxW);
+      for (const ln of lines) {
+        if (y > 730) { doc.addPage(); y = 72; }
+        doc.text(ln, margin, y); y += 17;
+      }
+      y += 10;
+    }
+    doc.save(spec.filename.endsWith('.pdf') ? spec.filename : spec.filename + '.pdf');
+  } else if (spec.kind === 'xlsx') {
+    const XLSX = await loadLib('xlsx', 'https://cdn.sheetjs.com/xlsx-0.20.2/package/dist/xlsx.full.min.js', 'XLSX');
+    const wb = XLSX.utils.book_new();
+    for (const sh of spec.sheets || [{ name: 'Sheet1', rows: [[spec.content || '']] }]) {
+      XLSX.utils.book_append_sheet(wb, XLSX.utils.aoa_to_sheet(sh.rows || []), String(sh.name || 'Sheet').slice(0, 31));
+    }
+    XLSX.writeFile(wb, spec.filename.endsWith('.xlsx') ? spec.filename : spec.filename + '.xlsx');
+  } else if (spec.kind === 'pptx') {
+    const Pptx = await loadLib('pptx', 'https://cdn.jsdelivr.net/npm/pptxgenjs@3.12.0/dist/pptxgen.bundle.js', 'PptxGenJS');
+    const p = new Pptx();
+    for (const sl of spec.slides || []) {
+      const slide = p.addSlide();
+      if (sl.title) slide.addText(sl.title, { x: 0.55, y: 0.45, w: 8.9, h: 0.9, fontSize: 28, bold: true, color: '1c1c1e' });
+      if (Array.isArray(sl.bullets) && sl.bullets.length) {
+        slide.addText(sl.bullets.map((b) => ({ text: String(b), options: { bullet: true, fontSize: 16, color: '333338', breakLine: true } })),
+                      { x: 0.7, y: 1.5, w: 8.6, h: 3.8, valign: 'top' });
+      }
+      if (sl.notes) slide.addNotes(String(sl.notes));
+    }
+    await p.writeFile({ fileName: spec.filename.endsWith('.pptx') ? spec.filename : spec.filename + '.pptx' });
+  }
+}
 
 const input = $('input');
 function autosize() { input.style.height = 'auto'; if (input.value) input.style.height = Math.min(130, input.scrollHeight) + 'px'; }
