@@ -113,6 +113,20 @@
                 border-radius:8px; padding:7px 10px; font-size:13px; color:var(--muted); display:flex; gap:8px; align-items:flex-start; }
   .quote-chip span { flex:1; overflow:hidden; display:-webkit-box; -webkit-line-clamp:2; -webkit-box-orient:vertical; }
   .quote-chip button { border:none; background:none; color:var(--muted); cursor:pointer; }
+  /* sidebar context menu */
+  #ctxMenu { position:fixed; z-index:60; min-width:190px; background:var(--panel); border:1px solid var(--border);
+             border-radius:12px; padding:5px; box-shadow:0 10px 34px rgba(0,0,0,.4); display:none; }
+  #ctxMenu .ci { display:flex; justify-content:space-between; align-items:center; gap:16px; padding:8px 12px;
+                 border-radius:8px; cursor:pointer; font-size:14px; }
+  #ctxMenu .ci:hover { background:var(--panel2); }
+  #ctxMenu .ci .k { color:var(--muted); font-size:12px; }
+  #ctxMenu .ci.danger { color:#e05a5a; }
+  #ctxMenu .sep { height:1px; background:var(--border); margin:5px 6px; }
+  .group-head { padding:10px 12px 3px; font-size:11px; font-weight:600; letter-spacing:.4px;
+                text-transform:uppercase; color:var(--muted); }
+  .arch-toggle { padding:9px 12px; font-size:12px; color:var(--muted); cursor:pointer; border-radius:10px; }
+  .arch-toggle:hover { background:var(--panel2); }
+  .chat-row .pin { font-size:11px; }
   /* auth gate */
   #gate { position:fixed; inset:0; background:var(--bg); z-index:50; display:flex; align-items:center; justify-content:center; }
   #gate .card { width:min(360px, 88vw); text-align:center; }
@@ -167,6 +181,7 @@
 </div>
 <input type="file" id="filePick" accept="image/*" multiple style="display:none">
 <button id="quoteBtn">↳ Add to message</button>
+<div id="ctxMenu"></div>
 
 <div id="scrim"></div>
 <div class="sheet" id="memSheet">
@@ -372,26 +387,102 @@ function doFork(chat, idx) {
   save(); render(); syncPush(fork);
   $('input').value = msg.content; autosize(); $('input').focus();
 }
+let showArchived = false;
+function chatRow(c) {
+  const row = document.createElement('div');
+  row.className = 'chat-row' + (cur && c.id === cur.id ? ' active' : '');
+  if (c.pinned) { const p = document.createElement('span'); p.className = 'pin'; p.textContent = '📌'; row.appendChild(p); }
+  if (live.has(c.id)) { const s = document.createElement('span'); s.className = 'live'; s.textContent = '✳'; row.appendChild(s); }
+  const t = document.createElement('span'); t.className = 't'; t.textContent = c.title; row.appendChild(t);
+  const x = document.createElement('button'); x.className = 'x'; x.textContent = '✕';
+  x.onclick = (e) => { e.stopPropagation(); deleteChat(c); };
+  row.appendChild(x);
+  row.onclick = () => { cur = c; render(); if (innerWidth < 900) closeSheets(); };
+  row.oncontextmenu = (e) => { e.preventDefault(); openCtxMenu(c, e.clientX, e.clientY); };
+  return row;
+}
 function renderList() {
   const box = $('chatlist'); box.innerHTML = '';
-  for (const c of chats) {
-    const row = document.createElement('div');
-    row.className = 'chat-row' + (cur && c.id === cur.id ? ' active' : '');
-    if (live.has(c.id)) { const s = document.createElement('span'); s.className = 'live'; s.textContent = '✳'; row.appendChild(s); }
-    const t = document.createElement('span'); t.className = 't'; t.textContent = c.title; row.appendChild(t);
-    const x = document.createElement('button'); x.className = 'x'; x.textContent = '✕';
-    x.onclick = async (e) => {
-      e.stopPropagation();
-      if (live.has(c.id)) { live.get(c.id).aborter.abort(); live.delete(c.id); }
-      chats = chats.filter((z) => z.id !== c.id);
-      if (cur && cur.id === c.id) cur = chats[0] || null;
-      save(); render();
-      fetch('/api/sync', { method: 'DELETE', headers: await H(), body: JSON.stringify({ id: c.id }) }).catch(() => {});
-    };
-    row.appendChild(x);
-    row.onclick = () => { cur = c; render(); if (innerWidth < 900) closeSheets(); };
-    box.appendChild(row);
+  const act = chats.filter((c) => !c.archived);
+  const sortFn = (a, b) => (b.pinned || 0) - (a.pinned || 0) || new Date(b.updatedAt || 0) - new Date(a.updatedAt || 0);
+  const grouped = {};
+  const loose = [];
+  for (const c of act) { if (c.group) (grouped[c.group] = grouped[c.group] || []).push(c); else loose.push(c); }
+  for (const c of loose.sort(sortFn)) box.appendChild(chatRow(c));
+  for (const g of Object.keys(grouped).sort()) {
+    const h = document.createElement('div'); h.className = 'group-head'; h.textContent = g; box.appendChild(h);
+    for (const c of grouped[g].sort(sortFn)) box.appendChild(chatRow(c));
   }
+  const arch = chats.filter((c) => c.archived);
+  if (arch.length) {
+    const tog = document.createElement('div'); tog.className = 'arch-toggle';
+    tog.textContent = (showArchived ? '▾' : '▸') + ' Archived (' + arch.length + ')';
+    tog.onclick = () => { showArchived = !showArchived; renderList(); };
+    box.appendChild(tog);
+    if (showArchived) for (const c of arch.sort(sortFn)) box.appendChild(chatRow(c));
+  }
+}
+async function deleteChat(c) {
+  if (!confirm('Delete "' + c.title + '"?')) return;
+  if (live.has(c.id)) { live.get(c.id).aborter.abort(); live.delete(c.id); }
+  chats = chats.filter((z) => z.id !== c.id);
+  if (cur && cur.id === c.id) cur = chats.find((z) => !z.archived) || null;
+  save(); render();
+  fetch('/api/sync', { method: 'DELETE', headers: await H(), body: JSON.stringify({ id: c.id }) }).catch(() => {});
+}
+// ---- sidebar context menu (right-click a chat): pin/rename/fork/group/archive/delete
+let ctxChat = null;
+function openCtxMenu(c, x, y) {
+  ctxChat = c;
+  const m = $('ctxMenu'); m.innerHTML = '';
+  const item = (label, key, fn, danger) => {
+    const d = document.createElement('div'); d.className = 'ci' + (danger ? ' danger' : '');
+    d.innerHTML = '<span>' + label + '</span>' + (key ? '<span class="k">' + key + '</span>' : '');
+    d.onclick = () => { closeCtxMenu(); fn(c); };
+    m.appendChild(d); return d;
+  };
+  const sep = () => { const d = document.createElement('div'); d.className = 'sep'; m.appendChild(d); };
+  item(c.pinned ? 'Unpin' : 'Pin', 'P', ctxPin);
+  item('Rename', 'R', ctxRename);
+  item('Fork', 'F', ctxFork);
+  sep();
+  item(c.group ? 'Move to group · ' + c.group : 'Move to group', 'G', ctxGroup);
+  sep();
+  item(c.archived ? 'Unarchive' : 'Archive', 'A', ctxArchive);
+  item('Delete', 'D', deleteChat, true);
+  m.style.display = 'block';
+  const r = m.getBoundingClientRect();
+  m.style.left = Math.min(x, innerWidth - r.width - 8) + 'px';
+  m.style.top = Math.min(y, innerHeight - r.height - 8) + 'px';
+}
+function closeCtxMenu() { $('ctxMenu').style.display = 'none'; }
+document.addEventListener('click', closeCtxMenu);
+document.addEventListener('keydown', (e) => {
+  if ($('ctxMenu').style.display !== 'block' || !ctxChat) return;
+  const k = e.key.toLowerCase();
+  const map = { p: ctxPin, r: ctxRename, f: ctxFork, g: ctxGroup, a: ctxArchive, d: deleteChat };
+  if (map[k]) { e.preventDefault(); closeCtxMenu(); map[k](ctxChat); }
+  if (e.key === 'Escape') closeCtxMenu();
+});
+function touch(c) { c.updatedAt = new Date().toISOString(); save(); render(); syncPush(c); }
+function ctxPin(c) { c.pinned = !c.pinned; touch(c); }
+function ctxRename(c) { const t = prompt('Rename chat', c.title); if (t && t.trim()) { c.title = t.trim().slice(0, 60); touch(c); } }
+function ctxFork(c) {
+  const fork = { ...JSON.parse(JSON.stringify(c)), id: Date.now().toString(36) + Math.random().toString(36).slice(2, 5),
+                 title: (c.title + ' (fork)').slice(0, 60), pinned: false, updatedAt: new Date().toISOString() };
+  chats.unshift(fork); cur = fork; save(); render(); syncPush(fork);
+}
+function ctxGroup(c) {
+  const groups = [...new Set(chats.map((z) => z.group).filter(Boolean))];
+  const t = prompt('Group name' + (groups.length ? ' (existing: ' + groups.join(', ') + ')' : '') + ' — empty removes it from its group', c.group || '');
+  if (t === null) return;
+  c.group = t.trim() ? t.trim().slice(0, 30) : null;
+  touch(c);
+}
+function ctxArchive(c) {
+  c.archived = !c.archived;
+  if (c.archived && cur && cur.id === c.id) cur = chats.find((z) => !z.archived) || null;
+  touch(c);
 }
 function renderAttach() {
   const row = $('attachRow');
@@ -423,7 +514,9 @@ async function syncPull() {
       const local = byId.get(rc.id);
       if (local && live.has(local.id)) continue;   // never clobber a streaming chat
       if (!local || new Date(rc.updated) > new Date(local.updatedAt || 0)) {
-        const merged = { id: rc.id, title: rc.title, model: rc.model, messages: rc.messages, updatedAt: rc.updated };
+        const meta = rc.meta || {};
+        const merged = { id: rc.id, title: rc.title, model: rc.model, messages: rc.messages, updatedAt: rc.updated,
+                         pinned: !!meta.pinned, group: meta.group || null, archived: !!meta.archived };
         if (local) Object.assign(local, merged); else chats.push(merged);
       }
     }

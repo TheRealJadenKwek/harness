@@ -7,7 +7,7 @@ module.exports = async (req, res) => {
   const code = user.id;
   try {
     if (req.method === 'GET') {
-      const rows = await db('chats?code=eq.' + encodeURIComponent(code) + '&order=updated.desc&limit=100&select=id,title,model,messages,updated');
+      const rows = await db('chats?code=eq.' + encodeURIComponent(code) + '&order=updated.desc&limit=100&select=id,title,model,messages,updated,meta');
       res.json({ chats: rows });
     } else if (req.method === 'POST') {
       const c = (req.body || {}).chat;
@@ -19,6 +19,7 @@ module.exports = async (req, res) => {
           title: String(c.title || 'New chat').slice(0, 80),
           model: String(c.model || '').slice(0, 80),
           messages: (Array.isArray(c.messages) ? c.messages : []).slice(-400),
+          meta: { pinned: !!c.pinned, group: c.group ? String(c.group).slice(0, 40) : null, archived: !!c.archived },
           updated: new Date().toISOString(),
         }],
       });
