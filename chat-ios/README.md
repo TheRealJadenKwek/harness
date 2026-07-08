@@ -1,14 +1,14 @@
-# Harness Chat
+# Harness Chat — iOS
 
-**A ChatGPT-style iPhone app for OpenRouter — every model, one key, zero servers.**
+**Every AI model in your pocket — cloud, or fully on-device.**
 
-The playful sibling of [Harness Code](https://github.com/TheRealJadenKwek/harness-code): where that is a full desktop coding agent, this is just chat — pick any of 340+ OpenRouter models (frontier, open-source, or the nostalgic dumb ones you miss) and talk. Messages go straight from your phone to OpenRouter; history stays on-device; the key lives in your Keychain.
+The iPhone member of the Harness Chat family. Same account, chats, memory, and OpenRouter key as the [web](../chat-web/) and [desktop](../chat-desktop/) apps — or no account at all.
 
-- Streaming replies with light markdown + code blocks
-- Full model catalog: search, ★ favourites sorted to the top, or type any model id
-- Per-chat model switching, model-remembering default
-- Local chat history, swipe to delete
-- SwiftUI, ~600 lines, no dependencies
+- **Full OpenRouter catalog** with curated defaults, search, ★ favourites, live pricing
+- **On-device MLX models** (MiniCPM5 1B, Qwen3) — download once, chat in airplane mode, free, with a Think/No-think toggle
+- **Tools** — web search status lines and tappable file cards (PDF renders natively; Excel/PowerPoint/zip build in a hidden WebView with the same libraries as the web app, then hand off to the share sheet)
+- **Optional sign-in** (Apple or Google) adds sync + memory; guest mode keeps everything on the phone with a locally-stored key, and upgrading later is lossless
+- Parallel chats, per-chat effort levels, spend + context stats, long-press copy/rewind/fork
 
 ## Build
 
@@ -17,4 +17,4 @@ brew install xcodegen
 xcodegen && open HarnessChat.xcodeproj   # set your team, run on device
 ```
 
-Paste your OpenRouter key in Settings on first launch. MIT.
+MIT.

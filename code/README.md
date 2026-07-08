@@ -59,7 +59,7 @@ The agent core is pure Node with **zero dependencies** — no LangChain, no SDK,
 ## Quickstart
 
 ```bash
-git clone https://github.com/TheRealJadenKwek/harness-code
+git clone https://github.com/TheRealJadenKwek/harness && cd harness/code
 cd harness-code
 npm install
 npm start
