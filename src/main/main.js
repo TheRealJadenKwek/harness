@@ -981,6 +981,55 @@ ipcMain.handle('session-fork', (_e, id) => {
   saveSession(rec);
   return metaOf(rec);
 });
+// Conversation text rebuilt from the transcript — the transcript never loses
+// messages, so it is the source of truth after a rewind or point-fork.
+function convoMessages(transcript) {
+  const msgs = [{ role: 'system', content: '' }];   // [0] is replaced by loadMessages
+  for (const it of transcript) {
+    if ((it.t === 'user' || it.t === 'assistant') && (it.text || '').trim()) msgs.push({ role: it.t, content: it.text });
+  }
+  return msgs;
+}
+function nthUserIndex(transcript, n) {
+  let seen = -1;
+  for (let i = 0; i < transcript.length; i++) {
+    if (transcript[i].t === 'user') { seen++; if (seen === n) return i; }
+  }
+  return -1;
+}
+ipcMain.handle('session-rewind', (_e, { id, n }) => {
+  const rec = sessions.get(id);
+  if (!rec) return { ok: false, error: 'no session' };
+  if (rec.abort) return { ok: false, error: 'a turn is running — stop it first' };
+  const idx = nthUserIndex(rec.transcript, n);
+  if (idx < 0) return { ok: false, error: 'message not found' };
+  const text = rec.transcript[idx].text || '';
+  rec.transcript = rec.transcript.slice(0, idx);
+  const msgs = convoMessages(rec.transcript);
+  if (rec.agent) { rec.agent.loadMessages(msgs); rec.agent._fit(); }
+  else rec.savedMessages = msgs;
+  rec.updatedAt = Date.now();
+  saveSession(rec);
+  return { ok: true, text };
+});
+ipcMain.handle('session-fork-at', (_e, { id, n }) => {
+  const src = sessions.get(id);
+  if (!src) return null;
+  const idx = nthUserIndex(src.transcript, n);
+  if (idx < 0) return null;
+  const cut = JSON.parse(JSON.stringify(src.transcript.slice(0, idx)));
+  const rec = {
+    id: newId(), title: (src.title + ' (fork)').slice(0, 60),
+    cwd: src.cwd, model: src.model, mode: src.mode, effort: src.effort || null, goal: src.goal || null,
+    createdAt: Date.now(), updatedAt: Date.now(),
+    usage: { prompt_tokens: 0, completion_tokens: 0, cost: 0 },
+    agent: null, savedMessages: convoMessages(cut), transcript: cut,
+    abort: null, cur: null,
+  };
+  sessions.set(rec.id, rec);
+  saveSession(rec);
+  return { meta: metaOf(rec), text: src.transcript[idx].text || '' };
+});
 ipcMain.handle('session-goal', (_e, { id, goal }) => {
   const rec = sessions.get(id);
   if (!rec) return { ok: false };
@@ -1642,7 +1691,7 @@ function beginTurn(rec, { text, images, modelText, remote }) {
     rec.title = text.split('\n')[0].slice(0, 48) || 'New chat';
     sessionsChanged();
   }
-  rec.transcript.push({ t: 'user', text, images: images && images.length ? images.length : 0, remote: !!remote });
+  rec.transcript.push({ t: 'user', text, ts: Date.now(), images: images && images.length ? images.length : 0, remote: !!remote });
   if (remote) sendToUI('agent-event', { sessionId: rec.id, type: 'remote_user', text });
   rec.updatedAt = Date.now();
   const agent = ensureAgent(rec);
@@ -1777,7 +1826,7 @@ ipcMain.handle('session-steer', (_e, { id, text }) => {
   const rec = sessions.get(id);
   if (!rec || !rec.abort || !rec.agent) return { ok: false, error: 'not running' };
   rec.agent.steer(text);
-  rec.transcript.push({ t: 'user', text, steered: true });
+  rec.transcript.push({ t: 'user', text, ts: Date.now(), steered: true });
   return { ok: true };
 });
 

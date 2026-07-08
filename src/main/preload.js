@@ -46,6 +46,8 @@ contextBridge.exposeInMainWorld('harness', {
 
   // fork / goal / mcp / skills
   sessionFork: (id) => ipcRenderer.invoke('session-fork', id),
+  sessionRewind: (id, n) => ipcRenderer.invoke('session-rewind', { id, n }),
+  sessionForkAt: (id, n) => ipcRenderer.invoke('session-fork-at', { id, n }),
   sessionGoal: (id, goal) => ipcRenderer.invoke('session-goal', { id, goal }),
   mcpList: () => ipcRenderer.invoke('mcp-list'),
   mcpAdd: (name, command) => ipcRenderer.invoke('mcp-add', { name, command }),

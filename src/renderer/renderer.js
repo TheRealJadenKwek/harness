@@ -66,10 +66,61 @@ function logOf(rec) { return rec.logEl; }
 function atBottom(el) { return el.scrollHeight - el.scrollTop - el.clientHeight < 90; }
 function scrollLog(rec) { const el = logOf(rec); requestAnimationFrame(() => { el.scrollTop = el.scrollHeight; }); }
 
-function addUser(rec, text, imageCount) {
+function timeago(ts) {
+  if (!ts) return '';
+  const d = Date.now() - ts;
+  if (d < 60e3) return 'just now';
+  if (d < 3600e3) return Math.floor(d / 60e3) + ' minute' + (Math.floor(d / 60e3) > 1 ? 's' : '') + ' ago';
+  if (d < 86400e3) return Math.floor(d / 3600e3) + ' hour' + (Math.floor(d / 3600e3) > 1 ? 's' : '') + ' ago';
+  if (d < 7 * 86400e3) return Math.floor(d / 86400e3) + ' day' + (Math.floor(d / 86400e3) > 1 ? 's' : '') + ' ago';
+  return new Date(ts).toLocaleDateString();
+}
+function addUser(rec, text, imageCount, meta) {
+  const wrap = document.createElement('div'); wrap.className = 'msg-wrap';
   const el = document.createElement('div'); el.className = 'msg user';
   el.textContent = (imageCount ? '🖼 ' + imageCount + ' image' + (imageCount > 1 ? 's' : '') + '\n' : '') + text;
-  logOf(rec).appendChild(el); scrollLog(rec);
+  wrap.appendChild(el);
+  const n = meta && meta.n !== undefined ? meta.n : rec.userN++;
+  const raw = (meta && meta.raw !== undefined) ? meta.raw : text;
+  const ctl = document.createElement('div'); ctl.className = 'mctl';
+  const mkBtn = (glyph, tip, fn) => {
+    const b = document.createElement('button'); b.className = 'mctl-btn'; b.textContent = glyph; b.title = tip;
+    b.onclick = fn; ctl.appendChild(b);
+  };
+  mkBtn('⧉', 'Copy message', () => H.clipboardWrite(raw));
+  mkBtn('↩', 'Rewind — remove this message and everything after it, put it back in the composer', () => doRewind(rec, n, raw));
+  mkBtn('⑂', 'Fork a new chat from this point', () => doForkAt(rec, n, raw));
+  const t = document.createElement('span'); t.className = 'mctl-time';
+  const ts = meta && meta.ts;
+  t.textContent = timeago(ts);
+  if (ts) { t.title = new Date(ts).toLocaleString(); wrap.onmouseenter = () => { t.textContent = timeago(ts); }; }
+  ctl.appendChild(t);
+  wrap.appendChild(ctl);
+  logOf(rec).appendChild(wrap); scrollLog(rec);
+}
+async function rerenderLog(rec) {
+  rec.logEl.innerHTML = ''; rec.cur = null; rec.userN = 0; rec.planEl = null; rec.lastTool = null;
+  const d = await H.sessionGet(rec.meta.id);
+  if (d) { rec.meta = d.meta; for (const item of d.transcript) renderItem(rec, item); rec.cur = null; }
+  rec.logEl.scrollTop = rec.logEl.scrollHeight;
+}
+async function doRewind(rec, n, text) {
+  if (rec.streaming) { addLine(rec, 'err', '⚠︎ wait for the current turn to finish before rewinding'); return; }
+  if (!confirm('Rewind the conversation to before this message? Everything after it is removed (the message text goes back into the composer).')) return;
+  const r = await H.sessionRewind(rec.meta.id, n);
+  if (r && r.ok) {
+    await rerenderLog(rec);
+    const inp = $('input');
+    inp.value = r.text || text; inp.dispatchEvent(new Event('input')); inp.focus();
+  } else addLine(rec, 'err', '⚠︎ ' + ((r && r.error) || 'rewind failed'));
+}
+async function doForkAt(rec, n, text) {
+  const r = await H.sessionForkAt(rec.meta.id, n);
+  if (!r || !r.meta) { addLine(rec, 'err', '⚠︎ fork failed'); return; }
+  await refreshSessions();
+  activate(r.meta.id);
+  const inp = $('input');
+  inp.value = r.text || text; inp.dispatchEvent(new Event('input')); inp.focus();
 }
 function addLine(rec, cls, text) {
   const el = document.createElement('div'); el.className = cls; el.textContent = text;
@@ -197,7 +248,7 @@ function addCkptLine(rec, ckptId, files) {
 }
 
 function renderItem(rec, item) {
-  if (item.t === 'user') addUser(rec, (item.remote ? '📱 ' : '') + (item.steered ? '↳ ' : '') + item.text, item.images);
+  if (item.t === 'user') addUser(rec, (item.remote ? '📱 ' : '') + (item.steered ? '↳ ' : '') + item.text, item.images, { n: rec.userN++, ts: item.ts, raw: item.text });
   else if (item.t === 'plan') { renderPlan(rec, item.items); rec.planEl = null; }
   else if (item.t === 'ckpt') addCkptLine(rec, item.id, item.files);
   else if (item.t === 'assistant') {
@@ -231,7 +282,7 @@ async function refreshSessions() {
 function makeLocalRec(meta) {
   const logEl = document.createElement('div'); logEl.className = 'log';
   $('logs').appendChild(logEl);
-  const rec = { meta, logEl, loaded: false, cur: null, queued: [], approvals: [], files: null, streaming: !!meta.streaming, lastTool: null };
+  const rec = { meta, logEl, loaded: false, cur: null, queued: [], approvals: [], files: null, streaming: !!meta.streaming, lastTool: null, userN: 0 };
   S.recs.set(meta.id, rec);
   return rec;
 }
@@ -529,7 +580,7 @@ H.onEvent((e) => {
   }
   else if (e.type === 'auto_approved') addLine(rec, 'done', '⚡ auto-approved ' + e.kind + ': ' + String(e.detail || '').slice(0, 80));
   else if (e.type === 'control_note') addLine(rec, 'done', e.message);
-  else if (e.type === 'remote_user') { addUser(rec, '📱 ' + e.text); rec.streaming = true; startWorking(rec); updateComposer(); renderSidebar(); }
+  else if (e.type === 'remote_user') { addUser(rec, '📱 ' + e.text, 0, { ts: Date.now(), raw: e.text }); rec.streaming = true; startWorking(rec); updateComposer(); renderSidebar(); }
   else if (e.type === 'plan') renderPlan(rec, e.items);
   else if (e.type === 'checkpoint') addCkptLine(rec, e.ckptId, e.files);
   else if (e.type === 'snapshot') { /* main-side checkpoint bookkeeping only */ }
@@ -601,12 +652,12 @@ async function sendText(rec, text, images, modelText) {
   if (rec.streaming) {
     // steer the RUNNING turn (mid-task interjection); fall back to queueing
     const st = await H.sessionSteer(rec.meta.id, modelText || text);
-    if (st && st.ok) { addUser(rec, '↳ ' + text, images ? images.length : 0); return; }
+    if (st && st.ok) { addUser(rec, '↳ ' + text, images ? images.length : 0, { ts: Date.now(), raw: text }); return; }
     rec.queued.push({ text, images, modelText }); updateComposer(); return;
   }
   rec.streaming = true; rec.cur = null;
   const r = await H.sessionSend(rec.meta.id, text, images && images.length ? images : undefined, modelText);
-  if (r.ok) { addUser(rec, text, images ? images.length : 0); startWorking(rec); }
+  if (r.ok) { addUser(rec, text, images ? images.length : 0, { ts: Date.now(), raw: text }); startWorking(rec); }
   else if (r.error === 'busy') rec.queued.push({ text, images, modelText });
   else rec.streaming = false;
   updateComposer(); renderSidebar();
@@ -647,7 +698,7 @@ function runSlash(rec, text) {
   const [cmd, ...rest] = text.split(/\s+/);
   const arg = rest.join(' ');
   if (cmd === '/new') { newChat(); return true; }
-  if (cmd === '/clear') { H.sessionClear(rec.meta.id).then(() => { rec.logEl.innerHTML = ''; rec.cur = null; addLine(rec, 'done', 'conversation cleared.'); }); return true; }
+  if (cmd === '/clear') { H.sessionClear(rec.meta.id).then(() => { rec.logEl.innerHTML = ''; rec.cur = null; rec.userN = 0; addLine(rec, 'done', 'conversation cleared.'); }); return true; }
   if (cmd === '/compact') {
     rec.streaming = true; updateComposer(); addLine(rec, 'done', '✦ compacting context…'); startWorking(rec);
     H.sessionCompact(rec.meta.id).then((r) => { if (!r.ok && r.error) { addLine(rec, 'err', '⚠︎ ' + r.error); endTurn(rec); } });
