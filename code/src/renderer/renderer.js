@@ -713,7 +713,7 @@ function ckActions() {
   const acts = [
     { label: 'New chat', tag: 'action', run: () => newChat() },
     { label: 'Side chat', hint: 'quick asides, separate from the session', tag: 'action', run: () => rec && openSidePopup(rec) },
-    { label: 'Switch model…', tag: 'action', run: () => openModelSheet() },
+    { label: 'Switch model…', hint: '⌘K', tag: 'action', run: () => openModelSheet() },
     { label: 'Change working directory…', tag: 'action', run: () => pickDir() },
     { label: 'Toggle changes panel', tag: 'action', run: () => toggleDiff() },
     { label: 'Compact context', hint: 'summarize & compress', tag: 'action', run: () => runSlash(rec, '/compact') },
@@ -800,7 +800,8 @@ function ckRun() {
 if (scState().docked) scShowTab();
 
 document.addEventListener('keydown', (e) => {
-  if ((e.metaKey || e.ctrlKey) && e.key.toLowerCase() === 'k' && !e.shiftKey && !e.altKey) {
+  // ⇧⌘P — command palette (⌘K stays the model switcher)
+  if ((e.metaKey || e.ctrlKey) && e.shiftKey && e.key.toLowerCase() === 'p' && !e.altKey) {
     e.preventDefault();
     CK.open ? ckClose() : ckOpen();
   }
