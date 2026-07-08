@@ -146,13 +146,26 @@ function renderCurMd(rec) {
   if (c.mdTimer) return;
   c.mdTimer = setTimeout(() => { c.mdTimer = null; if (rec.cur === c) { c.textEl.innerHTML = md(c.raw); c.textEl.dataset.raw = c.raw; } }, 120);
 }
-function finalizeAssistant(rec) {
+function finalizeAssistant(rec, ts) {
   const c = rec.cur; if (!c) return;
   if (c.mdTimer) { clearTimeout(c.mdTimer); c.mdTimer = null; }
   c.textEl.innerHTML = md(c.raw);
   c.textEl.dataset.raw = c.raw;
   c.think.classList.add('closed');
   c.thinkHead.textContent = '✳ thought for a bit';
+  if ((c.raw || '').trim() && !c.ctl) {
+    const ctl = document.createElement('div'); ctl.className = 'mctl left';
+    const b = document.createElement('button'); b.className = 'mctl-btn'; b.textContent = '⧉'; b.title = 'Copy response';
+    const raw = c.raw;
+    b.onclick = () => H.clipboardWrite(raw);
+    ctl.appendChild(b);
+    const t = document.createElement('span'); t.className = 'mctl-time';
+    t.textContent = timeago(ts);
+    if (ts) { t.title = new Date(ts).toLocaleString(); c.el.onmouseenter = () => { t.textContent = timeago(ts); }; }
+    ctl.appendChild(t);
+    c.el.appendChild(ctl);
+    c.ctl = ctl;
+  }
   rec.cur = null;
 }
 
@@ -255,7 +268,7 @@ function renderItem(rec, item) {
     const c = ensureAssistant(rec);
     if (item.think) { c.think.style.display = 'block'; c.thinkBody.textContent = item.think; }
     c.raw = item.text || '';
-    finalizeAssistant(rec);
+    finalizeAssistant(rec, item.ts);
   }
   else if (item.t === 'tool') addTool(rec, item.name, item.args, item.result === undefined ? { error: '(interrupted)' } : item.result);
   else if (item.t === 'diff') addDiff(rec, item.file, item.before, item.after);
@@ -571,7 +584,7 @@ H.onEvent((e) => {
     if (c.thinkRaw && !c.raw) { c.think.classList.add('closed'); c.thinkHead.textContent = '✳ thought for a bit'; }
     c.raw += e.delta; renderCurMd(rec);
   }
-  else if (e.type === 'tool_call') { finalizeAssistant(rec); addTool(rec, e.name, e.args); setWorking(rec, 'Running ' + e.name + '…'); }
+  else if (e.type === 'tool_call') { finalizeAssistant(rec, Date.now()); addTool(rec, e.name, e.args); setWorking(rec, 'Running ' + e.name + '…'); }
   else if (e.type === 'tool_result') {
     if (rec.lastTool) setToolResult(rec.lastTool, e.name, e.result);
     if (S.panel === 'changes' && e.sessionId === S.active && MUTATING.includes(e.name)) {
@@ -592,14 +605,14 @@ H.onEvent((e) => {
   }
   else if (e.type === 'diff') addDiff(rec, e.file, e.before, e.after);
   else if (e.type === 'done') {
-    finalizeAssistant(rec);
+    finalizeAssistant(rec, Date.now());
     const secs = stopWorking(rec);
     if (e.usage) addLine(rec, 'done', 'done · ~' + ((e.usage.prompt_tokens || 0) + (e.usage.completion_tokens || 0)).toLocaleString() + ' tokens' + (secs ? ' · ' + fmtSecs(secs) : ''));
     endTurn(rec);
   }
-  else if (e.type === 'compacted') { finalizeAssistant(rec); addLine(rec, 'done', '✦ context compacted'); endTurn(rec); }
-  else if (e.type === 'error') { finalizeAssistant(rec); addLine(rec, 'err', '⚠︎ ' + e.message); endTurn(rec); }
-  else if (e.type === 'aborted') { finalizeAssistant(rec); addLine(rec, 'done', 'stopped.'); endTurn(rec); }
+  else if (e.type === 'compacted') { finalizeAssistant(rec, Date.now()); addLine(rec, 'done', '✦ context compacted'); endTurn(rec); }
+  else if (e.type === 'error') { finalizeAssistant(rec, Date.now()); addLine(rec, 'err', '⚠︎ ' + e.message); endTurn(rec); }
+  else if (e.type === 'aborted') { finalizeAssistant(rec, Date.now()); addLine(rec, 'done', 'stopped.'); endTurn(rec); }
   if (stick) scrollLog(rec);
 });
 

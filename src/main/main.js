@@ -185,7 +185,7 @@ function ctxLimitOf(model) {
 // that persists to disk and replays when a session is reopened.
 function flushAssistant(rec) {
   if (rec.cur && (rec.cur.text || rec.cur.think)) {
-    rec.transcript.push({ t: 'assistant', text: rec.cur.text, think: rec.cur.think });
+    rec.transcript.push({ t: 'assistant', text: rec.cur.text, think: rec.cur.think, ts: Date.now() });
   }
   rec.cur = null;
 }
