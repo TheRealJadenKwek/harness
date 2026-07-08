@@ -16,7 +16,7 @@
 * { box-sizing: border-box; }
 html, body { margin: 0; height: 100%; }
 body {
-  background: var(--bg); color: var(--text); height: 100vh;
+  background: transparent; color: var(--text); height: 100vh;
   font: 14px/1.55 -apple-system, system-ui, sans-serif; overflow: hidden;
 }
 .app { display: flex; height: 100vh; }
@@ -24,7 +24,8 @@ body {
 
 /* ---------- sidebar ---------- */
 .sidebar {
-  width: 240px; min-width: 240px; background: var(--panel); border-right: 1px solid var(--border);
+  width: 240px; min-width: 240px; border-right: 1px solid var(--border);
+  background: color-mix(in srgb, var(--panel) 62%, transparent);   /* NSVisualEffectView shows through */
   display: flex; flex-direction: column;
 }
 .sidebar.hidden { display: none; }
@@ -61,7 +62,7 @@ body {
 .side-foot-btn:hover { background: var(--panel2); color: var(--text); }
 
 /* ---------- center / titlebar ---------- */
-.center { flex: 1; display: flex; flex-direction: column; min-width: 0; }
+.center { flex: 1; display: flex; flex-direction: column; min-width: 0; background: var(--bg); }
 .titlebar {
   -webkit-app-region: drag; padding: 8px 12px; display: flex; align-items: center;
   gap: 8px; border-bottom: 1px solid var(--border); background: var(--panel);
@@ -130,10 +131,18 @@ body {
 .tool-body .tb-res { color: var(--green); } .tool-body .tb-res.err { color: var(--red); }
 
 /* inline diff cards */
-.diff { align-self: flex-start; max-width: 820px; width: 100%; font-family: var(--mono); font-size: 12px; border: 1px solid var(--border); border-radius: 9px; overflow: hidden; }
-.diff .dfile { background: var(--panel2); padding: 5px 10px; color: var(--muted); display: flex; gap: 8px; }
-.diff .dstats { margin-left: auto; }
-.diff pre { margin: 0; padding: 8px 10px; overflow-x: auto; background: var(--panel); }
+.diff { align-self: flex-start; max-width: 820px; width: 100%; font-family: var(--mono); font-size: 12px;
+        border: 1px solid var(--border); border-radius: 12px; overflow: hidden;
+        box-shadow: 0 1px 4px rgba(0,0,0,.05); }
+.diff .dfile { background: var(--panel2); padding: 7px 12px; color: var(--text); font-weight: 600; font-size: 11.5px;
+               display: flex; gap: 8px; align-items: center; letter-spacing: .1px; }
+.diff .dstats { margin-left: auto; display: flex; gap: 5px; font-weight: 600; }
+.diff .dstats .ds-add { color: var(--green); background: rgba(70,192,122,.13); padding: 1px 7px; border-radius: 20px; font-size: 10.5px; }
+.diff .dstats .ds-del { color: var(--red); background: rgba(224,90,90,.13); padding: 1px 7px; border-radius: 20px; font-size: 10.5px; }
+.diff pre { margin: 0; padding: 6px 0; overflow-x: auto; background: var(--panel); line-height: 1.6; }
+.diff pre .add, .diff pre .del { display: block; padding: 0 12px; }
+.diff pre .add { color: var(--green); background: rgba(70,192,122,.09); }
+.diff pre .del { color: var(--red); background: rgba(224,90,90,.09); }
 .diff pre.clamped { max-height: 300px; overflow-y: hidden; }
 .diff .add { color: var(--green); } .diff .del { color: var(--red); }
 .diff .d-more { display: block; width: 100%; border: none; border-top: 1px solid var(--border); background: var(--panel2); color: var(--muted); font: inherit; padding: 4px; cursor: pointer; }
@@ -181,9 +190,12 @@ body {
 .gf .g-path { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; direction: rtl; text-align: left; }
 .git-empty { color: var(--muted); font-size: 12.5px; padding: 14px; }
 .git-diff-view { flex: 1; overflow: auto; font-family: var(--mono); font-size: 11.5px; padding: 8px 10px; white-space: pre; }
-.git-diff-view .gl-add { color: var(--green); background: rgba(70,192,122,.07); display: block; }
-.git-diff-view .gl-del { color: var(--red); background: rgba(224,90,90,.07); display: block; }
-.git-diff-view .gl-hunk { color: var(--blue); display: block; margin-top: 6px; }
+.git-diff-view { line-height: 1.6; font-size: 11.5px; }
+.git-diff-view .gl-add { color: var(--green); background: rgba(70,192,122,.09); display: block; padding: 0 10px; }
+.git-diff-view .gl-del { color: var(--red); background: rgba(224,90,90,.09); display: block; padding: 0 10px; }
+.git-diff-view .gl-hunk { color: var(--blue); display: inline-block; margin: 10px 10px 3px; padding: 1px 9px;
+                          background: color-mix(in srgb, var(--blue) 11%, transparent); border-radius: 20px; font-size: 10.5px; }
+.git-diff-view .gl-meta { color: var(--muted); display: block; padding: 0 10px; opacity: .75; }
 .git-diff-view .gl-meta { color: var(--muted); display: block; }
 
 /* ---------- panel tabs ---------- */
@@ -498,3 +510,21 @@ h3 { margin: 2px 0 4px; }
 #scpop textarea { flex:1; resize:none; border:1px solid var(--line, rgba(125,125,125,.22)); border-radius:12px; padding:8px 12px;
                   font:13px/1.45 inherit; background:transparent; color:inherit; outline:none; max-height:110px; }
 #scpop textarea:focus { border-color:color-mix(in srgb, var(--accent, #2f63e8) 55%, transparent); }
+
+/* ---- ⌘K command palette ---- */
+#cmdk { position:fixed; inset:0; z-index:400; display:none; align-items:flex-start; justify-content:center;
+        padding-top:14vh; background:rgba(0,0,0,.28); }
+#cmdk .ck-box { width:min(580px, 92vw); border-radius:14px; overflow:hidden; background:var(--bg);
+                border:1px solid var(--border); box-shadow:0 24px 70px rgba(0,0,0,.35); display:flex; flex-direction:column; }
+@media (prefers-reduced-motion: no-preference) { #cmdk .ck-box { animation: ckin .16s cubic-bezier(.2,.7,.3,1); } }
+@keyframes ckin { from { opacity:0; transform:translateY(-8px) scale(.99); } to { opacity:1; transform:none; } }
+#cmdk input { border:0; outline:none; background:transparent; color:var(--text); width:100%;
+              padding:15px 18px; font:15px/1.4 inherit; border-bottom:1px solid var(--border); }
+#ckList { max-height:46vh; overflow-y:auto; padding:6px; }
+.ck-row { display:flex; align-items:center; gap:10px; padding:9px 12px; border-radius:9px; cursor:pointer; font-size:13.5px; }
+.ck-row.sel { background:color-mix(in srgb, var(--accent, #2f63e8) 11%, transparent); }
+.ck-row .ck-tag { margin-left:auto; font-size:10px; letter-spacing:.4px; text-transform:uppercase; color:var(--muted);
+                  border:1px solid var(--border); border-radius:6px; padding:1px 6px; flex:none; }
+.ck-row .ck-hint { color:var(--muted); font-size:12px; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+.ck-row .ck-label { flex:none; max-width:55%; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+.ck-empty { padding:18px; text-align:center; color:var(--muted); font-size:13px; }

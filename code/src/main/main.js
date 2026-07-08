@@ -368,7 +368,9 @@ function createWindow() {
   win = new BrowserWindow({
     width: 1360, height: 860, minWidth: 860, minHeight: 520,
     titleBarStyle: 'hiddenInset',
-    backgroundColor: nativeTheme.shouldUseDarkColors ? '#161619' : '#f4f4f2',
+    ...(process.platform === 'darwin'
+      ? { vibrancy: 'sidebar', visualEffectState: 'followWindow' }
+      : { backgroundColor: nativeTheme.shouldUseDarkColors ? '#161619' : '#f4f4f2' }),
     webPreferences: { preload: path.join(__dirname, 'preload.js'), contextIsolation: true, nodeIntegration: false, webviewTag: true },
   });
   win.loadFile(path.join(__dirname, '../renderer/index.html'));

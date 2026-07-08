@@ -349,7 +349,7 @@ function addDiff(rec, file, before, after) {
   const adds = sa - p, dels = sb - p;
   const pre = document.createElement('pre');
   pre.innerHTML = html || '  (no line changes)';
-  el.innerHTML = '<div class="dfile">± ' + esc(file) + '<span class="dstats">+' + adds + ' −' + dels + '</span></div>';
+  el.innerHTML = '<div class="dfile">± ' + esc(file) + '<span class="dstats"><span class="ds-add">+' + adds + '</span><span class="ds-del">−' + dels + '</span></span></div>';
   el.appendChild(pre);
   if (lines > 24) {
     pre.classList.add('clamped');
@@ -631,6 +631,104 @@ document.addEventListener('keydown', (e) => {
   else if (k === 'a') { e.preventDefault(); patch({ archived: !m.archived }); }
   else if (k === 'd') { e.preventDefault(); hideCtxMenu(); deleteSession(id, m.title); }
 }, true);
+
+// ---------------------------------------------------------------- ⌘K command palette
+const CK = { open: false, sel: 0, items: [] };
+function ckActions() {
+  const rec = active();
+  const acts = [
+    { label: 'New chat', tag: 'action', run: () => newChat() },
+    { label: 'Side chat', hint: 'quick asides, separate from the session', tag: 'action', run: () => rec && openSidePopup(rec) },
+    { label: 'Switch model…', tag: 'action', run: () => openModelSheet() },
+    { label: 'Change working directory…', tag: 'action', run: () => pickDir() },
+    { label: 'Toggle changes panel', tag: 'action', run: () => toggleDiff() },
+    { label: 'Compact context', hint: 'summarize & compress', tag: 'action', run: () => runSlash(rec, '/compact') },
+    { label: 'Fork chat', tag: 'action', run: () => runSlash(rec, '/fork') },
+    { label: 'Rename chat…', tag: 'action', run: () => { const t = prompt('Rename chat:', rec ? rec.meta.title : ''); if (t && t.trim() && rec) H.sessionMeta(rec.meta.id, { title: t.trim() }).then(() => { refreshSessions(); updateTitlebar(); }); } },
+    { label: 'Clear conversation', tag: 'action', run: () => runSlash(rec, '/clear') },
+    { label: 'Settings', tag: 'action', run: () => openSettings() },
+    { label: 'Mode: plan', hint: 'read-only planning', tag: 'mode', run: () => setSessionConfig({ mode: 'plan' }) },
+    { label: 'Mode: ask', hint: 'approve every change', tag: 'mode', run: () => setSessionConfig({ mode: 'ask' }) },
+    { label: 'Mode: edits', hint: 'auto-approve file edits', tag: 'mode', run: () => setSessionConfig({ mode: 'edits' }) },
+    { label: 'Mode: auto', hint: 'auto-approve routine work', tag: 'mode', run: () => setSessionConfig({ mode: 'auto' }) },
+  ];
+  for (const [id, r] of S.recs) {
+    if (r.meta.archived) continue;
+    acts.push({ label: r.meta.title || 'Untitled', hint: shortModel(r.meta.model), tag: 'chat', run: () => activate(id) });
+  }
+  for (const sk of (S.skills || [])) {
+    acts.push({ label: '/' + sk.name, hint: sk.description || 'skill', tag: 'skill',
+                run: () => { $('input').value = '/' + sk.name + ' '; $('input').focus(); } });
+  }
+  return acts;
+}
+function ckRender() {
+  const list = document.getElementById('ckList');
+  list.innerHTML = '';
+  if (!CK.items.length) { list.innerHTML = '<div class="ck-empty">No matches</div>'; return; }
+  CK.items.forEach((it, i) => {
+    const row = document.createElement('div');
+    row.className = 'ck-row' + (i === CK.sel ? ' sel' : '');
+    row.innerHTML = '<span class="ck-label">' + esc(it.label) + '</span>'
+      + (it.hint ? '<span class="ck-hint">' + esc(it.hint) + '</span>' : '')
+      + '<span class="ck-tag">' + it.tag + '</span>';
+    row.onmousedown = (e) => { e.preventDefault(); CK.sel = i; ckRun(); };
+    row.onmouseenter = () => { CK.sel = i; ckRender(); };
+    list.appendChild(row);
+  });
+  const sel = list.querySelector('.ck-row.sel');
+  if (sel) sel.scrollIntoView({ block: 'nearest' });
+}
+function ckFilter(q) {
+  const all = ckActions();
+  if (!q) { CK.items = all.slice(0, 40); return; }
+  const lq = q.toLowerCase();
+  const scored = all.map((it) => {
+    const l = it.label.toLowerCase(), h = (it.hint || '').toLowerCase();
+    let sc = -1;
+    if (l.startsWith(lq)) sc = 0;
+    else if (l.includes(lq)) sc = 1;
+    else if (h.includes(lq)) sc = 2;
+    return { it, sc };
+  }).filter((x) => x.sc >= 0).sort((a, b) => a.sc - b.sc);
+  CK.items = scored.map((x) => x.it).slice(0, 40);
+}
+function ckOpen() {
+  let el = document.getElementById('cmdk');
+  if (!el) {
+    el = document.createElement('div');
+    el.id = 'cmdk';
+    el.innerHTML = '<div class="ck-box"><input id="ckInput" placeholder="Type a command, chat, or skill…" autocomplete="off" spellcheck="false"><div id="ckList"></div></div>';
+    document.body.appendChild(el);
+    el.onmousedown = (e) => { if (e.target === el) ckClose(); };
+    const inp = document.getElementById('ckInput');
+    inp.addEventListener('input', () => { CK.sel = 0; ckFilter(inp.value.trim()); ckRender(); });
+    inp.addEventListener('keydown', (e) => {
+      if (e.key === 'Escape') { e.preventDefault(); ckClose(); }
+      else if (e.key === 'ArrowDown') { e.preventDefault(); CK.sel = Math.min(CK.sel + 1, CK.items.length - 1); ckRender(); }
+      else if (e.key === 'ArrowUp') { e.preventDefault(); CK.sel = Math.max(CK.sel - 1, 0); ckRender(); }
+      else if (e.key === 'Enter') { e.preventDefault(); ckRun(); }
+    });
+  }
+  CK.open = true; CK.sel = 0;
+  el.style.display = 'flex';
+  const inp = document.getElementById('ckInput');
+  inp.value = '';
+  ckFilter(''); ckRender();
+  inp.focus();
+}
+function ckClose() { CK.open = false; const el = document.getElementById('cmdk'); if (el) el.style.display = 'none'; $('input').focus(); }
+function ckRun() {
+  const it = CK.items[CK.sel];
+  ckClose();
+  if (it) it.run();
+}
+document.addEventListener('keydown', (e) => {
+  if ((e.metaKey || e.ctrlKey) && e.key.toLowerCase() === 'k' && !e.shiftKey && !e.altKey) {
+    e.preventDefault();
+    CK.open ? ckClose() : ckOpen();
+  }
+});
 
 async function activate(id) {
   if (!S.recs.has(id)) return;
