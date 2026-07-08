@@ -368,3 +368,8 @@ h3 { margin: 2px 0 4px; }
 .fav-star:hover { color: var(--orange); }
 .fav-star.on { color: var(--orange); }
 .md a.reveal { color: var(--blue); text-decoration: none; cursor: pointer; border-bottom: 1px dotted var(--blue); }
+
+
+/* no horizontal scrolling in the chat — long unbroken strings wrap instead */
+.log { overflow-x: hidden; }
+.err, .done, .msg { overflow-wrap: anywhere; }

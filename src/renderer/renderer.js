@@ -614,7 +614,8 @@ async function sendText(rec, text, images, modelText) {
 async function onSend() {
   const rec = active(); if (!rec) return;
   const text = $('input').value.trim();
-  const images = (rec.attachments || []).map((a) => a.dataUrl).filter(Boolean);
+  let images = (rec.attachments || []).map((a) => a.dataUrl).filter(Boolean);
+  if (images.length && !visionOk(rec)) { addLine(rec, 'err', '⚠︎ attachments dropped — ' + shortModel(rec.meta.model) + ' can\'t see images'); images = []; rec.attachments = []; renderAttachRow(); }
   if (!text && !images.length) return;
   $('input').value = ''; $('input').style.height = 'auto'; hidePopup();
   rec.suggestion = null; showSuggestion(rec);
@@ -846,6 +847,7 @@ input.addEventListener('paste', (e) => {
   for (const item of e.clipboardData.items) {
     if (item.type && item.type.startsWith('image/')) {
       e.preventDefault();
+      if (!visionOk(rec)) { addLine(rec, 'err', '⚠︎ ' + shortModel(rec.meta.model) + ' can\'t see images — pick a vision model (🖼 in the picker)'); return; }
       const f = item.getAsFile();
       const fr = new FileReader();
       fr.onload = () => {
@@ -955,12 +957,16 @@ function renderAttachRow() {
     row.appendChild(chip);
   });
 }
+function visionOk(rec) {
+  const m = S.models.find((x) => x.value === rec.meta.model);
+  return m ? !!m.vision : true;
+}
 async function attachFiles() {
   const rec = active(); if (!rec) return;
   const picked = await H.pickFiles(rec.meta.id);
   rec.attachments = rec.attachments || [];
   for (const f of picked) {
-    if (f.kind === 'image') rec.attachments.push({ name: f.name, dataUrl: f.dataUrl });
+    if (f.kind === 'image') { if (!visionOk(rec)) { addLine(rec, 'err', '⚠︎ ' + shortModel(rec.meta.model) + ' can\'t see images — pick a vision model (🖼 in the picker)'); continue; } rec.attachments.push({ name: f.name, dataUrl: f.dataUrl }); }
     else if (f.kind === 'path') { const i = $('input'); i.value = (i.value ? i.value.replace(/\s?$/, ' ') : '') + '@' + f.path + ' '; }
     else if (f.kind === 'error') addLine(rec, 'err', '⚠︎ ' + f.name + ': ' + f.error);
   }
@@ -1466,7 +1472,7 @@ function renderModels(q) {
     const row = document.createElement('div');
     row.className = 'model-row' + (rec && m.value === rec.meta.model ? ' sel' : '');
     const isFav = fav.includes(m.value);
-    row.innerHTML = '<div class="m-line"><span class="fav-star' + (isFav ? ' on' : '') + '" title="Favourite (or right-click the row)">' + (isFav ? '★' : '☆') + '</span><div>' + esc(m.label) + (m.reasoning ? ' <span class="mi-hint" title="Supports reasoning effort">🧠</span>' : '') + '</div><div class="m-price">' + esc(priceStr(m)) + '</div></div>' +
+    row.innerHTML = '<div class="m-line"><span class="fav-star' + (isFav ? ' on' : '') + '" title="Favourite (or right-click the row)">' + (isFav ? '★' : '☆') + '</span><div>' + esc(m.label) + (m.reasoning ? ' <span class="mi-hint" title="Supports reasoning effort">🧠</span>' : '') + (m.vision ? ' <span class="mi-hint" title="Understands images">🖼</span>' : '') + '</div><div class="m-price">' + esc(priceStr(m)) + '</div></div>' +
       '<div class="mv">' + esc(m.value) + (m.context ? ' · ' + Math.round(m.context / 1000) + 'k ctx' : '') + '</div>';
     row.onclick = () => chooseModel(m.value);
     row.oncontextmenu = (e) => { e.preventDefault(); toggleFavModel(m.value); renderModels($('modelSearch').value); };
@@ -1630,6 +1636,7 @@ $('pluginInstallBtn').onclick = async () => {
 // ---------------------------------------------------------------- appshot + agent-driven browser
 H.onAppshot((a) => {
   const rec = active(); if (!rec) return;
+  if (!visionOk(rec)) { addLine(rec, 'err', '⚠︎ appshot skipped — ' + shortModel(rec.meta.model) + ' can\'t see images (pick a vision model, 🖼 in the picker)'); return; }
   rec.attachments = rec.attachments || [];
   rec.attachments.push({ name: a.name, dataUrl: a.dataUrl });
   renderAttachRow();

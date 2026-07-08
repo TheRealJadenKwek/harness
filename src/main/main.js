@@ -64,6 +64,7 @@ function metaOf(rec) {
   return {
     id: rec.id, title: rec.title, cwd: rec.cwd, model: rec.model, mode: rec.mode,
     effort: rec.effort || null, goal: rec.goal || null,
+    vision: supportsVision(rec.model),
     pinned: !!rec.pinned, unread: !!rec.unread, group: rec.group || null, archived: !!rec.archived,
     worktree: rec.worktree || null,
     createdAt: rec.createdAt, updatedAt: rec.updatedAt, usage: rec.usage,
@@ -129,6 +130,7 @@ function fetchModels(apiKey) {
             pricing: m.pricing ? { prompt: Number(m.pricing.prompt) || 0, completion: Number(m.pricing.completion) || 0 } : null,
             reasoning: Array.isArray(m.supported_parameters) && m.supported_parameters.includes('reasoning'),
             tools: Array.isArray(m.supported_parameters) && m.supported_parameters.includes('tools'),
+            vision: !!(m.architecture && Array.isArray(m.architecture.input_modalities) && m.architecture.input_modalities.includes('image')),
           }));
           items.sort((a, z) => a.value.localeCompare(z.value));
           resolve(items);
@@ -145,7 +147,7 @@ async function getModels(force) {
     try {
       const c = JSON.parse(fs.readFileSync(modelsCachePath(), 'utf8'));
       // invalidate caches from before the per-model `reasoning` flag existed
-      if (c.items && c.items.length && c.items[0].reasoning !== undefined && c.items[0].tools !== undefined && Date.now() - c.fetchedAt < 24 * 3600 * 1000) {
+      if (c.items && c.items.length && c.items[0].reasoning !== undefined && c.items[0].tools !== undefined && c.items[0].vision !== undefined && Date.now() - c.fetchedAt < 24 * 3600 * 1000) {
         modelsMem = c.items;
         return modelsMem;
       }
@@ -169,6 +171,10 @@ function supportsReasoning(model) {
 function supportsTools(model) {
   const m = (modelsMem || []).find((x) => x.value === model);
   return m ? !!m.tools : true;       // unknown model → assume native tool calling
+}
+function supportsVision(model) {
+  const m = (modelsMem || []).find((x) => x.value === model);
+  return m ? !!m.vision : true;   // unknown model → don't block
 }
 function ctxLimitOf(model) {
   const m = (modelsMem || []).find((x) => x.value === model);
@@ -744,6 +750,7 @@ const COMPUTER_TOOLS = {
       const { screen } = require('electron');
       const d = screen.getPrimaryDisplay();
       const tmp = path.join(app.getPath('temp'), 'hc-screen.png');
+      if (rec && !supportsVision(rec.model)) return { error: 'this model cannot see images — switch to a vision model (🖼 in the picker) to use screenshots' };
       if (rec) { startControl(rec); control.busy = true; }
       // banner/frame out of the shot, but the AI ghost cursor STAYS visible —
       // that's how the model verifies its aim before clicking

@@ -111,9 +111,42 @@ class Session {
       }
     }
     if (dropped) {
+      this._repairToolPairing();
       this.messages.splice(1, 0, { role: 'user', content: '[Note: ' + dropped + ' earlier messages were dropped to fit this model\'s context window. Ask the user if context you need is missing.]' });
       this.emit({ type: 'control_note', message: '✂ dropped ' + dropped + ' old messages to fit the ' + Math.round(limit / 1000) + 'k context window' });
     }
+  }
+
+  // Enforce the provider invariant regardless of what trimming did: every assistant
+  // tool_calls message must be immediately followed by exactly its tool results, and
+  // every tool message must answer the assistant directly before it.
+  _repairToolPairing() {
+    const out = [];
+    for (let i = 0; i < this.messages.length; i++) {
+      const m = this.messages[i];
+      if (m.role === 'tool') {
+        const prev = out[out.length - 1];
+        const prevOk = prev && ((prev.role === 'tool') || (prev.role === 'assistant' && Array.isArray(prev.tool_calls)));
+        if (!prevOk) continue;   // orphaned tool result — drop it
+        out.push(m);
+        continue;
+      }
+      if (m.role === 'assistant' && Array.isArray(m.tool_calls) && m.tool_calls.length) {
+        const ids = new Set(m.tool_calls.map((t) => t.id));
+        const answered = new Set();
+        for (let j = i + 1; j < this.messages.length && this.messages[j].role === 'tool'; j++) {
+          if (ids.has(this.messages[j].tool_call_id)) answered.add(this.messages[j].tool_call_id);
+        }
+        if (answered.size !== ids.size) {   // unanswered calls — strip the tool_calls, keep any text
+          const copy = { role: 'assistant', content: m.content || '[made tool calls whose results were trimmed]' };
+          out.push(copy);
+          while (i + 1 < this.messages.length && this.messages[i + 1].role === 'tool') i++;   // skip its partial results
+          continue;
+        }
+      }
+      out.push(m);
+    }
+    this.messages = out;
   }
   setMode(m) { this.mode = m; this.messages[0] = this._sys(); }
   setCwd(d) { this.cwd = d; this.messages[0] = this._sys(); }
@@ -218,6 +251,7 @@ class Session {
       this._drainSteer();
       this._trim();
       this._fit();
+      this._repairToolPairing();   // idempotent; heals histories broken by older builds
       let res;
       for (let attempt = 0; ; attempt++) {
         try {
@@ -278,7 +312,10 @@ class Session {
         return;
       }
 
-      // Execute each tool call and append its result.
+      // Execute each tool call and append its result. Tool results MUST form a
+      // contiguous block after the assistant message (OpenAI hard requirement) —
+      // images returned by tools are injected only after the whole block.
+      const deferredImages = [];
       for (const tc of toolCalls) {
         let args = {};
         try { args = JSON.parse(tc.function.arguments || '{}'); } catch {}
@@ -323,13 +360,14 @@ class Session {
             content: JSON.stringify(result).slice(0, 100000),
           });
         }
-        if (image) {
-          this.messages.push({ role: 'user', content: [
-            { type: 'text', text: '[Screenshot from ' + tc.function.name + ' — coordinates in this image are screen points you can click directly.]' },
-            { type: 'image_url', image_url: { url: image } },
-          ] });
-          this.emit({ type: 'screenshot', dataUrl: image });
-        }
+        if (image) deferredImages.push({ name: tc.function.name, url: image });
+      }
+      for (const img of deferredImages) {
+        this.messages.push({ role: 'user', content: [
+          { type: 'text', text: '[Screenshot from ' + img.name + ' — coordinates in this image are screen points you can click directly.]' },
+          { type: 'image_url', image_url: { url: img.url } },
+        ] });
+        this.emit({ type: 'screenshot', dataUrl: img.url });
       }
     }
     this.emit({ type: 'error', message: 'stopped after ' + MAX_STEPS + ' steps (loop guard)' });
