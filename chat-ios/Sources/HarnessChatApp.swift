@@ -53,6 +53,23 @@ struct SignInView: View {
             .buttonStyle(.plain)
             .padding(.horizontal, 40).padding(.top, 10)
             .disabled(busy)
+            Button {
+                busy = true; error = nil
+                AppleSignIn.shared.start { ok in
+                    busy = false
+                    if ok { store.signedIn() } else { error = "Apple sign-in didn't complete — try again." }
+                }
+            } label: {
+                HStack {
+                    Image(systemName: "apple.logo")
+                    Text("Continue with Apple").fontWeight(.semibold)
+                }
+                .frame(maxWidth: .infinity).padding(.vertical, 14)
+                .background(Color(.systemGray6), in: RoundedRectangle(cornerRadius: 14))
+            }
+            .buttonStyle(.plain)
+            .padding(.horizontal, 40)
+            .disabled(busy)
             if busy { ProgressView() }
             if let e = error { Text(e).font(.caption).foregroundStyle(.red) }
             Spacer(); Spacer()

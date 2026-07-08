@@ -1,2 +1,4 @@
 HarnessChat.xcodeproj/
 *.xcuserdata*
+build/
+HarnessChat.xcodeproj/
