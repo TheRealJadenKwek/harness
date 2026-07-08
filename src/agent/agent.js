@@ -75,11 +75,21 @@ class Session {
   setCtxLimit(n) { this.ctxLimit = n || 0; }
 
   _estTokens() {
-    let n = 1600;   // system prompt + tool schemas overhead
+    let n = 2700;   // system prompt + tool schemas overhead
     for (const m of this.messages) {
-      n += (typeof m.content === 'string' ? m.content.length : JSON.stringify(m.content || '').length) / 4 + 8;
+      // 3.2 chars/token: code and JSON tokenize much denser than prose
+      n += (typeof m.content === 'string' ? m.content.length : JSON.stringify(m.content || '').length) / 3.2 + 10;
     }
     return Math.round(n);
+  }
+
+  // completion cap for small-context models: without max_tokens the provider
+  // reserves 4096 on top of the prompt and 400s even when the prompt fits
+  _maxTokens() {
+    const limit = this.ctxLimit || 0;
+    if (!limit || limit > 40000) return null;
+    const room = limit - this._estTokens() - 400;
+    return Math.max(600, Math.min(4096, room));
   }
 
   // Hard context fitting: providers reserve ~4k completion tokens on top of the
@@ -89,7 +99,7 @@ class Session {
   _fit() {
     const limit = this.ctxLimit || 0;
     if (!limit) return;
-    const budget = Math.max(2500, (limit - 4600) * 0.85);
+    const budget = Math.max(2500, limit * 0.62);   // leave completion + estimator-error headroom
     if (this._estTokens() <= budget) return;
     let dropped = 0;
     while (this._estTokens() > budget && this.messages.length > 8) {
@@ -209,17 +219,28 @@ class Session {
       this._trim();
       this._fit();
       let res;
-      try {
-        res = await streamChat({
-          apiKey: this.apiKey, baseUrl: this.baseUrl, model: this.model,
-          messages: this.messages, tools: this.textTools ? null : advertised, signal,
-          reasoning: this.effort ? { effort: this.effort } : null,
-          onText: (d) => this.emit({ type: 'text', delta: d }),
-          onReasoning: (d) => this.emit({ type: 'reasoning', delta: d }),
-        });
-      } catch (e) {
-        this.emit({ type: 'error', message: String(e.message || e) });
-        return;
+      for (let attempt = 0; ; attempt++) {
+        try {
+          res = await streamChat({
+            apiKey: this.apiKey, baseUrl: this.baseUrl, model: this.model,
+            messages: this.messages, tools: this.textTools ? null : advertised, signal,
+            reasoning: this.effort ? { effort: this.effort } : null,
+            maxTokens: this._maxTokens(),
+            onText: (d) => this.emit({ type: 'text', delta: d }),
+            onReasoning: (d) => this.emit({ type: 'reasoning', delta: d }),
+          });
+          break;
+        } catch (e) {
+          const msg = String((e && e.message) || e);
+          // estimator was optimistic — force-shrink and retry rather than strand the user
+          if (attempt < 3 && this.ctxLimit && /context.length|maximum context|too many tokens|context_length_exceeded/i.test(msg)) {
+            this.ctxLimit = Math.round(this.ctxLimit * 0.8);
+            this._fit();
+            continue;
+          }
+          this.emit({ type: 'error', message: msg });
+          return;
+        }
       }
       if (res.usage) {
         usageTotal.prompt_tokens += res.usage.prompt_tokens || 0;

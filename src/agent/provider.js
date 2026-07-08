@@ -27,6 +27,7 @@ function streamChat(opts) {
     stream: true,
     ...(tools && tools.length ? { tools, tool_choice: 'auto' } : {}),
     ...(opts.reasoning ? { reasoning: opts.reasoning } : {}),   // {effort:'low'|'medium'|'high'}
+    ...(opts.maxTokens ? { max_tokens: opts.maxTokens } : {}),
   });
 
   return new Promise((resolve, reject) => {

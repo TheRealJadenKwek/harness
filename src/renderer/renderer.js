@@ -1483,11 +1483,24 @@ async function chooseModel(v) {
 $('settingsBtn').onclick = () => {
   $('settingsSheet').style.display = 'flex';
   $('keyInput').value = '';
-  renderMcpList(); renderSkillsList(); renderPluginsList(); renderSpend(); renderRules();
+  renderMcpList(); renderSkillsList(); renderPluginsList(); renderSpend(); renderRules(); renderTrash();
   H.getConfig().then((c) => { $('sandboxToggle').checked = !!c.sandboxBash; $('suggestToggle').checked = !!c.suggestions; });
 };
 $('sandboxToggle').onchange = () => H.setConfig({ sandboxBash: $('sandboxToggle').checked });
 $('suggestToggle').onchange = () => H.setConfig({ suggestions: $('suggestToggle').checked });
+async function renderTrash() {
+  const list = await H.trashList();
+  const box = $('trashList'); box.innerHTML = '';
+  if (!list.length) { box.innerHTML = '<div class="muted">Trash is empty.</div>'; return; }
+  for (const t of list) {
+    const row = document.createElement('div'); row.className = 'sl-row';
+    row.innerHTML = '<div class="sl-main"><b>' + esc(t.title) + '</b> <span class="mi-hint">' + t.items + ' items · deleted ' + timeAgo(t.deletedAt) + ' ago</span></div>' +
+      '<button class="mini-btn" data-a="restore">Restore</button><button class="mini-btn" data-a="purge">✕</button>';
+    row.querySelector('[data-a=restore]').onclick = async () => { await H.trashRestore(t.id); await refreshSessions(); renderTrash(); };
+    row.querySelector('[data-a=purge]').onclick = async () => { if (confirm('Permanently delete "' + t.title + '"?')) { await H.trashPurge(t.id); renderTrash(); } };
+    box.appendChild(row);
+  }
+}
 async function renderRules() {
   const rules = await H.rulesList();
   const box = $('rulesList'); box.innerHTML = '';

@@ -294,6 +294,13 @@ app.whenReady().then(() => {
     try { app.dock.setIcon(path.join(__dirname, '../../assets/icon.png')); } catch {}
   }
   loadSessionsFromDisk();
+  try {   // purge trash entries older than 30 days
+    const cutoff = Date.now() - 30 * 86400e3;
+    for (const f of fs.readdirSync(path.join(app.getPath('userData'), 'trash'))) {
+      const fp = path.join(app.getPath('userData'), 'trash', f);
+      if (fs.statSync(fp).mtimeMs < cutoff) fs.unlinkSync(fp);
+    }
+  } catch {}
   getModels(false);   // warm the catalog cache in the background
   syncMcpFromConfig();
   startApiServer();   // remote API for the iOS Harness bridge (localhost, token-gated)
@@ -1493,17 +1500,61 @@ ipcMain.handle('session-create', (_e, opts = {}) => {
   return metaOf(rec);
 });
 
+// Deletion is a soft delete: the session file moves to a trash folder (restorable
+// from Settings); entries older than 30 days are purged at boot.
+const trashDir = () => path.join(app.getPath('userData'), 'trash');
 ipcMain.handle('session-delete', async (_e, id) => {
   const rec = sessions.get(id);
   if (rec) {
     if (rec.abort) rec.abort.abort();
+    saveSession(rec);   // capture the latest state before trashing
     sessions.delete(id);
-    try { fs.unlinkSync(sessionFile(id)); } catch {}
+    try {
+      fs.mkdirSync(trashDir(), { recursive: true });
+      fs.renameSync(sessionFile(id), path.join(trashDir(), id + '.json'));
+    } catch { try { fs.unlinkSync(sessionFile(id)); } catch {} }
     if (rec.worktree) {   // clean up the isolated worktree with the session
       await git(rec.worktree.repo, ['worktree', 'remove', '--force', rec.worktree.path]);
       await git(rec.worktree.repo, ['branch', '-D', rec.worktree.branch]);
     }
   }
+  return { ok: true };
+});
+ipcMain.handle('trash-list', () => {
+  let out = [];
+  try {
+    for (const f of fs.readdirSync(trashDir())) {
+      if (!f.endsWith('.json')) continue;
+      const fp = path.join(trashDir(), f);
+      try {
+        const d = JSON.parse(fs.readFileSync(fp, 'utf8'));
+        out.push({ id: d.meta.id, title: d.meta.title, deletedAt: fs.statSync(fp).mtimeMs, items: (d.transcript || []).length });
+      } catch {}
+    }
+  } catch {}
+  out.sort((a, b) => b.deletedAt - a.deletedAt);
+  return out;
+});
+ipcMain.handle('trash-restore', (_e, id) => {
+  const src = path.join(trashDir(), id + '.json');
+  try {
+    const d = JSON.parse(fs.readFileSync(src, 'utf8'));
+    fs.renameSync(src, sessionFile(id));
+    sessions.set(d.meta.id, {
+      ...d.meta,
+      usage: d.meta.usage || { prompt_tokens: 0, completion_tokens: 0, cost: 0 },
+      agent: null, savedMessages: d.messages || [], transcript: d.transcript || [],
+      checkpoints: d.checkpoints || [], abort: null, cur: null,
+    });
+    sessionsChanged();
+    return { ok: true };
+  } catch (e) { return { ok: false, error: String(e.message || e).slice(0, 120) }; }
+});
+ipcMain.handle('trash-purge', (_e, id) => {
+  try {
+    if (id) fs.unlinkSync(path.join(trashDir(), id + '.json'));
+    else for (const f of fs.readdirSync(trashDir())) fs.unlinkSync(path.join(trashDir(), f));
+  } catch {}
   return { ok: true };
 });
 
