@@ -1,6 +1,10 @@
 import SwiftUI
 
 struct SettingsView: View {
+    @AppStorage("imageModel") private var imageModel = "google/gemini-3.1-flash-image"
+    @AppStorage("videoModel") private var videoModel = ""
+    @State private var imageModels: [Backend.MediaModel] = []
+    @State private var videoModels: [Backend.MediaModel] = []
     @EnvironmentObject var store: Store
     @Environment(\.dismiss) var dismiss
     @State private var key = ""
@@ -69,6 +73,26 @@ struct SettingsView: View {
                     }
                     .disabled(key.trimmingCharacters(in: .whitespaces).isEmpty || saving)
                     if let e = keyError { Text(e).font(.caption).foregroundStyle(.red) }
+                }
+                Section("Media generation") {
+                    Picker("Image model", selection: $imageModel) {
+                        if !imageModels.isEmpty && !imageModels.contains(where: { $0.id == imageModel }) {
+                            Text(imageModel).tag(imageModel)
+                        }
+                        ForEach(imageModels) { m in Text(m.name).tag(m.id) }
+                    }
+                    Picker("Video model", selection: $videoModel) {
+                        Text("Off — never generate video").tag("")
+                        ForEach(videoModels) { m in Text(m.name).tag(m.id) }
+                    }
+                    Text("Used when you ask the chat for an image or a video. Billed to your OpenRouter key; video runs $0.20–$1 per clip.")
+                        .font(.caption).foregroundStyle(.secondary)
+                }
+                .task {
+                    if imageModels.isEmpty {
+                        imageModels = await Backend.mediaModels(kind: "image")
+                        videoModels = await Backend.mediaModels(kind: "video")
+                    }
                 }
                 Section("✨ Memory") {
                     if !loadedMem {

@@ -54,7 +54,12 @@ struct ChatView: View {
                 .onChange(of: chat.messages.count) { proxy.scrollTo("end", anchor: .bottom) }
                 .onChange(of: chat.messages.last?.content) { proxy.scrollTo("end", anchor: .bottom) }
                 .onChange(of: inputFocused) { _, f in
-                    if f { DispatchQueue.main.asyncAfter(deadline: .now() + 0.25) { withAnimation(.easeOut(duration: 0.2)) { proxy.scrollTo("end", anchor: .bottom) } } }
+                    // settle the scroll after the keyboard animates in OR out — without the
+                    // dismiss pass the content sits over-scrolled, leaving a blank band where
+                    // the keyboard was until the next touch
+                    DispatchQueue.main.asyncAfter(deadline: .now() + (f ? 0.25 : 0.3)) {
+                        withAnimation(.easeOut(duration: 0.2)) { proxy.scrollTo("end", anchor: .bottom) }
+                    }
                 }
             }
             Divider()

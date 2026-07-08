@@ -161,6 +161,19 @@ enum Backend {
         }.sorted { $0.id < $1.id }
     }
 
+    struct MediaModel: Identifiable, Hashable { let id: String; let name: String }
+    // image/video generators are EXCLUDED from the default /models list — fetch by output modality
+    static func mediaModels(kind: String) async -> [MediaModel] {
+        guard let url = URL(string: "https://openrouter.ai/api/v1/models?output_modalities=" + kind),
+              let (data, _) = try? await URLSession.shared.data(from: url),
+              let obj = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+              let arr = obj["data"] as? [[String: Any]] else { return [] }
+        return arr.compactMap { m in
+            guard let id = m["id"] as? String else { return nil }
+            return MediaModel(id: id, name: (m["name"] as? String) ?? id)
+        }.sorted { $0.name < $1.name }
+    }
+
     struct StreamEvent {
         var text: String?; var cost: Double?; var promptTokens: Int?
         var toolRun: String?; var toolDone: String?
@@ -177,6 +190,8 @@ enum Backend {
         req.setValue("application/json", forHTTPHeaderField: "Content-Type")
         var body: [String: Any] = ["model": model, "messages": messages]
         if let e = effort { body["effort"] = e }
+        if let im = UserDefaults.standard.string(forKey: "imageModel"), !im.isEmpty { body["imageModel"] = im }
+        if let vm = UserDefaults.standard.string(forKey: "videoModel"), !vm.isEmpty { body["videoModel"] = vm }
         req.httpBody = try JSONSerialization.data(withJSONObject: body)
         let (bytes, resp) = try await URLSession.shared.bytes(for: req)
         let code = (resp as? HTTPURLResponse)?.statusCode ?? 0
