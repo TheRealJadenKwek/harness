@@ -1029,6 +1029,7 @@ H.onEvent((e) => {
   if (e.type === 'text' || e.type === 'reasoning') rec.workChars = (rec.workChars || 0) + String(e.delta || '').length;
   if (e.type === 'tool_call') rec.runningTools = (rec.runningTools || 0) + 1;
   if (e.type === 'tool_result') rec.runningTools = Math.max(0, (rec.runningTools || 0) - 1);
+  if (e.type === 'done' || e.type === 'error' || e.type === 'aborted' || e.type === 'compacted') rec.runningTools = 0;   // interrupted turns leak unpaired tool_calls
   const el = logOf(rec); const stick = atBottom(el);
   if (e.type === 'turn_start') { /* keep the current assistant block across tool rounds */ }
   else if (e.type === 'reasoning') {
