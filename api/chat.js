@@ -1,17 +1,9 @@
 // Streaming proxy to OpenRouter using the signed-in user's OWN key.
 const { db, authed, userKey } = require('./_db.js');
 
-const ALLOWED = new Set([
-  'minimax/minimax-m3',
-  'deepseek/deepseek-v4-pro',
-  'deepseek/deepseek-v4-flash',
-  'nvidia/nemotron-3-ultra-550b-a55b:free',
-  'qwen/qwen3.6-27b',
-  // legacy ids so older chats keep working
-  'google/gemini-3.1-flash-lite',
-  'anthropic/claude-sonnet-5',
-]);
-const VISION = new Set(['minimax/minimax-m3', 'qwen/qwen3.6-27b', 'google/gemini-3.1-flash-lite', 'anthropic/claude-sonnet-5']);
+// BYOK: requests bill the user's own key, so any well-formed OpenRouter model
+// id is allowed (the mobile app offers the full catalog for nostalgic play).
+const MODEL_OK = /^[\w.-]+\/[\w.:-]+$/;
 
 module.exports = async (req, res) => {
   if (req.method !== 'POST') { res.status(405).json({ error: 'POST only' }); return; }
@@ -22,13 +14,13 @@ module.exports = async (req, res) => {
 
   const { model, messages, effort } = req.body || {};
   const eff = ['low', 'medium', 'high'].includes(effort) ? effort : null;
-  if (!ALLOWED.has(model)) { res.status(400).json({ error: 'unknown model' }); return; }
+  if (typeof model !== 'string' || !MODEL_OK.test(model)) { res.status(400).json({ error: 'bad model id' }); return; }
   if (!Array.isArray(messages) || !messages.length || messages.length > 400) {
     res.status(400).json({ error: 'bad messages' }); return;
   }
   const clean = messages.map((m) => {
     const role = m.role === 'assistant' ? 'assistant' : 'user';
-    if (Array.isArray(m.images) && m.images.length && VISION.has(model)) {
+    if (Array.isArray(m.images) && m.images.length) {   // client gates vision by catalog; provider errors if truly unsupported
       return { role, content: [
         { type: 'text', text: String(m.content || '').slice(0, 60000) },
         ...m.images.slice(0, 4).filter((u) => typeof u === 'string' && u.startsWith('data:image/')).map((u) => ({ type: 'image_url', image_url: { url: u.slice(0, 3000000) } })),
