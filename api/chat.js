@@ -54,7 +54,7 @@ module.exports = async (req, res) => {
       'HTTP-Referer': 'https://harness-chat-web.vercel.app',
       'X-Title': 'Harness Chat Web',
     },
-    body: JSON.stringify({ model, messages: clean, stream: true, max_tokens: 8000, ...(eff ? { reasoning: { effort: eff } } : {}) }),
+    body: JSON.stringify({ model, messages: clean, stream: true, max_tokens: 8000, usage: { include: true }, ...(eff ? { reasoning: { effort: eff } } : {}) }),
   });
 
   if (!upstream.ok) {

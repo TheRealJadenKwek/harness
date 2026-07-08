@@ -161,7 +161,7 @@
         <textarea id="input" rows="1" placeholder="Message…"></textarea>
         <button id="send">↑</button>
       </div>
-      <div class="model-row"><button class="model-chip" id="modelBtn">◆ …</button> <button class="model-chip" id="effortBtn" style="display:none">🧠</button></div>
+      <div class="model-row"><button class="model-chip" id="modelBtn">◆ …</button> <button class="model-chip" id="effortBtn" style="display:none">🧠</button> <span class="model-chip" id="statChip" style="cursor:default"></span></div>
     </div>
   </div>
 </div>
@@ -192,6 +192,7 @@
 </div>
 <div class="sheet" id="setSheet">
   <h3>⚙︎ Settings</h3>
+  <div class="opt" style="cursor:default"><span>Total API spend</span><span class="d" id="setSpend"></span></div>
   <div class="opt" id="setKey"><span>OpenRouter key</span><span class="d" id="setKeyTail"></span></div>
   <div class="opt" id="setOut"><span>Sign out</span><span class="d" id="setEmail"></span></div>
 </div>
@@ -207,6 +208,8 @@ const MODELS = [
   { id: 'qwen/qwen3.6-27b',                  name: 'Qwen 3.6 27B',      desc: 'cheap 🖼', vision: true, reasoning: true },
 ];
 const EFFORTS = [null, 'low', 'medium', 'high'];
+const CTX = { 'minimax/minimax-m3': 1048576, 'deepseek/deepseek-v4-pro': 1048576, 'deepseek/deepseek-v4-flash': 1048576,
+              'nvidia/nemotron-3-ultra-550b-a55b:free': 1000000, 'qwen/qwen3.6-27b': 262144 };
 const $ = (id) => document.getElementById(id);
 
 // ------------------------------------------------ auth (Supabase, Google)
@@ -289,6 +292,13 @@ function render() {
   const em = MODELS.find((x) => x.id === (cur ? cur.model : '')) || MODELS[0];
   $('effortBtn').style.display = em.reasoning ? '' : 'none';
   $('effortBtn').textContent = '🧠 ' + (cur && cur.effort ? cur.effort : 'auto');
+  let stat = '';
+  if (cur && cur.spend) stat += '$' + cur.spend.toFixed(cur.spend < 0.1 ? 4 : 2) + ' this chat';
+  if (cur && cur.ctxTokens) {
+    const pct = Math.round(cur.ctxTokens / (CTX[cur.model] || 128000) * 100);
+    stat += (stat ? ' · ' : '') + pct + '% context';
+  }
+  $('statChip').textContent = stat;
   if (cur) {
     cur.messages.forEach((msg, idx) => log.appendChild(bubble(msg, cur, idx)));
     if (live.has(cur.id) && (!cur.messages.length || cur.messages[cur.messages.length - 1].role === 'user')) {
@@ -427,12 +437,53 @@ async function memorize(user, assistant) {
 }
 
 // ------------------------------------------------ send (per-chat, parallel)
+async function compactChat(chat) {
+  const sum = { role: 'user', content: 'Summarize our entire conversation so far for your own future reference: topics, key facts, decisions, drafts we worked on, and where we left off. Be complete but concise. Reply with ONLY the summary.' };
+  const r = await fetch('/api/chat', {
+    method: 'POST', headers: await H(),
+    body: JSON.stringify({ model: 'deepseek/deepseek-v4-flash', messages: [...chat.messages, sum] }),
+  });
+  if (!r.ok) return false;
+  const reader = r.body.getReader(); const dec = new TextDecoder();
+  let buf = '', acc = '';
+  while (true) {
+    const { done, value } = await reader.read();
+    if (done) break;
+    buf += dec.decode(value, { stream: true });
+    let nl;
+    while ((nl = buf.indexOf('\n')) >= 0) {
+      const line = buf.slice(0, nl).trim(); buf = buf.slice(nl + 1);
+      if (!line.startsWith('data:')) continue;
+      const data = line.slice(5).trim();
+      if (data === '[DONE]') continue;
+      try {
+        const d = JSON.parse(data);
+        if (d.usage) chat.spend = (chat.spend || 0) + (d.usage.cost || 0);
+        acc += (d.choices && d.choices[0] && d.choices[0].delta && d.choices[0].delta.content) || '';
+      } catch {}
+    }
+  }
+  if (!acc.trim()) return false;
+  chat.messages = [
+    { role: 'user', content: '✦ [The conversation above was automatically compacted. Summary:]\n\n' + acc, ts: new Date().toISOString() },
+    { role: 'assistant', content: 'Got it — I have the full context from that summary and we can continue right where we left off.', ts: new Date().toISOString() },
+  ];
+  chat.ctxTokens = 0;
+  return true;
+}
 async function send() {
   const chat = cur;
   if (!chat) return newChat();
   if (live.has(chat.id)) { live.get(chat.id).aborter.abort(); return; }
   const text = $('input').value.trim();
   if (!text && !pendingImages.length) return;
+  // context is getting heavy for this model → compact first, automatically
+  if (chat.ctxTokens && chat.ctxTokens > 0.7 * (CTX[chat.model] || 128000)) {
+    const w = document.createElement('div'); w.className = 'working'; w.innerHTML = '<span class="star">✦</span> compacting the conversation…';
+    $('log').appendChild(w); $('log').scrollTop = $('log').scrollHeight;
+    await compactChat(chat).catch(() => false);
+    w.remove(); save(); render(); syncPush(chat);
+  }
   const model = MODELS.find((m) => m.id === chat.model) || MODELS[0];
   const images = model.vision ? pendingImages.slice(0, 4) : [];
   $('input').value = ''; autosize();
@@ -472,6 +523,10 @@ async function send() {
         const data = line.slice(5).trim();
         if (data === '[DONE]') continue;
         let d; try { d = JSON.parse(data); } catch { continue; }
+        if (d.usage) {
+          chat.spend = (chat.spend || 0) + (d.usage.cost || 0);
+          chat.ctxTokens = d.usage.prompt_tokens || chat.ctxTokens;
+        }
         const delta = d.choices && d.choices[0] && d.choices[0].delta;
         if (delta && delta.content) {
           acc += delta.content;
@@ -582,6 +637,9 @@ $('setBtn').onclick = async () => {
     const p = await (await fetch('/api/profile', { headers: await H() })).json();
     $('setEmail').textContent = p.email || '';
     $('setKeyTail').textContent = p.hasKey ? p.keyTail : 'not set';
+    $('setSpend').textContent = p.spend && p.spend.usage != null
+      ? '$' + Number(p.spend.usage).toFixed(2) + (p.spend.limit ? ' of $' + Number(p.spend.limit).toFixed(0) : '')
+      : '—';
   } catch {}
 };
 $('setKey').onclick = () => { closeSheets(); openSheet('keySheet'); };

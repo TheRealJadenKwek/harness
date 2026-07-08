@@ -8,7 +8,14 @@ module.exports = async (req, res) => {
     if (req.method === 'GET') {
       const rows = await db('profiles?user_id=eq.' + encodeURIComponent(user.id) + '&select=openrouter_key');
       const k = rows[0] && rows[0].openrouter_key;
-      res.json({ email: user.email, hasKey: !!k, keyTail: k ? '…' + k.slice(-4) : null });
+      let spend = null;
+      if (k) {
+        try {
+          const kr = await fetch('https://openrouter.ai/api/v1/key', { headers: { 'Authorization': 'Bearer ' + k } });
+          if (kr.ok) { const kd = (await kr.json()).data || {}; spend = { usage: kd.usage, limit: kd.limit }; }
+        } catch {}
+      }
+      res.json({ email: user.email, hasKey: !!k, keyTail: k ? '…' + k.slice(-4) : null, spend });
     } else if (req.method === 'POST') {
       const key = String((req.body || {}).key || '').trim();
       if (!key.startsWith('sk-or-')) { res.status(400).json({ error: 'that doesn\'t look like an OpenRouter key (they start with sk-or-)' }); return; }
