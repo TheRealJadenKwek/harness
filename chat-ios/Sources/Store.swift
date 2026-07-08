@@ -50,9 +50,20 @@ final class Store: ObservableObject {
 
     func signedIn() {
         authed = true
+        let wasGuest = guest
         guest = false
         UserDefaults.standard.set(false, forKey: "guestMode")
-        Task { await bootSync() }
+        Task {
+            await bootSync()
+            if wasGuest {
+                // lossless upgrade: adopt the local key into the account (if it
+                // has none yet) and upload every guest chat, not just active ones
+                if !localKey.isEmpty, profile?.hasKey != true {
+                    _ = await saveKey(localKey)
+                }
+                for c in chats.prefix(50) { syncPush(c) }
+            }
+        }
     }
     func signOut() {
         for (_, t) in tasks { t.cancel() }
