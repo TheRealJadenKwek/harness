@@ -154,6 +154,12 @@
   .arch-toggle { padding:9px 12px; font-size:12px; color:var(--muted); cursor:pointer; border-radius:10px; }
   .arch-toggle:hover { background:var(--panel2); }
   .chat-row .pin { font-size:11px; }
+  details.think { align-self:flex-start; max-width:100%; }
+  details.think summary { cursor:pointer; list-style:none; font-size:12.5px; color:var(--muted); display:flex; align-items:center; gap:6px; }
+  details.think summary::-webkit-details-marker { display:none; }
+  details.think summary .star { color:#c96442; }
+  details.think[open] summary { margin-bottom:6px; }
+  details.think .tbody { font-size:13px; color:var(--muted); white-space:pre-wrap; border-left:2px solid var(--border); padding-left:10px; max-height:300px; overflow-y:auto; }
   .toolline { display:flex; align-items:center; gap:7px; align-self:flex-start; font-size:12.5px; color:var(--muted); }
   .toolline .ok { color:var(--muted); }
   .filecard { display:flex; align-items:center; gap:12px; align-self:flex-start; background:var(--panel);
@@ -377,6 +383,24 @@ function newChat() {
   $('input').focus();
 }
 function esc(s) { return s.replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;'); }
+function splitThink(text) {
+  const open = text.indexOf('<think>');
+  if (open < 0) return { think: null, answer: text, thinking: false };
+  const rest = text.slice(open + 7);
+  const close = rest.indexOf('</think>');
+  if (close >= 0) return { think: rest.slice(0, close).trim() || null, answer: (text.slice(0, open) + rest.slice(close + 8)).trim(), thinking: false };
+  return { think: rest.trim() || null, answer: text.slice(0, open).trim(), thinking: true };
+}
+function renderAssistant(text) {
+  const p = splitThink(text);
+  let html = '';
+  if (p.think !== null || p.thinking) {
+    html += '<details class="think"' + (false ? ' open' : '') + '><summary><span class="star">✳</span>' +
+            (p.thinking ? 'thinking…' : 'thought for a bit') + '</summary><div class="tbody">' + esc(p.think || '') + '</div></details>';
+  }
+  html += md(p.answer);
+  return html;
+}
 function md(s) {
   let out = '';
   const parts = s.split(/```(\w*)\n?/);
@@ -472,14 +496,14 @@ function bubble(msg, chat, idx) {
   if (msg.role === 'user') {
     if (msg.images) for (const u of msg.images) { const im = document.createElement('img'); im.src = u; el.appendChild(im); }
     el.appendChild(document.createTextNode(msg.content));
-  } else el.innerHTML = md(msg.content);
+  } else el.innerHTML = renderAssistant(msg.content);
   wrap.appendChild(el);
   if (msg.role === 'assistant') {
     for (const n of msg.toolNotes || []) wrap.insertBefore(toolLine(n, true), el);
     for (const f of msg.files || []) wrap.appendChild(fileCard(f));
   }
   const ctl = document.createElement('div'); ctl.className = 'mctl';
-  ctl.appendChild(copyBtn(msg.content));
+  ctl.appendChild(copyBtn(msg.role === 'assistant' ? (splitThink(msg.content).answer || msg.content) : msg.content));
   if (msg.role === 'user' && chat) {
     const rw = document.createElement('button'); rw.textContent = '↩'; rw.title = 'Rewind — remove this message and everything after it';
     rw.onclick = () => doRewind(chat, idx);
@@ -796,7 +820,7 @@ async function send() {
             const botEl = log.lastElementChild && log.lastElementChild.querySelector('.msg.bot');
             if (botEl) {
               const stick = log.scrollHeight - log.scrollTop - log.clientHeight < 90;
-              botEl.innerHTML = md(acc);
+              botEl.innerHTML = renderAssistant(acc);
               if (stick) log.scrollTop = log.scrollHeight;
             }
           }
