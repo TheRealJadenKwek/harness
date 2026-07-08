@@ -209,8 +209,8 @@
     <button id="sideNew" class="new-chat"><svg width="17" height="17" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" style="flex:none"><path d="M12 20h9"/><path d="M16.5 3.5a2.1 2.1 0 0 1 3 3L7 19l-4 1 1-4Z"/></svg><span>New chat</span></button>
     <div id="chatlist"></div>
     <div class="foot">
-      <button class="foot-btn" id="memBtn">✨ Memory</button>
-      <button class="foot-btn" id="setBtn">⚙︎ Settings</button>
+      <button class="foot-btn" id="memBtn"></button>
+      <button class="foot-btn" id="setBtn"></button>
     </div>
   </div>
   <div id="main">
@@ -224,9 +224,9 @@
       <div class="quote-chip" id="quoteChip" style="display:none"><span id="quoteText"></span><button id="quoteX">✕</button></div>
       <div class="attach-row" id="attachRow" style="display:none"></div>
       <div class="box">
-        <button id="attachBtn" title="Attach a photo">＋</button>
+        <button id="attachBtn" title="Attach a photo"></button>
         <textarea id="input" rows="1" placeholder="Message…"></textarea>
-        <button id="send">↑</button>
+        <button id="send"></button>
       </div>
       <div class="model-row">
         <button class="model-pill" id="modelBtn"><span id="modelName">…</span><svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"><path d="m6 9 6 6 6-6"/></svg></button>
@@ -243,7 +243,7 @@
 
 <div id="scrim"></div>
 <div class="sheet" id="memSheet">
-  <h3>✨ What I remember</h3>
+  <h3>What I remember</h3>
   <div id="memList" style="max-height:50vh;overflow-y:auto"></div>
 </div>
 <div class="sheet" id="modelSheet">
@@ -267,7 +267,7 @@
   <div class="err" id="keyErr" style="margin-top:8px"></div>
 </div>
 <div class="sheet" id="setSheet">
-  <h3>⚙︎ Settings</h3>
+  <h3>Settings</h3>
   <div class="opt" style="cursor:default"><span>Total API spend</span><span class="d" id="setSpend"></span></div>
   <div class="opt" id="setKey"><span>OpenRouter key</span><span class="d" id="setKeyTail"></span></div>
   <div class="opt" id="setExport"><span>Export my data</span><span class="d">chats + memories → JSON</span></div>
@@ -279,7 +279,7 @@
 const SUPA = 'https://kwcjxhjcsitgalinikal.supabase.co';
 const ANON = 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6Imt3Y2p4aGpjc2l0Z2FsaW5pa2FsIiwicm9sZSI6ImFub24iLCJpYXQiOjE3ODM0OTA1ODYsImV4cCI6MjA5OTA2NjU4Nn0.EVZvDD5LzQsEcQy6XjLvHXEYVmA0JIn7FVfP8H1tRLU';
 const MODELS = [
-  { id: 'minimax/minimax-m3',                name: 'MiniMax M3',        desc: 'default 🖼', vision: true, reasoning: true, price: [0.30, 1.20] },
+  { id: 'minimax/minimax-m3',                name: 'MiniMax M3',        desc: 'default ' + '🖼', vision: true, reasoning: true, price: [0.30, 1.20] },
   { id: 'deepseek/deepseek-v4-pro',          name: 'DeepSeek V4 Pro',   desc: 'smart', vision: false, reasoning: true, price: [0.43, 0.87] },
   { id: 'deepseek/deepseek-v4-flash',        name: 'DeepSeek V4 Flash', desc: 'cheapest + fastest', vision: false, reasoning: true, price: [0.09, 0.18] },
   { id: 'nvidia/nemotron-3-ultra-550b-a55b:free', name: 'Nemotron 3 Ultra', desc: 'free!', vision: false, reasoning: true, price: [0, 0] },
@@ -325,6 +325,27 @@ const EFFORTS = [null, 'low', 'medium', 'high'];
 const CTX = { 'minimax/minimax-m3': 1048576, 'deepseek/deepseek-v4-pro': 1048576, 'deepseek/deepseek-v4-flash': 1048576,
               'nvidia/nemotron-3-ultra-550b-a55b:free': 1000000, 'qwen/qwen3.6-27b': 262144 };
 const $ = (id) => document.getElementById(id);
+const svg = (path, size = 15) => '<svg width="' + size + '" height="' + size + '" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" style="vertical-align:-2px">' + path + '</svg>';
+const ICON = {
+  brain: svg('<path d="M9.5 2A2.5 2.5 0 0 1 12 4.5v15a2.5 2.5 0 0 1-4.96.44A2.5 2.5 0 0 1 4.5 18a2.5 2.5 0 0 1-.5-4.95 2.5 2.5 0 0 1 .5-4.9A2.5 2.5 0 0 1 7 4.5 2.5 2.5 0 0 1 9.5 2Z"/><path d="M14.5 2A2.5 2.5 0 0 0 12 4.5v15a2.5 2.5 0 0 0 4.96.44A2.5 2.5 0 0 0 19.5 18a2.5 2.5 0 0 0 .5-4.95 2.5 2.5 0 0 0-.5-4.9A2.5 2.5 0 0 0 17 4.5 2.5 2.5 0 0 0 14.5 2Z"/>'),
+  sparkles: svg('<path d="M12 3l1.9 5.1L19 10l-5.1 1.9L12 17l-1.9-5.1L5 10l5.1-1.9Z"/><path d="M19 15l.9 2.1L22 18l-2.1.9L19 21l-.9-2.1L16 18l2.1-.9Z"/>'),
+  gear: svg('<circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 1 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 1 1-4 0v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 1 1-2.83-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 1 1 0-4h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 1 1 2.83-2.83l.06.06a1.65 1.65 0 0 0 1.82.33H9a1.65 1.65 0 0 0 1-1.51V3a2 2 0 1 1 4 0v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 1 1 2.83 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82V9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 1 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1Z"/>'),
+  pin: svg('<path d="M12 17v5"/><path d="M9 10.76a2 2 0 0 1-1.11 1.79l-1.78.9A2 2 0 0 0 5 15.24V16h14v-.76a2 2 0 0 0-1.11-1.79l-1.78-.9A2 2 0 0 1 15 10.76V6h1a2 2 0 1 0 0-4H8a2 2 0 1 0 0 4h1Z"/>', 12),
+  copy: svg('<rect x="9" y="9" width="12" height="12" rx="2"/><path d="M5 15V5a2 2 0 0 1 2-2h10"/>', 14),
+  check: svg('<path d="M20 6 9 17l-5-5"/>', 14),
+  rewind: svg('<path d="M9 14 4 9l5-5"/><path d="M4 9h10.5a5.5 5.5 0 0 1 0 11H11"/>', 14),
+  fork: svg('<circle cx="6" cy="6" r="2.6"/><circle cx="18" cy="6" r="2.6"/><circle cx="12" cy="18" r="2.6"/><path d="M6 8.6v.9a3 3 0 0 0 3 3h6a3 3 0 0 0 3-3v-.9"/><path d="M12 12.5v2.9"/>', 14),
+  plus: svg('<path d="M12 5v14M5 12h14"/>', 20),
+  send: svg('<path d="M12 19V5"/><path d="m5 12 7-7 7 7"/>', 18),
+  stop: '<svg width="15" height="15" viewBox="0 0 24 24" fill="currentColor" style="vertical-align:-2px"><rect x="6" y="6" width="12" height="12" rx="2.5"/></svg>',
+  image: svg('<rect x="3" y="3" width="18" height="18" rx="3"/><circle cx="9" cy="9" r="1.8"/><path d="m21 15-4.5-4.5L6 21"/>', 13),
+  doc: svg('<path d="M14 2H7a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h10a2 2 0 0 0 2-2V7Z"/><path d="M14 2v5h5"/><path d="M9 13h6M9 17h6"/>', 22),
+  table: svg('<rect x="3" y="4" width="18" height="16" rx="2"/><path d="M3 10h18M9 4v16M15 4v16"/>', 22),
+  pres: svg('<rect x="3" y="3" width="18" height="13" rx="2"/><path d="M12 16v4M8 21h8"/>', 22),
+  globe: svg('<circle cx="12" cy="12" r="9"/><path d="M3 12h18M12 3a15 15 0 0 1 0 18M12 3a15 15 0 0 0 0 18"/>', 22),
+  box: svg('<path d="m21 8-9-5-9 5v8l9 5 9-5Z"/><path d="m3.3 8.6 8.7 4.8 8.7-4.8"/><path d="M12 13.4V22"/>', 22),
+  text: svg('<path d="M14 2H7a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h10a2 2 0 0 0 2-2V7Z"/><path d="M14 2v5h5"/>', 22),
+};
 
 // ------------------------------------------------ auth (Supabase, Google)
 function sess() { try { return JSON.parse(localStorage.sess || 'null'); } catch { return null; } }
@@ -427,7 +448,7 @@ function render() {
   $('modelName').textContent = m.name;
   $('attachBtn').style.display = m.vision ? '' : 'none';
   $('effortBtn').style.display = m.reasoning ? '' : 'none';
-  $('effortBtn').textContent = '🧠 ' + (cur && cur.effort ? cur.effort : 'auto');
+  $('effortBtn').innerHTML = ICON.brain + ' ' + (cur && cur.effort ? cur.effort : 'auto');
   let stat = '';
   if (cur && cur.spend) stat += '$' + cur.spend.toFixed(cur.spend < 0.1 ? 4 : 2) + ' this chat';
   if (cur && cur.ctxTokens) {
@@ -457,18 +478,18 @@ function timeago(ts) {
   return Math.floor(d / 86400e3) + 'd ago';
 }
 function copyBtn(text) {
-  const b = document.createElement('button'); b.textContent = '⧉'; b.title = 'Copy';
+  const b = document.createElement('button'); b.innerHTML = ICON.copy; b.title = 'Copy';
   b.onclick = (e) => {
     e.stopPropagation();
-    navigator.clipboard.writeText(text).then(() => { b.textContent = '✓'; setTimeout(() => (b.textContent = '⧉'), 900); }).catch(() => {});
+    navigator.clipboard.writeText(text).then(() => { b.innerHTML = ICON.check; setTimeout(() => (b.innerHTML = ICON.copy), 900); }).catch(() => {});
   };
   return b;
 }
-const FILE_ICON = { pdf: '📄', xlsx: '📊', pptx: '📽', text: '📝', html: '🌐', zip: '🗜' };
+const FILE_ICON = { pdf: ICON.doc, xlsx: ICON.table, pptx: ICON.pres, text: ICON.text, html: ICON.globe, zip: ICON.box };
 function fileCard(spec) {
   const card = document.createElement('div'); card.className = 'filecard';
   const hint = spec.kind === 'html' ? 'tap to preview · ⤓ downloads' : 'tap to download';
-  card.innerHTML = '<span class="fic">' + (FILE_ICON[spec.kind] || '📎') + '</span>'
+  card.innerHTML = '<span class="fic" style="color:#c96442">' + (FILE_ICON[spec.kind] || ICON.text) + '</span>'
     + '<span style="min-width:0"><div class="fn">' + esc(spec.filename) + '</div><div class="fk">' + spec.kind.toUpperCase() + ' · ' + hint + '</div></span>'
     + '<span class="dl" title="Download">⤓</span>';
   if (spec.kind === 'html') {
@@ -505,10 +526,10 @@ function bubble(msg, chat, idx) {
   const ctl = document.createElement('div'); ctl.className = 'mctl';
   ctl.appendChild(copyBtn(msg.role === 'assistant' ? (splitThink(msg.content).answer || msg.content) : msg.content));
   if (msg.role === 'user' && chat) {
-    const rw = document.createElement('button'); rw.textContent = '↩'; rw.title = 'Rewind — remove this message and everything after it';
+    const rw = document.createElement('button'); rw.innerHTML = ICON.rewind; rw.title = 'Rewind — remove this message and everything after it';
     rw.onclick = () => doRewind(chat, idx);
     ctl.appendChild(rw);
-    const fk = document.createElement('button'); fk.textContent = '⑂'; fk.title = 'Fork a new chat from this point';
+    const fk = document.createElement('button'); fk.innerHTML = ICON.fork; fk.title = 'Fork a new chat from this point';
     fk.onclick = () => doFork(chat, idx);
     ctl.appendChild(fk);
   }
@@ -540,7 +561,7 @@ let showArchived = false;
 function chatRow(c) {
   const row = document.createElement('div');
   row.className = 'chat-row' + (cur && c.id === cur.id ? ' active' : '');
-  if (c.pinned) { const p = document.createElement('span'); p.className = 'pin'; p.textContent = '📌'; row.appendChild(p); }
+  if (c.pinned) { const p = document.createElement('span'); p.className = 'pin'; p.innerHTML = ICON.pin; row.appendChild(p); }
   if (live.has(c.id)) { const s = document.createElement('span'); s.className = 'live'; s.textContent = '✳'; row.appendChild(s); }
   const t = document.createElement('span'); t.className = 't'; t.textContent = c.title; row.appendChild(t);
   const x = document.createElement('button'); x.className = 'x'; x.textContent = '✕';
@@ -838,8 +859,13 @@ async function send() {
   const lastUser = [...chat.messages].reverse().find((m) => m.role === 'user');
   if (acc && lastUser) memorize(lastUser.content, acc);
 }
-function updateSendBtn() { $('send').textContent = cur && live.has(cur.id) ? '■' : '↑'; }
+function updateSendBtn() { $('send').innerHTML = cur && live.has(cur.id) ? ICON.stop : ICON.send; }
 
+$('memBtn').innerHTML = ICON.sparkles + ' Memory';
+$('setBtn').innerHTML = ICON.gear + ' Settings';
+document.querySelector('#memSheet h3').innerHTML = ICON.sparkles + ' What I remember';
+document.querySelector('#setSheet h3').innerHTML = ICON.gear + ' Settings';
+$('attachBtn').innerHTML = ICON.plus;
 // ------------------------------------------------ ui plumbing
 function openSheet(id) { $(id).classList.add('open'); $('scrim').classList.add('open'); }
 function closeSheets() { document.querySelectorAll('.sheet').forEach((s) => s.classList.remove('open')); $('scrim').classList.remove('open'); $('side').classList.remove('open'); }
@@ -908,7 +934,7 @@ $('modelBtn').onclick = () => {
   if (cur && cur.model && !curated.has(cur.model)) rows.unshift(findModel(cur.model));   // custom pick stays visible
   for (const m of rows) {
     const o = document.createElement('div'); o.className = 'opt';
-    o.innerHTML = '<span>' + m.name + (cur && cur.model === m.id ? ' ✓' : '') + '</span><span class="d">' + (m.desc ? m.desc + ' · ' : '') + priceStr(m) + '</span>';
+    o.innerHTML = '<span>' + m.name + (cur && cur.model === m.id ? ' ✓' : '') + '</span><span class="d">' + (m.desc ? m.desc.replace('🖼', ICON.image) + ' · ' : '') + priceStr(m) + '</span>';
     o.onclick = () => pickModel(m.id);
     box.appendChild(o);
   }
@@ -927,7 +953,7 @@ $('modelSearch').addEventListener('input', () => {
   for (const c of hits) {
     const o = document.createElement('div'); o.className = 'opt';
     const price = c.promptPrice === 0 && c.completionPrice === 0 ? 'free' : '$' + (c.promptPrice * 1e6).toFixed(2) + '/$' + (c.completionPrice * 1e6).toFixed(2) + ' per M';
-    o.innerHTML = '<span style="overflow:hidden;text-overflow:ellipsis;white-space:nowrap">' + c.name + (c.vision ? ' 🖼' : '') + (cur && cur.model === c.id ? ' ✓' : '') + '</span><span class="d">' + Math.round((c.context || 0) / 1000) + 'k · ' + price + '</span>';
+    o.innerHTML = '<span style="overflow:hidden;text-overflow:ellipsis;white-space:nowrap">' + c.name + (c.vision ? ' ' + ICON.image : '') + (cur && cur.model === c.id ? ' ✓' : '') + '</span><span class="d">' + Math.round((c.context || 0) / 1000) + 'k · ' + price + '</span>';
     o.title = c.id;
     o.onclick = () => pickModel(c.id);
     box.appendChild(o);
