@@ -1,10 +1,11 @@
 // Automatic memory: after each exchange, a cheap model extracts durable facts
 // about the user; they persist across chats and get injected into every reply.
-const { db, authed } = require('./_db.js');
+const { db, authed, userKey } = require('./_db.js');
 
 module.exports = async (req, res) => {
-  const code = authed(req, res);
-  if (!code) return;
+  const user = await authed(req, res);
+  if (!user) return;
+  const code = user.id;
   try {
     if (req.method === 'GET') {
       const rows = await db('memories?code=eq.' + encodeURIComponent(code) + '&order=created.desc&limit=100&select=id,fact,created');
@@ -17,10 +18,12 @@ module.exports = async (req, res) => {
     } else if (req.method === 'POST') {
       const { user, assistant } = req.body || {};
       if (!user) { res.status(400).json({ error: 'no exchange' }); return; }
+      const key = await userKey(code);
+      if (!key) { res.json({ added: [] }); return; }
       const existing = await db('memories?code=eq.' + encodeURIComponent(code) + '&order=created.desc&limit=60&select=fact');
       const r = await fetch('https://openrouter.ai/api/v1/chat/completions', {
         method: 'POST',
-        headers: { 'Authorization': 'Bearer ' + process.env.OPENROUTER_API_KEY, 'Content-Type': 'application/json' },
+        headers: { 'Authorization': 'Bearer ' + key, 'Content-Type': 'application/json' },
         body: JSON.stringify({
           model: 'deepseek/deepseek-v4-flash',
           max_tokens: 300,

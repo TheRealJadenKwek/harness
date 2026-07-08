@@ -2,8 +2,9 @@
 const { db, authed } = require('./_db.js');
 
 module.exports = async (req, res) => {
-  const code = authed(req, res);
-  if (!code) return;
+  const user = await authed(req, res);
+  if (!user) return;
+  const code = user.id;
   try {
     if (req.method === 'GET') {
       const rows = await db('chats?code=eq.' + encodeURIComponent(code) + '&order=updated.desc&limit=100&select=id,title,model,messages,updated');
