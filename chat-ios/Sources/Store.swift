@@ -259,7 +259,11 @@ final class Store: ObservableObject {
                     guard !localKey.isEmpty else {
                         throw NSError(domain: "key", code: 402, userInfo: [NSLocalizedDescriptionKey: "add your OpenRouter key in Settings (or use an on-device model — free)"])
                     }
-                    stream = try await Backend.directStream(model: model, messages: msgs, effort: effort, key: localKey)
+                    if models.first(where: { $0.id == model })?.tools == true {
+                        stream = GuestAgent.stream(model: model, messages: msgs, effort: effort, key: localKey)
+                    } else {
+                        stream = try await Backend.directStream(model: model, messages: msgs, effort: effort, key: localKey)
+                    }
                 }
                 for try await ev in stream {
                     if Task.isCancelled { break }
@@ -270,7 +274,8 @@ final class Store: ObservableObject {
                         if !appended { appendDelta(chatID: chatID, acc: "", appended: &appended) }
                         if let i = idx(chatID), let last = chats[i].messages.indices.last {
                             var notes = chats[i].messages[last].toolNotes ?? []
-                            notes.append("searched the web")
+                            let note = ev.toolDone.flatMap { $0.isEmpty ? nil : $0 } ?? "searched the web"
+                            if !notes.contains(note) { notes.append(note) }
                             chats[i].messages[last].toolNotes = notes
                         }
                     }
@@ -295,7 +300,7 @@ final class Store: ObservableObject {
                             xs.append(x)
                             chats[i].messages[last].execs = xs
                         }
-                        pendingExec = x
+                        if x.output == nil { pendingExec = x }   // guest loop runs code inline; only server execs need the post-turn run
                     }
                     if let t = ev.text { acc += t; appendDelta(chatID: chatID, acc: acc, appended: &appended) }
                     if let i = idx(chatID) {

@@ -48,6 +48,7 @@ struct ORModel: Codable, Identifiable, Hashable {
     let completionPrice: Double
     let vision: Bool
     var reasoning: Bool? = nil
+    var tools: Bool? = nil
 }
 
 struct Profile: Codable {

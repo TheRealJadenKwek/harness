@@ -157,7 +157,8 @@ enum Backend {
                     promptPrice: Double($0.pricing?.prompt ?? "0") ?? 0,
                     completionPrice: Double($0.pricing?.completion ?? "0") ?? 0,
                     vision: $0.architecture?.input_modalities?.contains("image") ?? false,
-                    reasoning: $0.supported_parameters?.contains("reasoning") ?? false)
+                    reasoning: $0.supported_parameters?.contains("reasoning") ?? false,
+                    tools: $0.supported_parameters?.contains("tools") ?? false)
         }.sorted { $0.id < $1.id }
     }
 
