@@ -51,10 +51,12 @@ function createWindow() {
   // make the app's header the drag region + room for traffic lights
   win.webContents.on('did-finish-load', () => {
     win.webContents.insertCSS(`
-      header { -webkit-app-region: drag; padding-left: 76px !important; }
+      header { -webkit-app-region: drag; }
       header button, header .icon-btn { -webkit-app-region: no-drag; }
-      #side .head { -webkit-app-region: drag; }
+      /* clear the traffic lights: they sit over the sidebar's top-left corner */
+      #side .head { -webkit-app-region: drag; padding-top: 44px !important; }
       #side .head button { -webkit-app-region: no-drag; }
+      @media (max-width: 899px) { header { padding-left: 76px !important; } }
     `);
   });
 
