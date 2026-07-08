@@ -15,6 +15,8 @@ module.exports = async (req, res) => {
       promptPrice: Number((m.pricing || {}).prompt) || 0,
       completionPrice: Number((m.pricing || {}).completion) || 0,
       vision: !!(m.architecture && (m.architecture.input_modalities || []).includes('image')),
+      imageOut: !!(m.architecture && (m.architecture.output_modalities || []).includes('image')),
+      videoOut: !!(m.architecture && (m.architecture.output_modalities || []).includes('video')),
       reasoning: (m.supported_parameters || []).includes('reasoning'),
     })) });
   } catch (e) { res.status(500).json({ error: String(e.message || e) }); }

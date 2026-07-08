@@ -119,7 +119,9 @@ module.exports = async (req, res) => {
   const key = await userKey(user.id);
   if (!key) { res.status(402).json({ error: 'no_key' }); return; }
 
-  const { model, messages, effort } = req.body || {};
+  const { model, messages, effort, imageModel, videoModel } = req.body || {};
+  const imgModel = (typeof imageModel === 'string' && MODEL_OK.test(imageModel)) ? imageModel : 'google/gemini-3.1-flash-image';
+  const vidModel = (typeof videoModel === 'string' && MODEL_OK.test(videoModel)) ? videoModel : null;
   const eff = ['low', 'medium', 'high'].includes(effort) ? effort : null;
   if (typeof model !== 'string' || !MODEL_OK.test(model)) { res.status(400).json({ error: 'bad model id' }); return; }
   if (!Array.isArray(messages) || !messages.length || messages.length > 400) {
@@ -137,6 +139,14 @@ module.exports = async (req, res) => {
   });
 
   const toolsOK = await supportsTools(model, key);
+  const tools = toolsOK ? TOOLS.concat(vidModel ? [{
+    type: 'function',
+    function: {
+      name: 'generate_video',
+      description: 'Generate a short video from a text prompt using the user\'s chosen video model (billed to their key). The result is shown to the user as a playable card.',
+      parameters: { type: 'object', properties: { prompt: { type: 'string' } }, required: ['prompt'] },
+    },
+  }] : []) : null;
   let memoryBlock = '';
   try {
     const mems = await db('memories?code=eq.' + encodeURIComponent(user.id) + '&order=created.desc&limit=60&select=fact');
@@ -165,7 +175,7 @@ module.exports = async (req, res) => {
         },
         body: JSON.stringify({
           model, messages: convo, stream: true, max_tokens: 8000, usage: { include: true },
-          ...(toolsOK ? { tools: TOOLS } : {}),
+          ...(tools ? { tools } : {}),
           ...(eff ? { reasoning: { effort: eff } } : {}),
         }),
       });
@@ -230,7 +240,7 @@ module.exports = async (req, res) => {
             const ir = await fetch('https://openrouter.ai/api/v1/chat/completions', {
               method: 'POST',
               headers: { 'Authorization': 'Bearer ' + key, 'Content-Type': 'application/json' },
-              body: JSON.stringify({ model: 'google/gemini-3.1-flash-image', modalities: ['image', 'text'],
+              body: JSON.stringify({ model: imgModel, modalities: ['image', 'text'],
                                      messages: [{ role: 'user', content: String(args.prompt || '').slice(0, 2000) }] }),
             });
             const ij = await ir.json();
@@ -243,6 +253,30 @@ module.exports = async (req, res) => {
             } else {
               send({ harness: { tool: 'generate_image', status: 'done', detail: 'no image returned' } });
               result = { error: (ij.error && ij.error.message) || 'model returned no image' };
+            }
+          } catch (e) { result = { error: String(e.message || e).slice(0, 200) }; }
+        } else if (tc.function.name === 'generate_video' && vidModel) {
+          send({ harness: { tool: 'generate_video', status: 'run', detail: String(args.prompt || '').slice(0, 80) } });
+          try {
+            const vr = await fetch('https://openrouter.ai/api/v1/chat/completions', {
+              method: 'POST',
+              headers: { 'Authorization': 'Bearer ' + key, 'Content-Type': 'application/json' },
+              body: JSON.stringify({ model: vidModel, modalities: ['video', 'text'],
+                                     messages: [{ role: 'user', content: String(args.prompt || '').slice(0, 2000) }] }),
+            });
+            const vj = await vr.json();
+            const msg = (((vj.choices || [])[0] || {}).message || {});
+            const vids = msg.videos || [];
+            const url = (vids[0] && (vids[0].video_url && vids[0].video_url.url || vids[0].url))
+              || ((msg.images || [])[0] && msg.images[0].image_url && msg.images[0].image_url.url)
+              || (typeof msg.content === 'string' && (msg.content.match(/https?:\S+\.(mp4|webm|mov)\S*/) || [])[0]);
+            if (url) {
+              send({ harness: { file: { kind: 'video', filename: 'video.mp4', dataUrl: String(url).slice(0, 20000000) } } });
+              send({ harness: { tool: 'generate_video', status: 'done', detail: 'video delivered' } });
+              result = { ok: true, note: 'video generated and shown to the user' };
+            } else {
+              send({ harness: { tool: 'generate_video', status: 'done', detail: 'no video returned' } });
+              result = { error: (vj.error && vj.error.message) || 'model returned no video' };
             }
           } catch (e) { result = { error: String(e.message || e).slice(0, 200) }; }
         } else if (tc.function.name === 'run_code') {

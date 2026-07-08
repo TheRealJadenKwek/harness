@@ -274,6 +274,8 @@
   <h3>Settings</h3>
   <div class="opt" style="cursor:default"><span>Total API spend</span><span class="d" id="setSpend"></span></div>
   <div class="opt" id="setKey"><span>OpenRouter key</span><span class="d" id="setKeyTail"></span></div>
+  <div class="opt" style="cursor:default"><span>Image model</span><select id="setImgModel" style="max-width:210px;font:inherit;font-size:12px;background:var(--bg);color:var(--text);border:1px solid var(--border);border-radius:8px;padding:4px 6px"></select></div>
+  <div class="opt" style="cursor:default"><span>Video model</span><select id="setVidModel" style="max-width:210px;font:inherit;font-size:12px;background:var(--bg);color:var(--text);border:1px solid var(--border);border-radius:8px;padding:4px 6px"></select></div>
   <div class="opt" id="setExport"><span>Export my data</span><span class="d">chats + memories → JSON</span></div>
   <div class="opt" id="setApps"><span>Get the apps</span><span class="d">Mac · Windows · iPhone</span></div>
   <div class="opt" id="setOut"><span>Sign out</span><span class="d" id="setEmail"></span></div>
@@ -300,6 +302,8 @@ async function loadCatalog() {
         promptPrice: Number((m.pricing || {}).prompt) || 0,
         completionPrice: Number((m.pricing || {}).completion) || 0,
         vision: !!(m.architecture && (m.architecture.input_modalities || []).includes('image')),
+        imageOut: !!(m.architecture && (m.architecture.output_modalities || []).includes('image')),
+        videoOut: !!(m.architecture && (m.architecture.output_modalities || []).includes('video')),
         reasoning: (m.supported_parameters || []).includes('reasoning'),
       }));
     } catch {}
@@ -492,6 +496,17 @@ function copyBtn(text) {
 }
 const FILE_ICON = { pdf: ICON.doc, xlsx: ICON.table, pptx: ICON.pres, text: ICON.text, html: ICON.globe, zip: ICON.box };
 function fileCard(spec) {
+  if (spec.kind === 'video' && spec.dataUrl) {
+    const wrap = document.createElement('div');
+    wrap.className = 'msg bot';
+    wrap.innerHTML = '<video controls src="' + esc(spec.dataUrl) + '" style="max-width:min(460px,100%);border-radius:14px;display:block"></video>' +
+      '<div style="font-size:12px;color:var(--muted);margin-top:5px;cursor:pointer">' + ICON.doc + ' download</div>';
+    wrap.querySelector('div').onclick = async () => {
+      try { const blob = await (await fetch(spec.dataUrl)).blob(); saveBlob(blob, spec.filename || 'video.mp4'); }
+      catch { window.open(spec.dataUrl, '_blank'); }
+    };
+    return wrap;
+  }
   if (spec.kind === 'image' && spec.dataUrl) {
     const wrap = document.createElement('div');
     wrap.className = 'msg bot';
@@ -812,7 +827,7 @@ async function send() {
     } else {
       r = await fetch('/api/chat', {
         method: 'POST', signal: aborter.signal, headers: await H(),
-        body: JSON.stringify({ model: chat.model, messages: chat.messages, effort: chat.effort || null }),
+        body: JSON.stringify({ model: chat.model, messages: chat.messages, effort: chat.effort || null, imageModel: localStorage.imageModel || null, videoModel: localStorage.videoModel || null }),
       });
       if (r.status === 401) { signOut(); return; }
       if (r.status === 402) { openSheet('keySheet'); throw new Error('add your OpenRouter key first (⚙︎ Settings)'); }
@@ -1047,6 +1062,7 @@ $('memBtn').onclick = async () => {
 };
 $('setBtn').onclick = async () => {
   closeSheets(); openSheet('setSheet');
+  fillMediaModelSelects();
   if (isGuest()) {
     $('setEmail').textContent = 'guest — sign in to sync';
     $('setKeyTail').textContent = localStorage.guestKey ? '…' + localStorage.guestKey.slice(-4) + ' (this device)' : 'not set';
@@ -1064,6 +1080,28 @@ $('setBtn').onclick = async () => {
       : '—';
   } catch {}
 };
+async function fillMediaModelSelects() {
+  await loadCatalog();
+  const fill = (sel, flag, storeKey, def) => {
+    const el = $(sel); el.innerHTML = '';
+    const opts = catalog.filter((c) => c[flag]);
+    if (!opts.length) {
+      const o = document.createElement('option'); o.textContent = 'none available on OpenRouter yet'; o.value = '';
+      el.appendChild(o); el.disabled = true; return;
+    }
+    el.disabled = false;
+    for (const c of opts) {
+      const o = document.createElement('option'); o.value = c.id;
+      o.textContent = c.name + ' ($' + (c.completionPrice * 1e6).toFixed(2) + '/M)';
+      el.appendChild(o);
+    }
+    el.value = localStorage[storeKey] && opts.some((c) => c.id === localStorage[storeKey]) ? localStorage[storeKey] : (opts.some((c) => c.id === def) ? def : opts[0].id);
+    localStorage[storeKey] = el.value;
+    el.onchange = () => { localStorage[storeKey] = el.value; };
+  };
+  fill('setImgModel', 'imageOut', 'imageModel', 'google/gemini-3.1-flash-image');
+  fill('setVidModel', 'videoOut', 'videoModel', '');
+}
 $('setKey').onclick = () => { closeSheets(); openSheet('keySheet'); };
 $('setApps').onclick = () => window.open('https://github.com/TheRealJadenKwek/harness/releases/latest', '_blank');
 $('setExport').onclick = async () => {
