@@ -362,7 +362,9 @@ function clearEmpty(rec) {
 }
 function addLine(rec, cls, text) {
   clearEmpty(rec);
-  const el = document.createElement('div'); el.className = cls; el.textContent = text;
+  const el = document.createElement('div'); el.className = cls;
+  el.textContent = String(text || '').replace(/[\u{1F000}-\u{1FAFF}]\uFE0F?\s*/gu, '');   // old saved notes carry emoji prefixes
+
   logOf(rec).appendChild(el); scrollLog(rec); return el;
 }
 

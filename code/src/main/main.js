@@ -280,7 +280,7 @@ function foldEvent(rec, e) {
   }
   else if (e.type === 'diff') { rec.transcript.push({ t: 'diff', file: e.file, before: e.before, after: e.after }); }
   else if (e.type === 'auto_approved') { rec.transcript.push({ t: 'note', text: '⚡ auto-approved ' + e.kind + ': ' + String(e.detail || '').slice(0, 80) }); }
-  else if (e.type === 'screenshot') { rec.transcript.push({ t: 'note', text: '📸 screenshot taken (not persisted)' }); }
+  else if (e.type === 'screenshot') { rec.transcript.push({ t: 'note', text: 'screenshot taken (not persisted)' }); }
   else if (e.type === 'plan') {
     // keep only the latest plan in the persisted transcript
     rec.transcript = rec.transcript.filter((i) => i.t !== 'plan');
@@ -839,8 +839,8 @@ function abortControl(why) {
   const rec = control && control.rec;
   endControl();
   if (rec) {
-    rec.transcript.push({ t: 'note', text: '🖱 control returned — ' + why });
-    sendToUI('agent-event', { sessionId: rec.id, type: 'control_note', message: '🖱 control returned — ' + why });
+    rec.transcript.push({ t: 'note', text: 'control returned — ' + why });
+    sendToUI('agent-event', { sessionId: rec.id, type: 'control_note', message: 'control returned — ' + why });
     if (rec.abort) rec.abort.abort();
   }
 }
@@ -864,7 +864,7 @@ const COMPUTER_TOOLS = {
       const { screen } = require('electron');
       const d = screen.getPrimaryDisplay();
       const tmp = path.join(app.getPath('temp'), 'hc-screen.png');
-      if (rec && !supportsVision(rec.model)) return { error: 'this model cannot see images — switch to a vision model (🖼 in the picker) to use screenshots' };
+      if (rec && !supportsVision(rec.model)) return { error: 'this model cannot see images — switch to a vision model (image icon in the picker) to use screenshots' };
       if (rec) { startControl(rec); control.busy = true; }
       // banner/frame out of the shot, but the AI ghost cursor STAYS visible —
       // that's how the model verifies its aim before clicking
@@ -1911,8 +1911,8 @@ ipcMain.handle('session-config', (_e, { id, patch }) => {
       // moving up in context: refill the model's memory from the full transcript
       if (ctxLimitOf(rec.model) > oldLimit * 1.5 && rec.agent.messages.length < rec.transcript.length / 3) {
         if (rec.agent.rehydrate(rec.transcript)) {
-          rec.transcript.push({ t: 'note', text: '🧠 restored conversation memory from the transcript for the larger context window' });
-          sendToUI('agent-event', { sessionId: rec.id, type: 'control_note', message: '🧠 restored conversation memory from the transcript' });
+          rec.transcript.push({ t: 'note', text: 'restored conversation memory from the transcript for the larger context window' });
+          sendToUI('agent-event', { sessionId: rec.id, type: 'control_note', message: 'restored conversation memory from the transcript' });
         }
       }
     }
@@ -1936,15 +1936,15 @@ function maybeGoalContinue(rec, wasAborted, errored) {
   for (let i = rec.transcript.length - 1; i >= 0; i--) if (rec.transcript[i].t === 'assistant') { last = rec.transcript[i]; break; }
   if (/GOAL[\s_-]?COMPLETE/i.test((last && last.text) || '')) {
     if (rec.goalAuto) {
-      rec.transcript.push({ t: 'note', text: '🎯 goal reported complete after ' + rec.goalAuto + ' auto-continue' + (rec.goalAuto > 1 ? 's' : '') });
-      sendToUI('agent-event', { sessionId: rec.id, type: 'control_note', message: '🎯 goal reported complete' });
+      rec.transcript.push({ t: 'note', text: 'goal reported complete after ' + rec.goalAuto + ' auto-continue' + (rec.goalAuto > 1 ? 's' : '') });
+      sendToUI('agent-event', { sessionId: rec.id, type: 'control_note', message: 'goal reported complete' });
     }
     rec.goalAuto = 0; return;
   }
   rec.goalAuto = rec.goalAuto || 0;
   if (rec.goalAuto >= GOAL_MAX_AUTO) {
-    rec.transcript.push({ t: 'note', text: '🎯 goal driver paused after ' + GOAL_MAX_AUTO + ' auto-continues — send any message to resume' });
-    sendToUI('agent-event', { sessionId: rec.id, type: 'control_note', message: '🎯 goal driver paused after ' + GOAL_MAX_AUTO + ' auto-continues' });
+    rec.transcript.push({ t: 'note', text: 'goal driver paused after ' + GOAL_MAX_AUTO + ' auto-continues — send any message to resume' });
+    sendToUI('agent-event', { sessionId: rec.id, type: 'control_note', message: 'goal driver paused after ' + GOAL_MAX_AUTO + ' auto-continues' });
     rec.goalAuto = 0; saveSession(rec); return;
   }
   rec.goalAuto++;
@@ -2177,7 +2177,7 @@ function beginTurn(rec, { text, images, modelText, remote, goalAuto }) {
   const convo = rec.transcript.filter((i) => i.t === 'user' || i.t === 'assistant').length;
   if (convo > 16 && agent.messages.length < Math.min(30, convo / 4) && ctxLimitOf(rec.model) > 60000) {
     if (agent.rehydrate(rec.transcript)) {
-      sendToUI('agent-event', { sessionId: rec.id, type: 'control_note', message: '🧠 restored conversation memory from the transcript' });
+      sendToUI('agent-event', { sessionId: rec.id, type: 'control_note', message: 'restored conversation memory from the transcript' });
     }
   }
   rec.abort = new AbortController();
@@ -2198,8 +2198,8 @@ function beginTurn(rec, { text, images, modelText, remote, goalAuto }) {
       let toSend = payload;
       if (typeof payload === 'object' && payload.images && payload.images.length && !supportsVision(rec.model)) {
         if (cfg.apiKey) {
-          rec.transcript.push({ t: 'note', text: '🖼 ' + rec.model + ' can\'t see images — describing them via a vision model' });
-          sendToUI('agent-event', { sessionId: rec.id, type: 'control_note', message: '🖼 describing image(s) for this text-only model…' });
+          rec.transcript.push({ t: 'note', text: rec.model + ' can\'t see images — describing them via a vision model' });
+          sendToUI('agent-event', { sessionId: rec.id, type: 'control_note', message: 'describing image(s) for this text-only model…' });
           const desc = await describeImagesBridge(payload.images, cfg);
           toSend = { text: (payload.text || '') + '\n\n' + desc };
         } else {
