@@ -2762,6 +2762,28 @@ class Handler(BaseHTTPRequestHandler):
         if body is None:
             self.close_connection = True
             return self._json(413, {'error': 'request body too large'})
+        if path == '/automation/approval':
+            # Harness Code background automations: a destructive action wants a human.
+            # Push Allow/Deny to the phone (same category the engines use) and block
+            # until the decision or timeout. thread_id 'automation' is a pseudo-id the
+            # decide route resolves without a real thread.
+            with _approvals_lock:
+                if len(APPROVALS) >= MAX_PENDING_APPROVALS:
+                    return self._json(429, {'decision': 'deny'})
+            rec = {'id': uuid.uuid4().hex[:12], 'thread_id': 'automation',
+                   'tool_name': str(body.get('tool_name') or 'bash')[:80],
+                   'input': body.get('input') if isinstance(body.get('input'), dict) else {'detail': str(body.get('detail') or '')[:300]},
+                   'decision': None, 'event': threading.Event(), 'created': time.time()}
+            with _approvals_lock:
+                APPROVALS[rec['id']] = rec
+            fake_thread = {'title': '\u23f1 ' + str(body.get('name') or 'Automation')[:40]}
+            notify_approval_push(fake_thread, rec)
+            log('automation approval WAIT %s %s' % (rec['id'], str(body.get('detail') or '')[:80]))
+            rec['event'].wait(280)
+            with _approvals_lock:
+                APPROVALS.pop(rec['id'], None)
+            log('automation approval %s -> %s' % (rec['id'], rec['decision'] or 'timeout(deny)'))
+            return self._json(200, {'decision': rec['decision'] or 'deny'})
         if path == '/threads':
             return self._create_thread(body)
         if path == '/push/register':

@@ -56,7 +56,23 @@ async function runOne(auto) {
   const s = new Session({
     apiKey: cfg.apiKey, model: rec.model, cwd: rec.cwd, mode: 'auto',
     sandbox: cfg.sandboxBash !== false,
-    approve: async (_k, _d, opts = {}) => !opts.danger,   // headless: never approve destructive
+    approve: async (kind, detail, opts = {}) => {
+      if (!opts.danger) return true;
+      // destructive action with nobody at the desk: push Allow/Deny to the phone
+      // through the harness server and block on the human (≤~5 min, deny default)
+      try {
+        const env = fs.readFileSync(path.join(HOME, '.claude-harness', 'config.env'), 'utf8');
+        const token = (/HARNESS_TOKEN=(\S+)/.exec(env) || [])[1];
+        if (!token) return false;
+        const r = await fetch('http://127.0.0.1:8787/automation/approval', {
+          method: 'POST',
+          headers: { 'Authorization': 'Bearer ' + token, 'Content-Type': 'application/json' },
+          body: JSON.stringify({ name: auto.name, tool_name: kind, detail: String(detail || '').slice(0, 300) }),
+          signal: AbortSignal.timeout(295000),
+        });
+        return ((await r.json()).decision === 'allow');
+      } catch { return false; }
+    },
     emit: (e) => {
       if (e.type === 'text') curText += e.delta;
       else if (e.type === 'reasoning') curThink += e.delta;
