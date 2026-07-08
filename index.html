@@ -92,6 +92,13 @@
   #send:active { transform:scale(.92); }
   #send:disabled { opacity:.35; }
   .model-row { text-align:center; padding-top:8px; }
+  .model-pill { display:inline-flex; align-items:center; gap:5px; border:1px solid var(--border); background:var(--panel);
+                color:var(--text); font:inherit; font-size:12.5px; font-weight:500; padding:5px 11px; border-radius:999px;
+                cursor:pointer; transition:background .13s, border-color .13s; }
+  .model-pill:hover { background:var(--panel2); border-color:color-mix(in srgb, var(--muted) 50%, transparent); }
+  .model-pill svg { color:var(--muted); }
+  #modelHint { font-size:11.5px; color:var(--muted); padding-top:5px; animation:hintpulse 1.6s ease-in-out 3; }
+  @keyframes hintpulse { 50% { opacity:.35 } }
   .model-chip { border:none; background:transparent; color:var(--muted); font-size:12px; cursor:pointer;
                 padding:3px 8px; border-radius:8px; transition:background .15s, color .15s; letter-spacing:.1px; }
   button.model-chip:hover { background:var(--panel2); color:var(--text); }
@@ -196,7 +203,12 @@
         <textarea id="input" rows="1" placeholder="Message…"></textarea>
         <button id="send">↑</button>
       </div>
-      <div class="model-row"><button class="model-chip" id="modelBtn">◆ …</button> <button class="model-chip" id="effortBtn" style="display:none">🧠</button> <span class="model-chip" id="statChip" style="cursor:default"></span></div>
+      <div class="model-row">
+        <button class="model-pill" id="modelBtn"><span id="modelName">…</span><svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"><path d="m6 9 6 6 6-6"/></svg></button>
+        <button class="model-chip" id="effortBtn" style="display:none">🧠</button>
+        <span class="model-chip" id="statChip" style="cursor:default"></span>
+        <div id="modelHint" style="display:none">☝︎ tap here to switch AI models</div>
+      </div>
     </div>
   </div>
 </div>
@@ -349,7 +361,7 @@ function render() {
   const log = $('log'); log.innerHTML = '';
   $('title').textContent = cur ? cur.title : 'Harness Chat';
   const m = findModel(cur ? cur.model : MODELS[0].id);
-  $('modelBtn').textContent = '◆ ' + m.name;
+  $('modelName').textContent = m.name;
   $('attachBtn').style.display = m.vision ? '' : 'none';
   $('effortBtn').style.display = m.reasoning ? '' : 'none';
   $('effortBtn').textContent = '🧠 ' + (cur && cur.effort ? cur.effort : 'auto');
@@ -749,6 +761,7 @@ document.addEventListener('paste', async (e) => {
   }
   renderAttach();
 });
+if (!localStorage.modelHintSeen) { setTimeout(() => { const h = $('modelHint'); if (h) h.style.display = ''; }, 800); }
 function pickModel(id) {
   if (cur) cur.model = id;
   localStorage.model = id;
@@ -767,6 +780,7 @@ $('modelBtn').onclick = () => {
     box.appendChild(o);
   }
   $('modelSearch').value = ''; $('modelResults').innerHTML = '';
+  localStorage.modelHintSeen = '1'; $('modelHint').style.display = 'none';
   openSheet('modelSheet');
   loadCatalog();
 };
