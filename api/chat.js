@@ -2,12 +2,16 @@
 const { db, authed, userKey } = require('./_db.js');
 
 const ALLOWED = new Set([
+  'minimax/minimax-m3',
   'deepseek/deepseek-v4-pro',
   'deepseek/deepseek-v4-flash',
+  'nvidia/nemotron-3-ultra-550b-a55b:free',
+  'qwen/qwen3.6-27b',
+  // legacy ids so older chats keep working
   'google/gemini-3.1-flash-lite',
   'anthropic/claude-sonnet-5',
 ]);
-const VISION = new Set(['google/gemini-3.1-flash-lite', 'anthropic/claude-sonnet-5']);
+const VISION = new Set(['minimax/minimax-m3', 'qwen/qwen3.6-27b', 'google/gemini-3.1-flash-lite', 'anthropic/claude-sonnet-5']);
 
 module.exports = async (req, res) => {
   if (req.method !== 'POST') { res.status(405).json({ error: 'POST only' }); return; }
