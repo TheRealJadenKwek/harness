@@ -1018,6 +1018,10 @@ let gitDebounce = null;
 H.onEvent((e) => {
   const rec = S.recs.get(e.sessionId);
   if (!rec || !rec.loaded) return;
+  // live working stats
+  if (e.type === 'text' || e.type === 'reasoning') rec.workChars = (rec.workChars || 0) + String(e.delta || '').length;
+  if (e.type === 'tool_call') rec.runningTools = (rec.runningTools || 0) + 1;
+  if (e.type === 'tool_result') rec.runningTools = Math.max(0, (rec.runningTools || 0) - 1);
   const el = logOf(rec); const stick = atBottom(el);
   if (e.type === 'turn_start') { /* keep the current assistant block across tool rounds */ }
   else if (e.type === 'reasoning') {
@@ -1039,7 +1043,7 @@ H.onEvent((e) => {
       clearTimeout(gitDebounce); gitDebounce = setTimeout(refreshGit, 500);
     }
   }
-  else if (e.type === 'auto_approved') addLine(rec, 'done', '⚡ auto-approved ' + e.kind + ': ' + String(e.detail || '').slice(0, 80));
+  else if (e.type === 'auto_approved') addLine(rec, 'done', '✓ auto-approved ' + e.kind + ': ' + String(e.detail || '').slice(0, 80));
   else if (e.type === 'control_note') addLine(rec, 'done', e.message);
   else if (e.type === 'remote_user') { addUser(rec, '⌁ ' + e.text, (e.thumbs || []).length, { ts: Date.now(), raw: e.text, thumbs: e.thumbs }); rec.streaming = true; startWorking(rec); updateComposer(); renderSidebar(); }
   else if (e.type === 'sidechat_delta') {
@@ -1083,22 +1087,30 @@ H.onEvent((e) => {
 // ---- live working indicator: cobalt ✳ + status + elapsed time
 function startWorking(rec) {
   if (rec.workEl) return;
+  rec.turnAnchor = logOf(rec).lastElementChild;   // everything after this is "this turn's work"
   const el = document.createElement('div');
   el.className = 'working';
-  el.innerHTML = '<span class="w-star">✳</span><span class="w-text">Thinking…</span><span class="w-time">0s</span>';
+  el.innerHTML = '<span class="w-star">✳</span><span class="w-info">Thinking…</span>';
   rec.workStart = Date.now();
+  rec.workChars = 0; rec.runningTools = 0; rec.workText = 'Thinking…';
   rec.workEl = el;
   logOf(rec).appendChild(el);
-  rec.workTimer = setInterval(() => {
-    if (!rec.workEl) return;
-    const s = Math.floor((Date.now() - rec.workStart) / 1000);
-    rec.workEl.querySelector('.w-time').textContent = s < 60 ? s + 's' : Math.floor(s / 60) + 'm ' + (s % 60) + 's';
-  }, 1000);
+  rec.workTimer = setInterval(() => refreshWorking(rec), 1000);
   scrollLog(rec);
+}
+function refreshWorking(rec) {
+  if (!rec.workEl) return;
+  const parts = [fmtSecs(Math.floor((Date.now() - rec.workStart) / 1000))];
+  const tok = Math.round((rec.workChars || 0) / 4);
+  if (tok > 0) parts.push('~' + (tok >= 1000 ? (tok / 1000).toFixed(1) + 'k' : tok) + ' tokens');
+  if ((rec.runningTools || 0) > 0) parts.push(rec.runningTools + ' running task' + (rec.runningTools > 1 ? 's' : ''));
+  parts.push(rec.workText || 'thinking…');
+  rec.workEl.querySelector('.w-info').textContent = parts.join(' · ');
 }
 function setWorking(rec, text) {
   if (!rec.workEl) return;
-  rec.workEl.querySelector('.w-text').textContent = text;
+  rec.workText = (text || '').charAt(0).toLowerCase() + (text || '').slice(1);
+  refreshWorking(rec);
   logOf(rec).appendChild(rec.workEl);   // keep it below the latest content
 }
 function stopWorking(rec) {
@@ -1110,8 +1122,31 @@ function stopWorking(rec) {
 }
 function fmtSecs(s) { return s < 60 ? s + 's' : Math.floor(s / 60) + 'm ' + (s % 60) + 's'; }
 
+function collapseWork(rec, secs) {
+  const log = logOf(rec);
+  const els = [];
+  let n = rec.turnAnchor ? rec.turnAnchor.nextElementSibling : log.firstElementChild;
+  while (n) {
+    if (n.classList.contains('tool') || n.classList.contains('done')) els.push(n);
+    n = n.nextElementSibling;
+  }
+  const line = document.createElement('div');
+  line.className = 'worked';
+  line.innerHTML = 'Worked for ' + fmtSecs(secs) + (els.length ? ' <span class="chev">›</span>' : '');
+  if (els.length) {
+    log.insertBefore(line, els[0]);
+    for (const x of els) x.style.display = 'none';
+    line.onclick = () => {
+      const open = line.classList.toggle('open');
+      for (const x of els) x.style.display = open ? '' : 'none';
+    };
+  } else log.appendChild(line);
+  rec.turnAnchor = null;
+}
+
 function endTurn(rec) {
-  stopWorking(rec);
+  const workedSecs = stopWorking(rec);
+  if (workedSecs >= 60) collapseWork(rec, workedSecs);
   rec.streaming = false;
   if (rec.meta.id === S.active) updateComposer();
   else { rec.meta.unread = true; H.sessionMeta(rec.meta.id, { unread: true }); }   // finished in the background

@@ -661,3 +661,11 @@ h3 { margin: 2px 0 4px; }
 .st-dot.g { background: var(--green); }
 .st-dot.r { background: var(--red); }
 .st-dot.w { background: color-mix(in srgb, var(--muted) 45%, transparent); }
+
+/* richer working line + long-turn summary */
+.working .w-info { color: var(--muted); font-size: 12.5px; }
+.worked { color: var(--muted); font-size: 12.5px; padding: 7px 2px; cursor: pointer; user-select: none;
+          border-top: 1px solid var(--border); margin-top: 6px; }
+.worked:hover { color: var(--text); }
+.worked .chev { display: inline-block; transition: transform .15s ease; font-size: 14px; }
+.worked.open .chev { transform: rotate(90deg); }
