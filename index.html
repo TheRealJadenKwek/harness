@@ -330,7 +330,7 @@ function render() {
   $('title').textContent = cur ? cur.title : 'Harness Chat';
   const m = findModel(cur ? cur.model : MODELS[0].id);
   $('modelBtn').textContent = '◆ ' + m.name;
-  $('attachBtn').classList.toggle('off', !m.vision);
+  $('attachBtn').style.display = m.vision ? '' : 'none';
   $('effortBtn').style.display = m.reasoning ? '' : 'none';
   $('effortBtn').textContent = '🧠 ' + (cur && cur.effort ? cur.effort : 'auto');
   let stat = '';
@@ -684,7 +684,7 @@ $('newBtn').onclick = newChat;
 $('sideNew').onclick = newChat;
 $('send').onclick = send;
 $('attachBtn').onclick = () => {
-  if (!findModel(cur ? cur.model : '').vision) { openSheet('modelSheet'); return; }   // nudge to a vision model
+  if (!findModel(cur ? cur.model : '').vision) return;
   $('filePick').click();
 };
 $('filePick').onchange = async (e) => {
@@ -709,6 +709,16 @@ function downscale(file) {
     img.src = URL.createObjectURL(file);
   });
 }
+document.addEventListener('dragover', (e) => e.preventDefault());
+document.addEventListener('drop', async (e) => {
+  e.preventDefault();
+  if (!findModel(cur ? cur.model : '').vision) return;
+  for (const f of [...(e.dataTransfer || {}).files || []].filter((f) => f.type.startsWith('image/')).slice(0, 4)) {
+    const url = await downscale(f);
+    if (url) pendingImages.push(url);
+  }
+  renderAttach();
+});
 document.addEventListener('paste', async (e) => {
   const items = [...((e.clipboardData || {}).items || [])].filter((i) => i.type.startsWith('image/'));
   if (!items.length) return;
@@ -719,7 +729,12 @@ document.addEventListener('paste', async (e) => {
   }
   renderAttach();
 });
-function pickModel(id) { if (cur) cur.model = id; localStorage.model = id; save(); render(); closeSheets(); }
+function pickModel(id) {
+  if (cur) cur.model = id;
+  localStorage.model = id;
+  if (!findModel(id).vision && pendingImages.length) { pendingImages = []; }
+  save(); render(); closeSheets();
+}
 $('modelBtn').onclick = () => {
   const box = $('modelOpts'); box.innerHTML = '';
   const curated = new Set(MODELS.map((m) => m.id));
