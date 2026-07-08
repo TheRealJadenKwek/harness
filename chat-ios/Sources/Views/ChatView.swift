@@ -26,6 +26,10 @@ struct ChatView: View {
             ScrollViewReader { proxy in
                 ScrollView {
                     LazyVStack(alignment: .leading, spacing: 14) {
+                        if chat.messages.isEmpty {
+                            EmptyHomeView { fill in input = fill; inputFocused = true }
+                                .padding(.top, 90)
+                        }
                         ForEach(Array(chat.messages.enumerated()), id: \.offset) { i, m in
                             MessageBubble(msg: m, index: i, chatID: chatID, streaming: streaming,
                                           onRewind: { idx in if let t = store.rewind(chatID: chatID, msgIndex: idx) { input = t } },
@@ -51,6 +55,7 @@ struct ChatView: View {
                 }
                 .scrollDismissesKeyboard(.interactively)
                 .onTapGesture { inputFocused = false }
+                .animation(.easeOut(duration: 0.18), value: chat.messages.count)
                 .onChange(of: chat.messages.count) { proxy.scrollTo("end", anchor: .bottom) }
                 .onChange(of: chat.messages.last?.content) { proxy.scrollTo("end", anchor: .bottom) }
                 .onChange(of: inputFocused) { _, f in
@@ -62,7 +67,6 @@ struct ChatView: View {
                     }
                 }
             }
-            Divider()
             VStack(spacing: 6) {
                 if !pendingDocs.isEmpty {
                     ScrollView(.horizontal, showsIndicators: false) {
@@ -107,7 +111,7 @@ struct ChatView: View {
                         .focused($inputFocused)
                         .lineLimit(1...5)
                         .padding(.horizontal, 14).padding(.vertical, 9)
-                        .background(Color(.systemGray6), in: RoundedRectangle(cornerRadius: 20))
+                        .background(Color(.systemGray6).opacity(0.7), in: RoundedRectangle(cornerRadius: 20))
                         .onSubmit(send)
                     Button(action: sendOrStop) {
                         Image(systemName: streaming ? "stop.circle.fill" : "arrow.up.circle.fill")
@@ -143,7 +147,12 @@ struct ChatView: View {
                     }
                 }
             }
-            .padding(.horizontal, 12).padding(.vertical, 8)
+            .padding(.horizontal, 12).padding(.vertical, 10)
+            .background(.ultraThinMaterial, in: RoundedRectangle(cornerRadius: 24))
+            .overlay(RoundedRectangle(cornerRadius: 24).strokeBorder(Color.primary.opacity(0.08)))
+            .shadow(color: .black.opacity(0.10), radius: 16, y: 6)
+            .shadow(color: .black.opacity(0.05), radius: 2, y: 1)
+            .padding(.horizontal, 10).padding(.bottom, 6)
         }
         .navigationTitle(chat.title).navigationBarTitleDisplayMode(.inline)
         .sheet(isPresented: $showPicker) {
@@ -564,4 +573,41 @@ struct HTMLWebView: UIViewRepresentable {
         return wv
     }
     func updateUIView(_ uiView: WKWebView, context: Context) {}
+}
+
+
+struct EmptyHomeView: View {
+    let onPick: (String) -> Void
+    private let ideas: [(icon: String, title: String, sub: String, fill: String)] = [
+        ("pencil.line", "Write something", "an email, a message, a caption", "Help me write "),
+        ("gamecontroller", "Make a little app or game", "live preview you can play with", "Make me a small web game: "),
+        ("magnifyingglass", "Look something up", "searches the web, reads sources", "Search the web: "),
+    ]
+    var body: some View {
+        VStack(spacing: 8) {
+            Text("What can I do for you?")
+                .font(.title3.weight(.semibold))
+                .padding(.bottom, 14)
+            ForEach(ideas, id: \.title) { idea in
+                Button { onPick(idea.fill) } label: {
+                    HStack(spacing: 12) {
+                        Image(systemName: idea.icon)
+                            .font(.system(size: 17))
+                            .foregroundStyle(Color(red: 0.30, green: 0.49, blue: 1.0))
+                            .frame(width: 24)
+                        VStack(alignment: .leading, spacing: 1) {
+                            Text(idea.title).font(.subheadline.weight(.semibold))
+                            Text(idea.sub).font(.caption).foregroundStyle(.secondary)
+                        }
+                        Spacer()
+                    }
+                    .padding(.horizontal, 15).padding(.vertical, 12)
+                    .background(Color(.systemGray6).opacity(0.6), in: RoundedRectangle(cornerRadius: 14))
+                }
+                .buttonStyle(.plain)
+            }
+        }
+        .frame(maxWidth: 420)
+        .frame(maxWidth: .infinity)
+    }
 }
