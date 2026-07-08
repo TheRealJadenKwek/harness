@@ -758,6 +758,7 @@ function ckActions() {
     { label: 'Switch model…', hint: '⌘K', tag: 'action', run: () => openModelSheet() },
     { label: 'Change working directory…', tag: 'action', run: () => pickDir() },
     { label: 'Toggle changes panel', tag: 'action', run: () => toggleDiff() },
+    { label: 'Toggle terminal', hint: '⌃`', tag: 'action', run: () => togglePanel('terminal') },
     { label: 'Compact context', hint: 'summarize & compress', tag: 'action', run: () => runSlash(rec, '/compact') },
     { label: 'Fork chat', tag: 'action', run: () => runSlash(rec, '/fork') },
     { label: 'Rename chat…', tag: 'action', run: () => { const t = prompt('Rename chat:', rec ? rec.meta.title : ''); if (t && t.trim() && rec) H.sessionMeta(rec.meta.id, { title: t.trim() }).then(() => { refreshSessions(); updateTitlebar(); }); } },
@@ -1017,6 +1018,10 @@ function updateComposer() {
 // ---------------------------------------------------------------- agent events
 const MUTATING = ['write_file', 'edit_file', 'bash'];
 let gitDebounce = null;
+async function loadMcpPrompts() { try { S.mcpPrompts = await H.mcpPrompts(); } catch { S.mcpPrompts = []; } }
+loadMcpPrompts();
+if (H.onMcpUpdated) H.onMcpUpdated(() => { loadMcpPrompts(); });
+
 H.onEvent((e) => {
   const rec = S.recs.get(e.sessionId);
   if (!rec || !rec.loaded) return;
@@ -1282,11 +1287,22 @@ const SLASH = [
   { cmd: '/goal <text>', desc: 'Set a standing goal (empty = clear)' },
   { cmd: '/loop <min> <prompt>', desc: 'Re-send a prompt on an interval · /loop stop' },
   { cmd: '/btw <question>', desc: 'Side chat — quick asides in a popup, never touches the session context' },
+  { cmd: '/terminal', desc: 'Toggle the interactive terminal panel' },
   { cmd: '/help', desc: 'Show available commands' },
 ];
 function runSlash(rec, text) {
   const [cmd, ...rest] = text.split(/\s+/);
   const arg = rest.join(' ');
+  if (/^\/[\w-]+:[\w-]+$/.test(cmd) && (S.mcpPrompts || []).some((p) => '/' + p.server + ':' + p.name === cmd)) {
+    const pr = S.mcpPrompts.find((p) => '/' + p.server + ':' + p.name === cmd);
+    addLine(rec, 'done', 'fetching MCP prompt ' + cmd.slice(1) + '…');
+    H.mcpPromptGet(pr.server, pr.name, {}).then((r) => {
+      if (r.error || !r.text) { addLine(rec, 'err', '⚠︎ ' + (r.error || 'empty prompt')); return; }
+      const extra = arg ? arg + '\n\n' : '';
+      sendText(rec, extra + r.text);
+    });
+    return true;
+  }
   if (cmd === '/btw' || cmd === '/sidechat') {
     openSidePopup(rec);
     if (arg) sideSend(rec, arg);
@@ -1305,6 +1321,7 @@ function runSlash(rec, text) {
     else addLine(rec, 'err', 'usage: /mode ask|auto|plan');
     return true;
   }
+  if (cmd === '/terminal' || cmd === '/term') { togglePanel('terminal'); return true; }
   if (cmd === '/dir') { pickDir(); return true; }
   if (cmd === '/diff') { toggleDiff(); return true; }
   if (cmd === '/rename') { if (arg) H.sessionRename(rec.meta.id, arg); return true; }
@@ -1383,7 +1400,7 @@ async function updatePopup() {
   }
   if (i.value.startsWith('/') && !i.value.includes('\n')) {
     const q = i.value.toLowerCase();
-    const all = [...SLASH, ...S.skills.map((s) => ({ cmd: '/' + s.name, desc: 'skill — ' + (s.description || '') }))];
+    const all = [...SLASH, ...S.skills.map((s) => ({ cmd: '/' + s.name, desc: 'skill — ' + (s.description || '') })), ...(S.mcpPrompts || []).map((p) => ({ cmd: '/' + p.server + ':' + p.name, desc: 'MCP prompt — ' + (p.description || p.server) }))];
     const list = all.filter((s) => s.cmd.startsWith(q) || q === '/');
     pop.mode = 'slash'; pop.sel = 0;
     pop.items = list.map((s) => ({ main: s.cmd, hint: s.desc, insert: s.cmd.replace(/ <.*$/, ' ') }));
@@ -1782,7 +1799,7 @@ document.addEventListener('keydown', (e) => {
 }, true);
 
 // ---------------------------------------------------------------- right panel (tabs)
-const TABS = ['changes', 'files', 'tasks', 'preview'];
+const TABS = ['changes', 'files', 'tasks', 'preview', 'terminal'];
 function showPanel(tab) {
   S.panel = tab;
   $('rightPanel').style.display = '';
@@ -1791,6 +1808,80 @@ function showPanel(tab) {
   if (tab === 'changes') refreshGit();
   else if (tab === 'files') refreshFiles();
   else if (tab === 'tasks') renderTasks();
+  else if (tab === 'terminal') openTerm();
+}
+
+// ---- terminal tab: pty per session, ANSI-color line view ----
+const ANSI_FG = { 30: '#7d7d85', 31: 'var(--red)', 32: 'var(--green)', 33: 'var(--orange)', 34: 'var(--blue)', 35: '#c678dd', 36: '#4bb8c4', 37: 'inherit',
+                  90: '#8b8b93', 91: 'var(--red)', 92: 'var(--green)', 93: 'var(--orange)', 94: 'var(--blue)', 95: '#c678dd', 96: '#4bb8c4', 97: 'inherit' };
+function ansiHtml(raw) {
+  const clean = raw
+    .replace(/\x1b\][^\x07\x1b]*(?:\x07|\x1b\\)/g, '')          // OSC titles etc.
+    .replace(/\x1b\[[0-9;?]*[ABCDEFGHJKSTfhilnsu]/g, '')            // non-SGR CSI
+    .replace(/\x1b[=>]/g, '')
+    .replace(/\r\n/g, '\n').replace(/\r/g, '\n');
+  let html = '', color = null, bold = false;
+  const parts = clean.split(/(\x1b\[[0-9;]*m)/);
+  for (const part of parts) {
+    const m = part.match(/^\x1b\[([0-9;]*)m$/);
+    if (m) {
+      for (const code of (m[1] || '0').split(';').map(Number)) {
+        if (code === 0) { color = null; bold = false; }
+        else if (code === 1) bold = true;
+        else if (code === 22) bold = false;
+        else if (ANSI_FG[code]) color = ANSI_FG[code];
+        else if (code === 39) color = null;
+      }
+      continue;
+    }
+    if (!part) continue;
+    const st = (color ? 'color:' + color + ';' : '') + (bold ? 'font-weight:600;' : '');
+    html += st ? '<span style="' + st + '">' + esc(part) + '</span>' : esc(part);
+  }
+  return html;
+}
+function renderTerm(rec) {
+  const out = $('termOut'); if (!out) return;
+  const buf = rec.termBuf || '';
+  const tail = buf.length > 120000 ? buf.slice(-120000) : buf;
+  out.innerHTML = ansiHtml(tail);
+  out.scrollTop = out.scrollHeight;
+}
+async function openTerm() {
+  const rec = active(); if (!rec) return;
+  $('termCwd').textContent = shortDir(rec.meta.cwd);
+  const r = await H.ptyOpen(rec.meta.id);
+  if (r && r.error) { $('termOut').textContent = '⚠︎ ' + r.error; return; }
+  renderTerm(rec);
+  $('termIn').focus();
+}
+H.onPtyData((d) => {
+  const rec = S.recs.get(d.sessionId); if (!rec) return;
+  rec.termBuf = ((rec.termBuf || '') + d.data).slice(-300000);
+  if (S.panel === 'terminal' && rec === active()) renderTerm(rec);
+});
+{
+  const hist = []; let hi = -1;
+  const ti = $('termIn');
+  ti.addEventListener('keydown', (e) => {
+    const rec = active(); if (!rec) return;
+    if (e.key === 'Enter') {
+      const cmd = ti.value;
+      hist.push(cmd); hi = hist.length;
+      H.ptyInput(rec.meta.id, cmd + '\n');
+      ti.value = '';
+    } else if (e.key === 'ArrowUp') { e.preventDefault(); if (hi > 0) { hi--; ti.value = hist[hi] || ''; } }
+    else if (e.key === 'ArrowDown') { e.preventDefault(); if (hi < hist.length) { hi++; ti.value = hist[hi] || ''; } }
+    else if (e.key === 'c' && e.ctrlKey) { e.preventDefault(); H.ptyInput(rec.meta.id, '\x03'); }
+  });
+  $('termCtrlC').onclick = () => { const rec = active(); if (rec) H.ptyInput(rec.meta.id, '\x03'); };
+  $('termRestart').onclick = async () => {
+    const rec = active(); if (!rec) return;
+    await H.ptyKill(rec.meta.id);
+    rec.termBuf = '';
+    await H.ptyOpen(rec.meta.id);
+    renderTerm(rec);
+  };
 }
 function closePanel() { S.panel = null; $('rightPanel').style.display = 'none'; }
 function togglePanel(tab) { (S.panel === tab) ? closePanel() : showPanel(tab); }
@@ -2215,20 +2306,83 @@ for (const b of document.querySelectorAll('.snav')) {
 }
 
 // MCP servers section
+// popular MCP servers — one-click install. auth: none | oauth | prompt:<label>
+const MCP_CATALOG = [
+  { name: 'github', label: 'GitHub', cmd: 'https://api.githubcopilot.com/mcp/', auth: 'oauth', desc: 'Repos, issues, PRs, actions' },
+  { name: 'linear', label: 'Linear', cmd: 'https://mcp.linear.app/mcp', auth: 'oauth', desc: 'Issues, projects, cycles' },
+  { name: 'notion', label: 'Notion', cmd: 'https://mcp.notion.com/mcp', auth: 'oauth', desc: 'Pages, databases, search' },
+  { name: 'sentry', label: 'Sentry', cmd: 'https://mcp.sentry.dev/mcp', auth: 'oauth', desc: 'Errors, issues, traces' },
+  { name: 'stripe', label: 'Stripe', cmd: 'https://mcp.stripe.com', auth: 'oauth', desc: 'Customers, payments, invoices' },
+  { name: 'vercel', label: 'Vercel', cmd: 'https://mcp.vercel.com', auth: 'oauth', desc: 'Projects, deployments, logs' },
+  { name: 'supabase', label: 'Supabase', cmd: 'https://mcp.supabase.com/mcp', auth: 'oauth', desc: 'Database, auth, storage' },
+  { name: 'figma', label: 'Figma', cmd: 'https://mcp.figma.com/mcp', auth: 'oauth', desc: 'Design files & components' },
+  { name: 'context7', label: 'Context7', cmd: 'https://mcp.context7.com/mcp', auth: 'none', desc: 'Up-to-date library docs' },
+  { name: 'deepwiki', label: 'DeepWiki', cmd: 'https://mcp.deepwiki.com/mcp', auth: 'none', desc: 'Ask about any GitHub repo' },
+  { name: 'playwright', label: 'Playwright', cmd: 'npx -y @playwright/mcp@latest', auth: 'none', desc: 'Full browser automation' },
+  { name: 'memory', label: 'Memory', cmd: 'npx -y @modelcontextprotocol/server-memory', auth: 'none', desc: 'Knowledge-graph memory' },
+  { name: 'thinking', label: 'Seq. Thinking', cmd: 'npx -y @modelcontextprotocol/server-sequential-thinking', auth: 'none', desc: 'Structured reasoning aid' },
+  { name: 'postgres', label: 'Postgres', cmd: 'npx -y @modelcontextprotocol/server-postgres {ARG}', auth: 'prompt:Postgres connection string (postgres://user:pass@host/db)', desc: 'Query your database' },
+];
+async function renderMcpCatalog(installed) {
+  const box = $('mcpCatalog'); if (!box) return;
+  box.innerHTML = '';
+  const have = new Set(installed.map((s) => s.name));
+  for (const c of MCP_CATALOG) {
+    const el = document.createElement('button');
+    el.className = 'cat-card';
+    const on = have.has(c.name);
+    el.innerHTML = '<b>' + esc(c.label) + (on ? ' <span class="dot ok">●</span>' : '') + '</b><i>' + esc(c.desc) + '</i>'
+      + '<span class="mi-hint">' + (on ? 'installed' : c.auth === 'oauth' ? 'one click · sign in' : c.auth === 'none' ? 'one click' : 'needs a key') + '</span>';
+    el.disabled = on;
+    el.onclick = async () => {
+      let cmd = c.cmd;
+      if (String(c.auth).startsWith('prompt:')) {
+        const v = prompt(c.auth.slice(7));
+        if (!v) return;
+        cmd = cmd.replace('{ARG}', v.trim());
+      }
+      el.innerHTML = '<b>' + esc(c.label) + '</b><i>connecting…</i>';
+      const r = await H.mcpAdd(c.name, cmd);
+      if (!r.ok) { alert(r.error); renderMcpList(); return; }
+      if (c.auth === 'oauth') {
+        const o = await H.mcpOauth(c.name);
+        if (!o.ok) alert(c.label + ' sign-in failed: ' + o.error + '\n\nIf this server uses API keys instead, use its row below to paste a token.');
+      }
+      renderMcpList();
+    };
+    box.appendChild(el);
+  }
+}
 async function renderMcpList() {
   const list = await H.mcpList();
+  renderMcpCatalog(list);
   const box = $('mcpList'); box.innerHTML = '';
-  if (!list.length) { box.innerHTML = '<div class="muted">No servers yet — add one below.</div>'; return; }
+  if (!list.length) { box.innerHTML = '<div class="muted">No servers yet — one-click a popular one below, or add your own.</div>'; return; }
   for (const s of list) {
     const row = document.createElement('div'); row.className = 'sl-row';
-    const dot = s.status === 'running' ? '<span class="dot ok">●</span>' : s.status === 'starting' ? '<span class="dot run">●</span>' : '<span class="dot bad">●</span>';
+    const dot = s.status === 'running' ? '<span class="dot ok">●</span>' : s.status === 'starting' ? '<span class="dot run">●</span>' : s.status === 'auth' ? '<span class="dot run">●</span>' : '<span class="dot bad">●</span>';
     row.innerHTML = dot + '<div class="sl-main"><b>' + esc(s.name) + '</b> <span class="mi-hint">' + esc(s.status) +
-      (s.status === 'running' ? ' · ' + s.tools.length + ' tools' : '') + (s.error ? ' · ' + esc(s.error.slice(0, 80)) : '') + '</span>' +
+      (s.status === 'running' ? ' · ' + s.tools.length + ' tools' + (s.resources ? ' · ' + s.resources + ' resources' : '') + (s.prompts ? ' · ' + s.prompts + ' prompts' : '') : '') +
+      (s.error ? ' · ' + esc(s.error.slice(0, 80)) : '') + '</span>' +
       '<div class="mi-hint mono">' + esc(s.command) + '</div>' +
       (s.tools.length ? '<div class="mi-hint">' + esc(s.tools.slice(0, 8).join(', ')) + (s.tools.length > 8 ? '…' : '') + '</div>' : '') + '</div>' +
+      (s.remote && s.status !== 'running' ? '<button class="mini-btn primary" data-a="oauth">Connect</button>' : '') +
+      (s.remote ? '<button class="mini-btn" data-a="token" title="Paste an API token instead">key</button>' : '') +
       '<button class="mini-btn" data-a="toggle">' + (s.enabled ? 'Disable' : 'Enable') + '</button>' +
       '<button class="mini-btn" data-a="restart">⟳</button>' +
       '<button class="mini-btn" data-a="remove">✕</button>';
+    const oa = row.querySelector('[data-a=oauth]');
+    if (oa) oa.onclick = async () => {
+      oa.textContent = '…';
+      const r = await H.mcpOauth(s.name);
+      if (!r.ok) alert('Sign-in failed: ' + r.error);
+      renderMcpList();
+    };
+    const tk = row.querySelector('[data-a=token]');
+    if (tk) tk.onclick = async () => {
+      const v = prompt('API token / key for ' + s.name + ' (sent as a Bearer header):');
+      if (v) { await H.mcpSetToken(s.name, v); renderMcpList(); }
+    };
     row.querySelector('[data-a=toggle]').onclick = async () => { await H.mcpToggle(s.name, !s.enabled); renderMcpList(); };
     row.querySelector('[data-a=restart]').onclick = async () => { await H.mcpRestart(s.name); renderMcpList(); };
     row.querySelector('[data-a=remove]').onclick = async () => { if (confirm('Remove MCP server "' + s.name + '"?')) { await H.mcpRemove(s.name); renderMcpList(); } };
@@ -2314,6 +2468,7 @@ document.addEventListener('keydown', (e) => {
     setSessionConfig({ mode: MODES[+e.key - 1].key });
     return;
   }
+  if (e.ctrlKey && e.key === '`') { e.preventDefault(); togglePanel('terminal'); return; }
   if (mod && e.key.toLowerCase() === 'u') { e.preventDefault(); attachFiles(); return; }
   if (mod && e.key.toLowerCase() === 'n') { e.preventDefault(); newChat(); }
   else if (mod && e.key.toLowerCase() === 'k') { e.preventDefault(); openModelSheet(false); }

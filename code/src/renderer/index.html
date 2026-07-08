@@ -117,6 +117,7 @@
         <button class="ptab" data-tab="files">Files</button>
         <button class="ptab" data-tab="tasks">◎ Tasks<span id="taskBadge" class="task-badge" style="display:none"></span></button>
         <button class="ptab" data-tab="preview">▷ Preview</button>
+        <button class="ptab" data-tab="terminal">❯ Terminal</button>
         <div class="spacer"></div>
         <button id="panelClose" class="icon-btn" title="Close">✕</button>
       </div>
@@ -133,6 +134,11 @@
         <div id="filePreview" class="file-preview" style="display:none"></div>
       </div>
 
+      <div id="tab-terminal" class="ptab-body" style="display:none">
+        <div class="panel-sub"><span class="muted" id="termCwd"></span><div class="spacer"></div><button id="termCtrlC" class="mini-btn" title="Send Ctrl-C">^C</button><button id="termRestart" class="icon-btn" title="Kill & restart">⟳</button></div>
+        <div id="termOut" class="term-out"></div>
+        <div class="term-inrow"><span class="term-prompt">❯</span><input id="termIn" placeholder="run a command… (Enter sends, ↑ history)" autocomplete="off" spellcheck="false"></div>
+      </div>
       <div id="tab-tasks" class="ptab-body" style="display:none">
         <div id="taskListEl" class="task-list"></div>
         <pre id="taskLogEl" class="task-log"></pre>
@@ -263,6 +269,9 @@
           <div id="mcpList" class="settings-list"></div>
           <div class="menu-sep"></div>
           <label>Add a server</label>
+          <h3 style="margin-top:8px">Popular connectors — one click</h3>
+          <div id="mcpCatalog" class="cat-grid"></div>
+          <h3 style="margin-top:8px">Add your own</h3>
           <input id="mcpName" placeholder="name (e.g. filesystem)" autocomplete="off">
           <input id="mcpCmd" placeholder="command (e.g. npx -y @modelcontextprotocol/server-filesystem ~/proj)" autocomplete="off">
           <div class="row" style="justify-content:flex-start"><button id="mcpAddBtn" class="primary">Add & start</button></div>

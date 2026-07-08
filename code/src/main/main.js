@@ -594,7 +594,7 @@ const mcpClients = new Map();   // name -> McpClient
 function sanitizeToolName(s) { return String(s).replace(/[^a-zA-Z0-9_]/g, '_').slice(0, 40); }
 function syncMcpFromConfig() {
   const cfg = loadConfig();
-  const want = new Map(cfg.mcpServers.filter((s) => s.enabled).map((s) => [s.name, { command: s.command, cwd: null }]));
+  const want = new Map(cfg.mcpServers.filter((s) => s.enabled).map((s) => [s.name, { command: s.command, cwd: null, auth: s.auth || null }]));
   // Enabled plugins contribute their servers too, namespaced <plugin>_<server>.
   // Plugin commands run with cwd = the plugin folder and may use ${PLUGIN_DIR}.
   for (const p of listPlugins()) {
@@ -611,7 +611,15 @@ function syncMcpFromConfig() {
   const starts = [];
   for (const [name, w] of want) {
     if (!mcpClients.has(name)) {
-      const c = new McpClient(name, w.command, w.cwd);
+      const c = new McpClient(name, w.command, w.cwd, {
+        auth: w.auth,
+        onAuthSave: (auth) => {
+          const cfg2 = loadConfig();
+          const entry = cfg2.mcpServers.find((x) => x.name === name);
+          if (entry) { entry.auth = auth; saveConfig(cfg2); }
+        },
+        onChanged: () => sendToUI('mcp-updated', {}),
+      });
       mcpClients.set(name, c);
       starts.push(c.start().then(() => sendToUI('mcp-updated', {})));
     }
@@ -624,7 +632,9 @@ function mcpStatuses() {
     const c = mcpClients.get(s.name);
     return { name: s.name, command: s.command, enabled: !!s.enabled, source: 'user',
       status: c ? c.status : 'stopped', error: c ? c.error : null,
-      tools: c ? c.tools.map((t) => t.name) : [] };
+      remote: /^https?:\/\//.test(s.command), hasAuth: !!s.auth,
+      tools: c ? c.tools.map((t) => t.name) : [],
+      resources: c ? c.resources.length : 0, prompts: c ? c.prompts.length : 0 };
   });
   for (const p of listPlugins()) {
     for (const s of p.mcpServers) {
@@ -661,6 +671,53 @@ ipcMain.handle('mcp-toggle', async (_e, { name, enabled }) => {
   if (s) { s.enabled = !!enabled; saveConfig(cfg); await syncMcpFromConfig(); }
   return { ok: true };
 });
+ipcMain.handle('mcp-oauth', async (_e, name) => {
+  const cfg = loadConfig();
+  const entry = cfg.mcpServers.find((x) => x.name === name);
+  if (!entry) return { ok: false, error: 'no such server' };
+  const m = String(entry.command).match(/^(https?:\/\/\S+)/);
+  if (!m) return { ok: false, error: 'not a remote server' };
+  try {
+    const oauth = require('../agent/mcp-oauth');
+    const auth = await oauth.connect(m[1], (u) => shell.openExternal(u),
+      (msg) => sendToUI('mcp-oauth-status', { name, msg }));
+    const cfg2 = loadConfig();
+    const e2 = cfg2.mcpServers.find((x) => x.name === name);
+    if (e2) { e2.auth = auth; saveConfig(cfg2); }
+    const c = mcpClients.get(name);
+    if (c) { c.stop(); mcpClients.delete(name); }
+    await syncMcpFromConfig();
+    sendToUI('mcp-updated', {});
+    return { ok: true };
+  } catch (e) {
+    return { ok: false, error: String((e && e.message) || e) };
+  }
+});
+ipcMain.handle('mcp-set-token', async (_e, { name, token }) => {
+  const cfg = loadConfig();
+  const entry = cfg.mcpServers.find((x) => x.name === name);
+  if (!entry) return { ok: false, error: 'no such server' };
+  entry.auth = { access_token: String(token || '').trim() };
+  saveConfig(cfg);
+  const c = mcpClients.get(name);
+  if (c) { c.stop(); mcpClients.delete(name); }
+  await syncMcpFromConfig();
+  return { ok: true };
+});
+ipcMain.handle('mcp-prompts', () => {
+  const out = [];
+  for (const [srv, c] of mcpClients) {
+    if (c.status !== 'running') continue;
+    for (const pr of c.prompts) out.push({ server: srv, name: pr.name, description: pr.description || '', args: (pr.arguments || []).map((a) => a.name) });
+  }
+  return out;
+});
+ipcMain.handle('mcp-prompt-get', async (_e, { server, name, args }) => {
+  const c = mcpClients.get(server);
+  if (!c) return { error: 'no such server' };
+  return { text: await c.getPrompt(name, args || {}) };
+});
+
 ipcMain.handle('mcp-restart', async (_e, name) => {
   const c = mcpClients.get(name);
   if (c) { c.stop(); await c.start(); sendToUI('mcp-updated', {}); }
@@ -1083,6 +1140,27 @@ function makeMediaTools(rec) {
 
 function makeExtraTools(rec, noAgent) {
   const mediaTools = makeMediaTools(rec);
+  const semTools = {
+    semantic_search: {
+      schema: { name: 'semantic_search',
+        description: 'Search the project by MEANING, not text — finds code by what it does ("where do we validate auth tokens", "retry logic for the feed"). Complements grep: use grep for exact strings, this for concepts. First call on a project builds an embedding index (a few seconds); later calls are instant and re-index only changed files.',
+        parameters: { type: 'object', properties: { query: { type: 'string' } }, required: ['query'] } },
+      gate: (a) => ({ kind: 'read', detail: 'semantic: ' + String(a.query || '').slice(0, 100), danger: false }),
+      run: async (a) => {
+        const cfg = loadConfig();
+        if (!cfg.apiKey) return { error: 'semantic search needs an OpenRouter key (Settings)' };
+        try {
+          const sem = require('./semindex');
+          const first = !require('fs').existsSync(require('path').join(require('os').homedir(), '.harness-code', 'index'));
+          if (first) sendToUI('agent-event', { sessionId: rec.id, type: 'control_note', message: 'building the semantic index for this project…' });
+          const hits = await sem.search(rec.cwd, String(a.query || ''), cfg.apiKey,
+            (done, total) => sendToUI('agent-event', { sessionId: rec.id, type: 'control_note', message: 'indexing… ' + done + '/' + total + ' files' }));
+          if (!hits.length) return { result: 'no matches — the project may have no indexable source files' };
+          return { result: hits.map((h) => h.file + ':' + h.line + '  (score ' + h.score.toFixed(2) + ')\n' + h.text).join('\n\n---\n\n').slice(0, 24000) };
+        } catch (e) { return { error: String((e && e.message) || e) }; }
+      },
+    },
+  };
   const autoTools = {
     ...AUTOMATION_TOOLS,
     create_automation: {
@@ -1110,7 +1188,7 @@ function makeExtraTools(rec, noAgent) {
   };
   return {
     get schemas() {
-      const out = [...Object.values(BROWSER_TOOLS), ...Object.values(COMPUTER_TOOLS), ...Object.values(autoTools), ...Object.values(mediaTools)].map((t) => ({ type: 'function', function: t.schema }));
+      const out = [...Object.values(BROWSER_TOOLS), ...Object.values(COMPUTER_TOOLS), ...Object.values(autoTools), ...Object.values(mediaTools), ...Object.values(semTools)].map((t) => ({ type: 'function', function: t.schema }));
       if (!noAgent) out.push({ type: 'function', function: AGENT_TOOL_SCHEMA });
       for (const [srv, client] of mcpClients) {
         if (client.status !== 'running') continue;
@@ -1121,15 +1199,25 @@ function makeExtraTools(rec, noAgent) {
             parameters: t.inputSchema || { type: 'object', properties: {} },
           } });
         }
+        if (client.resources.length) {
+          out.push({ type: 'function', function: {
+            name: 'mcp__' + sanitizeToolName(srv) + '__read_resource',
+            description: ('[' + srv + '] Read one of the server\'s resources by uri. Available: '
+              + client.resources.slice(0, 40).map((r) => r.uri + (r.name ? ' (' + r.name + ')' : '')).join(', ')).slice(0, 1024),
+            parameters: { type: 'object', properties: { uri: { type: 'string' } }, required: ['uri'] },
+          } });
+        }
       }
       return out;
     },
     has(name) {
-      if (BROWSER_TOOLS[name] || COMPUTER_TOOLS[name] || autoTools[name] || mediaTools[name]) return true;
+      if (BROWSER_TOOLS[name] || COMPUTER_TOOLS[name] || autoTools[name] || mediaTools[name] || semTools[name]) return true;
       if (name === 'agent' && !noAgent) return true;
+      if (name.startsWith('mcp__') && name.endsWith('__read_resource')) return true;
       return name.startsWith('mcp__') && this._route(name) !== null;
     },
     gate(name, args) {
+      if (semTools[name]) return semTools[name].gate(args || {});
       if (mediaTools[name]) return mediaTools[name].gate(args || {});
       if (autoTools[name]) return autoTools[name].gate(args || {});
       if (BROWSER_TOOLS[name]) return BROWSER_TOOLS[name].gate(args || {});
@@ -1149,11 +1237,19 @@ function makeExtraTools(rec, noAgent) {
       return null;
     },
     run(name, args) {
+      if (semTools[name]) return semTools[name].run(args || {});
       if (mediaTools[name]) return mediaTools[name].run(args || {});
       if (autoTools[name]) return autoTools[name].run(args || {});
       if (BROWSER_TOOLS[name]) return BROWSER_TOOLS[name].run(args || {});
       if (COMPUTER_TOOLS[name]) return COMPUTER_TOOLS[name].run(args || {}, rec);
       if (name === 'agent' && !noAgent) return runSubAgent(rec, String((args || {}).task || ''));
+      if (name.startsWith('mcp__') && name.endsWith('__read_resource')) {
+        for (const [srv, client] of mcpClients) {
+          if (name === 'mcp__' + sanitizeToolName(srv) + '__read_resource') {
+            return client.readResource(String((args || {}).uri || '')).then((text) => ({ result: text }));
+          }
+        }
+      }
       const r = this._route(name);
       if (!r) return Promise.resolve({ error: 'unknown MCP tool: ' + name });
       return r.client.call(r.tool, args || {});
@@ -1384,6 +1480,39 @@ function makeHooks(rec) {
     },
   };
 }
+
+// ---- PTY terminal: script(1) allocates a real pty — no native modules needed --------
+const ptys = new Map();   // sessionId -> child process
+ipcMain.handle('pty-open', (_e, id) => {
+  const rec = sessions.get(id);
+  if (!rec) return { ok: false, error: 'no session' };
+  if (ptys.has(id)) return { ok: true, existing: true };
+  const shell = process.env.SHELL || '/bin/zsh';
+  let p;
+  try {
+    // script(1) fails on Electron's socketpair stdio; python's pty.spawn copes with non-tty stdin
+    p = spawn('/usr/bin/python3', ['-c', 'import pty; pty.spawn(["' + shell + '", "-i"])'], {
+      cwd: rec.cwd, stdio: ['pipe', 'pipe', 'pipe'],
+      env: { ...process.env, TERM: 'xterm-256color', COLUMNS: '120', LINES: '32' },
+    });
+  } catch (e) { return { ok: false, error: String(e.message || e) }; }
+  p.stdout.on('data', (d) => sendToUI('pty-data', { sessionId: id, data: d.toString('utf8') }));
+  p.stderr.on('data', (d) => sendToUI('pty-data', { sessionId: id, data: d.toString('utf8') }));
+  p.on('exit', () => { ptys.delete(id); sendToUI('pty-data', { sessionId: id, data: '\r\n[terminal exited — reopen the tab to restart]\r\n' }); });
+  ptys.set(id, p);
+  return { ok: true };
+});
+ipcMain.handle('pty-input', (_e, { id, data }) => {
+  const p = ptys.get(id);
+  if (p) try { p.stdin.write(String(data)); } catch {}
+  return { ok: true };
+});
+ipcMain.handle('pty-kill', (_e, id) => {
+  const p = ptys.get(id);
+  if (p) try { p.kill(); } catch {}
+  ptys.delete(id);
+  return { ok: true };
+});
 
 // ---- self-update: pull latest from GitHub, refresh the bundle, offer relaunch ---------
 ipcMain.handle('self-update', async () => {

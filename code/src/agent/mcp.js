@@ -7,20 +7,39 @@ const https = require('https');
 const http = require('http');
 
 class McpClient {
-  constructor(name, command, cwd) {
+  constructor(name, command, cwd, opts = {}) {
     this.name = name;
     this.command = command;
     this.cwd = cwd || null;
     // "https://host/path [bearer-token]" → remote Streamable-HTTP transport
     const rm = String(command || '').match(/^(https?:\/\/\S+)(?:\s+(\S+))?$/);
     this.remote = rm ? { url: rm[1], token: rm[2] || null, sessionId: null } : null;
+    this.auth = opts.auth || null;               // OAuth tokens {access_token, refresh_token, token_endpoint, client_id, resource, expires_at}
+    this.onAuthSave = opts.onAuthSave || null;   // (auth) => persist refreshed tokens
+    this.onChanged = opts.onChanged || null;     // () => UI refresh after list_changed
     this.proc = null;
     this.seq = 0;
     this.pending = new Map();
     this.tools = [];
-    this.status = 'stopped';   // stopped | starting | running | error
+    this.resources = [];
+    this.prompts = [];
+    this.status = 'stopped';   // stopped | starting | running | error | auth (needs sign-in)
     this.error = null;
     this.buf = '';
+  }
+
+  _bearer() {
+    if (this.auth && this.auth.access_token) return this.auth.access_token;
+    return this.remote && this.remote.token;
+  }
+  async _maybeRefresh() {
+    if (!this.auth || !this.auth.refresh_token) return false;
+    try {
+      const { refresh } = require('./mcp-oauth');
+      this.auth = await refresh(this.auth);
+      if (this.onAuthSave) try { this.onAuthSave(this.auth); } catch {}
+      return true;
+    } catch { return false; }
   }
 
   _httpRpc(method, params, timeout) {
@@ -34,7 +53,7 @@ class McpClient {
         headers: {
           'Content-Type': 'application/json',
           'Accept': 'application/json, text/event-stream',
-          ...(this.remote.token ? { 'Authorization': 'Bearer ' + this.remote.token } : {}),
+          ...(this._bearer() ? { 'Authorization': 'Bearer ' + this._bearer() } : {}),
           ...(this.remote.sessionId ? { 'mcp-session-id': this.remote.sessionId } : {}),
         },
         timeout: timeout || 30000,
@@ -45,6 +64,11 @@ class McpClient {
         res.on('data', (c) => (b += c));
         res.on('end', () => {
           if (id == null) return resolve(null);   // notification — no response expected
+          if (res.statusCode === 401 || res.statusCode === 403) {
+            const e = new Error('HTTP ' + res.statusCode + ': ' + b.slice(0, 200));
+            e.authRequired = true;
+            return reject(e);
+          }
           if (res.statusCode < 200 || res.statusCode >= 300) return reject(new Error('HTTP ' + res.statusCode + ': ' + b.slice(0, 200)));
           try {
             // SSE framing: take the last data: line; plain JSON otherwise
@@ -66,18 +90,35 @@ class McpClient {
     });
   }
 
+  async _listAll(rpc) {
+    const r = await rpc('tools/list', {}, 20000);
+    this.tools = (r && r.tools) || [];
+    this.resources = await rpc('resources/list', {}, 15000).then((x) => (x && x.resources) || []).catch(() => []);
+    this.prompts = await rpc('prompts/list', {}, 15000).then((x) => (x && x.prompts) || []).catch(() => []);
+  }
+
   start() {
     if (this.remote) {
       this.status = 'starting';
       this.error = null;
-      return this._httpRpc('initialize', {
+      const boot = () => this._httpRpc('initialize', {
         protocolVersion: '2024-11-05', capabilities: {},
         clientInfo: { name: 'harness-code', version: '1.3.0' },
       }, 20000)
         .then(() => this._httpRpc('notifications/initialized').catch(() => {}))
-        .then(() => this._httpRpc('tools/list', {}, 20000))
-        .then((r) => { this.tools = (r && r.tools) || []; this.status = 'running'; })
-        .catch((e) => { this.status = 'error'; this.error = String((e && e.message) || e); });
+        .then(() => this._listAll(this._httpRpc.bind(this)))
+        .then(() => { this.status = 'running'; });
+      return boot().catch(async (e) => {
+        if (e && e.authRequired && await this._maybeRefresh()) {
+          return boot().catch((e2) => { this.status = 'error'; this.error = String((e2 && e2.message) || e2); });
+        }
+        if (e && e.authRequired) {
+          this.status = 'auth';
+          this.error = 'authentication required — click Connect';
+          return;
+        }
+        this.status = 'error'; this.error = String((e && e.message) || e);
+      });
     }
     if (this.proc) return Promise.resolve();
     this.status = 'starting';
@@ -104,26 +145,40 @@ class McpClient {
       protocolVersion: '2024-11-05', capabilities: {},
       clientInfo: { name: 'harness-code', version: '0.5.0' },
     }, 20000)
-      .then(() => { this._notify('notifications/initialized'); return this._rpc('tools/list', {}, 20000); })
-      .then((r) => { this.tools = (r && r.tools) || []; this.status = 'running'; })
+      .then(() => { this._notify('notifications/initialized'); return this._listAll(this._rpc.bind(this)); })
+      .then(() => { this.status = 'running'; })
       .catch((e) => {
         this.status = 'error'; this.error = String((e && e.message) || e);
         try { this.proc && this.proc.kill(); } catch {}
       });
   }
 
-  stop() { try { this.proc && this.proc.kill(); } catch {} this.proc = null; this.status = 'stopped'; this.tools = []; if (this.remote) this.remote.sessionId = null; }
+  stop() { try { this.proc && this.proc.kill(); } catch {} this.proc = null; this.status = 'stopped'; this.tools = []; this.resources = []; this.prompts = []; if (this.remote) this.remote.sessionId = null; }
 
   call(tool, args) {
-    if (this.status !== 'running') return Promise.resolve({ error: 'MCP server "' + this.name + '" is not running' });
+    if (this.status !== 'running') return Promise.resolve({ error: 'MCP server "' + this.name + '" is not running' + (this.status === 'auth' ? ' — it needs to be connected (Settings → Connectors)' : '') });
     const rpc = this.remote ? this._httpRpc.bind(this) : this._rpc.bind(this);
-    return rpc('tools/call', { name: tool, arguments: args || {} }, 120000)
+    const go = () => rpc('tools/call', { name: tool, arguments: args || {} }, 120000);
+    return go().catch(async (e) => { if (e && e.authRequired && await this._maybeRefresh()) return go(); throw e; })
       .then((r) => {
         const parts = ((r && r.content) || []).map((c) => (c.type === 'text' ? c.text : '[' + c.type + ']'));
         const text = parts.join('\n').slice(0, 60000);
         return r && r.isError ? { error: text || 'tool reported an error' } : { result: text };
       })
       .catch((e) => ({ error: String((e && e.message) || e) }));
+  }
+
+  readResource(uri) {
+    const rpc = this.remote ? this._httpRpc.bind(this) : this._rpc.bind(this);
+    return rpc('resources/read', { uri }, 60000)
+      .then((r) => ((r && r.contents) || []).map((c) => c.text || (c.blob ? '[binary ' + (c.mimeType || '') + ']' : '')).join('\n').slice(0, 60000))
+      .catch((e) => 'Error: ' + String((e && e.message) || e));
+  }
+  getPrompt(name, args) {
+    const rpc = this.remote ? this._httpRpc.bind(this) : this._rpc.bind(this);
+    return rpc('prompts/get', { name, arguments: args || {} }, 30000)
+      .then((r) => ((r && r.messages) || []).map((m) => (m.content && m.content.text) || '').join('\n\n'))
+      .catch((e) => 'Error: ' + String((e && e.message) || e));
   }
 
   _onData(c) {
@@ -135,6 +190,10 @@ class McpClient {
       if (!line) continue;
       let m;
       try { m = JSON.parse(line); } catch { continue; }
+      if (m.method && String(m.method).startsWith('notifications/') && /list_changed/.test(m.method)) {
+        this._listAll(this._rpc.bind(this)).then(() => { if (this.onChanged) try { this.onChanged(); } catch {} }).catch(() => {});
+        continue;
+      }
       if (m.id != null && this.pending.has(m.id)) {
         const p = this.pending.get(m.id);
         this.pending.delete(m.id);
