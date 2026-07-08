@@ -14,6 +14,10 @@ struct LocalModelSpec: Identifiable {
 enum LocalModels {
     static let specs: [LocalModelSpec] = [
         LocalModelSpec(id: "ondevice/minicpm5-1b", name: "MiniCPM5 1B", repo: "openbmb/MiniCPM5-1B-MLX", size: "~0.7 GB"),
+        // Qwen3.5's hybrid linear-attention arch isn't in MLX Swift yet; Qwen3 is
+        // the newest Qwen the runtime supports (same Think/No-think toggle).
+        LocalModelSpec(id: "ondevice/qwen3-0.6b", name: "Qwen3 0.6B", repo: "mlx-community/Qwen3-0.6B-4bit", size: "~0.4 GB"),
+        LocalModelSpec(id: "ondevice/qwen3-1.7b", name: "Qwen3 1.7B", repo: "mlx-community/Qwen3-1.7B-4bit", size: "~1.0 GB"),
     ]
     static func spec(for modelId: String) -> LocalModelSpec? { specs.first { $0.id == modelId } }
     static func isLocal(_ modelId: String) -> Bool { modelId.hasPrefix("ondevice/") }
