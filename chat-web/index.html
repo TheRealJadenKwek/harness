@@ -191,6 +191,9 @@
     <button class="model-chip" id="guestBtn" style="margin-top:16px;font-size:13px">Try it without an account</button>
     <div class="muted" style="font-size:11.5px;margin-top:6px">No account: chats stay in this browser only.<br>Sign in anytime for sync, memory, search, and files.</div>
     <div class="muted" id="gateErr" style="margin-top:12px"></div>
+    <div class="muted" style="margin-top:26px;font-size:12px">
+      Also available: <a href="https://github.com/TheRealJadenKwek/harness/releases/latest" target="_blank" rel="noopener" style="color:inherit"><b>Mac app</b></a> · iPhone app (App Store soon)
+    </div>
   </div>
 </div>
 
@@ -262,6 +265,7 @@
   <div class="opt" style="cursor:default"><span>Total API spend</span><span class="d" id="setSpend"></span></div>
   <div class="opt" id="setKey"><span>OpenRouter key</span><span class="d" id="setKeyTail"></span></div>
   <div class="opt" id="setExport"><span>Export my data</span><span class="d">chats + memories → JSON</span></div>
+  <div class="opt" id="setApps"><span>Get the apps</span><span class="d">Mac · iPhone</span></div>
   <div class="opt" id="setOut"><span>Sign out</span><span class="d" id="setEmail"></span></div>
 </div>
 
@@ -949,6 +953,7 @@ $('setBtn').onclick = async () => {
   } catch {}
 };
 $('setKey').onclick = () => { closeSheets(); openSheet('keySheet'); };
+$('setApps').onclick = () => window.open('https://github.com/TheRealJadenKwek/harness/releases/latest', '_blank');
 $('setExport').onclick = async () => {
   const el = $('setExport').querySelector('.d');
   el.textContent = 'gathering…';
