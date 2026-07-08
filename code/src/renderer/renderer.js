@@ -197,7 +197,7 @@ function scSaveState(patch) { localStorage.scPos = JSON.stringify({ ...scState()
 function scApplyPos(pop) {
   const st = scState();
   if (st.docked) {
-    pop.style.left = 'auto'; pop.style.top = '82px'; pop.style.right = '14px'; pop.style.bottom = 'auto';
+    pop.style.left = 'auto'; pop.style.top = '48px'; pop.style.right = '14px'; pop.style.bottom = 'auto';
   } else if (typeof st.x === 'number') {
     const r = pop.getBoundingClientRect();
     const x = Math.min(Math.max(st.x, 8), innerWidth - (r.width || 400) - 8);
@@ -212,7 +212,7 @@ function scShowTab() {
     tab = document.createElement('button');
     tab.id = 'sctab';
     tab.innerHTML = '◦ Side chat<span class="sct-dot"></span>';
-    tab.title = 'Side chat (docked) — click to open';
+    tab.title = 'Side chat (docked) — click to open, hold & drag to tear out';
     tab.onmousedown = (e) => {
       e.preventDefault();
       const sx = e.clientX, sy = e.clientY;
@@ -254,7 +254,9 @@ function scShowTab() {
       document.addEventListener('mousemove', move);
       document.addEventListener('mouseup', up);
     };
-    document.body.appendChild(tab);
+    const usage = document.getElementById('usageLabel');
+    if (usage && usage.parentElement) usage.parentElement.insertBefore(tab, usage);
+    else document.body.appendChild(tab);
   }
   tab.style.display = '';
 }
