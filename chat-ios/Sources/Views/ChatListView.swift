@@ -18,7 +18,7 @@ struct ChatListView: View {
                                 HStack(spacing: 8) {
                                     if store.live.contains(chat.id) {
                                         Text("✳").font(.caption)
-                                            .foregroundStyle(Color(red: 0.79, green: 0.39, blue: 0.26))
+                                            .foregroundStyle(Color(red: 0.30, green: 0.49, blue: 1.0))
                                     }
                                     VStack(alignment: .leading, spacing: 2) {
                                         Text(chat.title).lineLimit(1).fontWeight(.medium)

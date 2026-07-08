@@ -30,7 +30,7 @@ struct SignInView: View {
             Spacer()
             Image(systemName: "bubble.left.and.bubble.right.fill")
                 .font(.system(size: 56))
-                .foregroundStyle(Color(red: 0.79, green: 0.39, blue: 0.26))
+                .foregroundStyle(Color(red: 0.30, green: 0.49, blue: 1.0))
             Text("Harness Chat").font(.title2.bold())
             Text("Your chats, memory, and history —\nsynced with the web app.")
                 .font(.subheadline).foregroundStyle(.secondary).multilineTextAlignment(.center)

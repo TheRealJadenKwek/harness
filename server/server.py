@@ -2007,7 +2007,7 @@ def sync_desktop_sidebar(t):
                  'model': t.get('model') or '',
                  'sessionSettings': {},
                  'isArchived': bool(t.get('archived')),
-                 'title': title or 'Harness thread',
+                 'title': title or 'Harness Code thread',
                  'titleSource': 'auto',
                  'permissionMode': _SIDEBAR_MODES.get(t.get('permission_mode') or 'bypass',
                                                       'bypassPermissions'),
@@ -2807,7 +2807,7 @@ class Handler(BaseHTTPRequestHandler):
             results = []
             for t in toks:
                 ok, code, reason = apns_send(t, {'aps': {'alert': {
-                    'title': 'Harness', 'body': 'Push is working ✅'}, 'sound': 'default'}})
+                    'title': 'Harness Code', 'body': 'Push is working ✅'}, 'sound': 'default'}})
                 results.append({'token': t[:8], 'code': code, 'reason': reason, 'ok': ok})
             return self._json(200, {'ok': True, 'sent': results})
         if path.startswith('/providers/'):

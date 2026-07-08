@@ -8,8 +8,9 @@ struct Msg: Codable, Identifiable, Hashable {
     var ts: String? = nil         // ISO timestamp (web-compatible)
     var files: [FileSpec]? = nil  // downloads the model created
     var toolNotes: [String]? = nil
+    var execs: [ExecSpec]? = nil  // code the model ran on this device
 
-    enum CodingKeys: String, CodingKey { case role, content, images, ts, files, toolNotes }
+    enum CodingKeys: String, CodingKey { case role, content, images, ts, files, toolNotes, execs }
     init(role: String, content: String, images: [String]? = nil, ts: String? = nil) {
         self.role = role; self.content = content; self.images = images; self.ts = ts
     }
@@ -21,6 +22,7 @@ struct Msg: Codable, Identifiable, Hashable {
         ts = try? c.decodeIfPresent(String.self, forKey: .ts)
         files = try? c.decodeIfPresent([FileSpec].self, forKey: .files)
         toolNotes = try? c.decodeIfPresent([String].self, forKey: .toolNotes)
+        execs = try? c.decodeIfPresent([ExecSpec].self, forKey: .execs)
     }
 }
 
@@ -58,4 +60,10 @@ struct MemoryFact: Codable, Identifiable {
     var id: Int
     var fact: String
     var created: String?
+}
+
+struct ExecSpec: Codable, Hashable {
+    var language: String
+    var code: String
+    var output: String? = nil
 }

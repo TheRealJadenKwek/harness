@@ -1,6 +1,9 @@
 import SwiftUI
 import PhotosUI
 import UIKit
+import AVKit
+import PDFKit
+import UniformTypeIdentifiers
 
 struct ChatView: View {
     @EnvironmentObject var store: Store
@@ -10,6 +13,9 @@ struct ChatView: View {
     @State private var pendingImages: [String] = []
     @State private var photoItems: [PhotosPickerItem] = []
     @State private var showCamera = false
+    @State private var showDocPicker = false
+    @State private var pendingDocs: [(name: String, text: String)] = []
+    @FocusState private var inputFocused: Bool
     @AppStorage("ondeviceThink") private var ondeviceThink = true
 
     private var chat: Chat { store.chat(chatID) ?? Chat(model: store.defaultModel) }
@@ -27,12 +33,12 @@ struct ChatView: View {
                         }
                         if let ts = store.toolStatus[chatID] {
                             HStack(spacing: 6) {
-                                Text("✳").foregroundStyle(Color(red: 0.79, green: 0.39, blue: 0.26))
+                                Text("✳").foregroundStyle(Color(red: 0.30, green: 0.49, blue: 1.0))
                                 Text(ts).font(.caption).foregroundStyle(.secondary)
                             }
                         } else if streaming && chat.messages.last?.role == "user" {
                             HStack(spacing: 6) {
-                                Text("✳").foregroundStyle(Color(red: 0.79, green: 0.39, blue: 0.26))
+                                Text("✳").foregroundStyle(Color(red: 0.30, green: 0.49, blue: 1.0))
                                 Text("Thinking…").font(.caption).foregroundStyle(.secondary)
                             }
                         }
@@ -44,10 +50,30 @@ struct ChatView: View {
                     .padding(.horizontal, 14).padding(.top, 10)
                 }
                 .scrollDismissesKeyboard(.interactively)
-                .onChange(of: chat.messages) { withAnimation { proxy.scrollTo("end", anchor: .bottom) } }
+                .onTapGesture { inputFocused = false }
+                .onChange(of: chat.messages.count) { proxy.scrollTo("end", anchor: .bottom) }
+                .onChange(of: chat.messages.last?.content) { proxy.scrollTo("end", anchor: .bottom) }
+                .onChange(of: inputFocused) { _, f in
+                    if f { DispatchQueue.main.asyncAfter(deadline: .now() + 0.25) { withAnimation(.easeOut(duration: 0.2)) { proxy.scrollTo("end", anchor: .bottom) } } }
+                }
             }
             Divider()
             VStack(spacing: 6) {
+                if !pendingDocs.isEmpty {
+                    ScrollView(.horizontal, showsIndicators: false) {
+                        HStack(spacing: 8) {
+                            ForEach(Array(pendingDocs.enumerated()), id: \.offset) { i, d in
+                                HStack(spacing: 5) {
+                                    Image(systemName: "doc.text").font(.caption)
+                                    Text(d.name).font(.caption).lineLimit(1)
+                                    Button { pendingDocs.remove(at: i) } label: { Image(systemName: "xmark.circle.fill").font(.caption) }
+                                }
+                                .padding(.horizontal, 9).padding(.vertical, 6)
+                                .background(Color(.systemGray6), in: Capsule())
+                            }
+                        }.padding(.horizontal, 4).padding(.top, 6)
+                    }
+                }
                 if !pendingImages.isEmpty {
                     ScrollView(.horizontal, showsIndicators: false) {
                         HStack(spacing: 8) {
@@ -65,15 +91,17 @@ struct ChatView: View {
                     }
                 }
                 HStack(spacing: 10) {
-                    if modelSupportsVision {
-                        Menu {
+                    Menu {
+                        if modelSupportsVision {
                             Button { showCamera = true } label: { Label("Take Photo", systemImage: "camera") }
                             photoPickerButton
-                        } label: {
-                            Image(systemName: "plus.circle").font(.system(size: 24)).foregroundStyle(.secondary)
                         }
+                        Button { showDocPicker = true } label: { Label("Attach Document", systemImage: "doc.badge.plus") }
+                    } label: {
+                        Image(systemName: "plus.circle").font(.system(size: 24)).foregroundStyle(.secondary)
                     }
                     TextField("Message…", text: $input, axis: .vertical)
+                        .focused($inputFocused)
                         .lineLimit(1...5)
                         .padding(.horizontal, 14).padding(.vertical, 9)
                         .background(Color(.systemGray6), in: RoundedRectangle(cornerRadius: 20))
@@ -93,7 +121,7 @@ struct ChatView: View {
                         Button { ondeviceThink.toggle() } label: {
                             Label(ondeviceThink ? "Think" : "No think", systemImage: "brain")
                                 .font(.caption)
-                                .foregroundStyle(ondeviceThink ? Color(red: 0.79, green: 0.39, blue: 0.26) : .secondary)
+                                .foregroundStyle(ondeviceThink ? Color(red: 0.30, green: 0.49, blue: 1.0) : .secondary)
                         }
                     } else {
                         Menu {
@@ -121,6 +149,22 @@ struct ChatView: View {
                 set: { v in var c = chat; c.model = v; store.update(c); store.defaultModel = v }
             ))
             .onDisappear { if !modelSupportsVision { pendingImages = [] } }
+        }
+        .fileImporter(isPresented: $showDocPicker,
+                      allowedContentTypes: [.pdf, .plainText, .text, .sourceCode, .commaSeparatedText, .json],
+                      allowsMultipleSelection: true) { result in
+            guard case .success(let urls) = result else { return }
+            for url in urls.prefix(4) {
+                let ok = url.startAccessingSecurityScopedResource()
+                defer { if ok { url.stopAccessingSecurityScopedResource() } }
+                var text = ""
+                if url.pathExtension.lowercased() == "pdf", let doc = PDFDocument(url: url) {
+                    text = doc.string ?? ""
+                } else {
+                    text = (try? String(contentsOf: url, encoding: .utf8)) ?? ""
+                }
+                if !text.isEmpty { pendingDocs.append((name: url.lastPathComponent, text: String(text.prefix(60000)))) }
+            }
         }
         .fullScreenCover(isPresented: $showCamera) {
             CameraPicker { img in addImage(img) }.ignoresSafeArea()
@@ -174,11 +218,14 @@ struct ChatView: View {
     func send() {
         if streaming { return }
         let text = input.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !text.isEmpty || !pendingImages.isEmpty else { return }
+        guard !text.isEmpty || !pendingImages.isEmpty || !pendingDocs.isEmpty else { return }
         input = ""
+        var docBlock = ""
+        for d in pendingDocs { docBlock += "[Attached document: " + d.name + "]\n-----BEGIN DOCUMENT-----\n" + d.text.prefix(40000) + "\n-----END DOCUMENT-----\n\n" }
+        pendingDocs = []
         let imgs = modelSupportsVision ? pendingImages : []
         pendingImages = []
-        store.send(chatID: chatID, text: text, images: imgs)
+        store.send(chatID: chatID, text: docBlock + text, images: imgs)
     }
 }
 
@@ -213,7 +260,12 @@ struct MessageBubble: View {
                     ForEach(msg.toolNotes ?? [], id: \.self) { n in
                         Label(n, systemImage: "checkmark").font(.caption).foregroundStyle(.secondary)
                     }
-                    ForEach(msg.files ?? [], id: \.self) { f in FileCardView(spec: f) }
+                    ForEach(msg.execs ?? [], id: \.self) { x in ExecCardView(spec: x) }
+                    ForEach(msg.files ?? [], id: \.self) { f in
+                        if f.kind == "image", let du = f.dataUrl { InlineMediaView(dataUrl: du, isVideo: false, filename: f.filename) }
+                        else if f.kind == "video", let du = f.dataUrl { InlineMediaView(dataUrl: du, isVideo: true, filename: f.filename) }
+                        else { FileCardView(spec: f) }
+                    }
                     if let think = parts.think {
                         DisclosureGroup {
                             Text(think).font(.caption).foregroundStyle(.secondary).textSelection(.enabled)
@@ -309,7 +361,7 @@ struct FileCardView: View {
             }
         } label: {
             HStack(spacing: 12) {
-                Image(systemName: icon).font(.system(size: 22)).foregroundStyle(Color(red: 0.79, green: 0.39, blue: 0.26))
+                Image(systemName: icon).font(.system(size: 22)).foregroundStyle(Color(red: 0.30, green: 0.49, blue: 1.0))
                 VStack(alignment: .leading, spacing: 2) {
                     Text(spec.filename).font(.subheadline.weight(.medium)).lineLimit(1)
                     Text(err ?? (building ? "building…" : spec.kind.uppercased() + " · tap to save/share"))
@@ -347,6 +399,67 @@ struct DataURLImage: View {
             Image(uiImage: img).resizable().scaledToFill()
         } else {
             Color(.systemGray5)
+        }
+    }
+}
+
+
+struct ExecCardView: View {
+    let spec: ExecSpec
+    var body: some View {
+        VStack(alignment: .leading, spacing: 6) {
+            Label("ran " + spec.language, systemImage: "terminal").font(.caption).foregroundStyle(.secondary)
+            Text(spec.code.prefix(600))
+                .font(.system(.caption2, design: .monospaced))
+                .padding(8).frame(maxWidth: .infinity, alignment: .leading)
+                .background(Color(.systemGray6), in: RoundedRectangle(cornerRadius: 10))
+            if let out = spec.output, !out.isEmpty {
+                Text(out.prefix(600))
+                    .font(.system(.caption2, design: .monospaced)).foregroundStyle(.secondary)
+                    .padding(8).frame(maxWidth: .infinity, alignment: .leading)
+                    .background(Color(.systemGray5), in: RoundedRectangle(cornerRadius: 10))
+            }
+        }
+        .frame(maxWidth: 320)
+    }
+}
+
+struct InlineMediaView: View {
+    let dataUrl: String
+    let isVideo: Bool
+    let filename: String
+    @State private var tmpURL: URL?
+    @State private var shareURL: URL?
+
+    private func materialize() -> URL? {
+        guard let comma = dataUrl.firstIndex(of: ","),
+              let data = Data(base64Encoded: String(dataUrl[dataUrl.index(after: comma)...])) else { return nil }
+        let url = FileManager.default.temporaryDirectory.appendingPathComponent(filename.isEmpty ? (isVideo ? "video.mp4" : "image.png") : filename)
+        try? data.write(to: url)
+        return url
+    }
+    var body: some View {
+        VStack(alignment: .leading, spacing: 5) {
+            if isVideo {
+                if let u = tmpURL {
+                    VideoPlayer(player: AVPlayer(url: u))
+                        .frame(width: 280, height: 190)
+                        .clipShape(RoundedRectangle(cornerRadius: 14))
+                } else {
+                    ProgressView().frame(width: 280, height: 120)
+                        .onAppear { tmpURL = materialize() }
+                }
+            } else {
+                DataURLImage(url: dataUrl)
+                    .frame(maxWidth: 280, maxHeight: 280)
+                    .clipShape(RoundedRectangle(cornerRadius: 14))
+            }
+            Button { shareURL = materialize() } label: {
+                Label("Save", systemImage: "square.and.arrow.down").font(.caption).foregroundStyle(.secondary)
+            }
+        }
+        .sheet(item: Binding(get: { shareURL.map(ShareItem.init) }, set: { _ in shareURL = nil })) { item in
+            ShareSheet(url: item.url)
         }
     }
 }

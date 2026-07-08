@@ -212,6 +212,7 @@ final class Store: ObservableObject {
         }
         var acc = ""
         var appended = false
+        var pendingExec: ExecSpec? = nil
         do {
             if LocalModels.isLocal(model) {
                 guard let c = chat(chatID) else { return }
@@ -264,6 +265,15 @@ final class Store: ObservableObject {
                             chats[i].messages[last].files = fs
                         }
                     }
+                    if let x = ev.exec {
+                        if !appended { appendDelta(chatID: chatID, acc: acc, appended: &appended) }
+                        if let i = idx(chatID), let last = chats[i].messages.indices.last {
+                            var xs = chats[i].messages[last].execs ?? []
+                            xs.append(x)
+                            chats[i].messages[last].execs = xs
+                        }
+                        pendingExec = x
+                    }
                     if let t = ev.text { acc += t; appendDelta(chatID: chatID, acc: acc, appended: &appended) }
                     if let i = idx(chatID) {
                         if let cost = ev.cost { chats[i].spend = (chats[i].spend ?? 0) + cost }
@@ -281,6 +291,16 @@ final class Store: ObservableObject {
                let last = chats[i].messages.last, (last.files ?? []).isEmpty {
                 chats[i].messages.removeLast()
             }
+        }
+        if let pe = pendingExec {
+            let out = await WebArtifactBuilder.shared.runCode(language: pe.language, code: pe.code)
+            if let i = idx(chatID), let last = chats[i].messages.indices.last,
+               var xs = chats[i].messages[last].execs, !xs.isEmpty {
+                xs[xs.count - 1].output = String(out.prefix(4000))
+                chats[i].messages[last].execs = xs
+            }
+            persist()
+            send(chatID: chatID, text: "CODE OUTPUT (" + pe.language + "):\n-----\n" + String(out.prefix(6000)) + "\n-----", images: [])
         }
         if authed, !acc.isEmpty, let c = chat(chatID),
            let lastUser = c.messages.last(where: { $0.role == "user" }) {

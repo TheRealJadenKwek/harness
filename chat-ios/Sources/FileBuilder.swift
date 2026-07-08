@@ -12,6 +12,7 @@ struct FileSpec: Codable, Hashable {
     var sheets: [Sheet]?
     var slides: [Slide]?
     var files: [Entry]?
+    var dataUrl: String?          // inline media (generated images/videos)
 
     struct Entry: Codable, Hashable {
         var path: String
@@ -134,6 +135,41 @@ final class WebArtifactBuilder: NSObject, WKNavigationDelegate {
     }
     nonisolated func webView(_ webView: WKWebView, didFail navigation: WKNavigation!, withError error: Error) {
         Task { @MainActor in readyCont?.resume(throwing: error); readyCont = nil }
+    }
+
+    // run model-requested code: JS in-page, Python via Pyodide (lazy CDN)
+    func runCode(language: String, code: String) async -> String {
+        do {
+            try await ensureWebView()
+            guard let wv = webView else { return "Error: no runtime" }
+            let js = """
+            const lang = \(String(data: try JSONEncoder().encode(language), encoding: .utf8)!);
+            const src = \(String(data: try JSONEncoder().encode(code), encoding: .utf8)!);
+            if (lang === 'javascript') {
+              const out = [];
+              const console = { log: (...a) => out.push(a.map(x => typeof x === 'object' ? JSON.stringify(x) : String(x)).join(' ')),
+                                error: (...a) => out.push(a.join(' ')) };
+              try { const r = await eval(src); if (r !== undefined) out.push(String(typeof r === 'object' ? JSON.stringify(r) : r)); }
+              catch (e) { out.push('Error: ' + e.message); }
+              return out.join('\\n') || '(no output)';
+            }
+            if (!window.loadPyodide) {
+              await new Promise((ok, bad) => { const sc = document.createElement('script');
+                sc.src = 'https://cdn.jsdelivr.net/pyodide/v0.26.2/full/pyodide.js';
+                sc.onload = ok; sc.onerror = () => bad(new Error('pyodide load failed')); document.head.appendChild(sc); });
+            }
+            if (!window.__py) window.__py = await loadPyodide({ indexURL: 'https://cdn.jsdelivr.net/pyodide/v0.26.2/full/' });
+            const py = window.__py;
+            await py.runPythonAsync('import sys, io as _io\\nsys.stdout = _io.StringIO()\\nsys.stderr = sys.stdout');
+            let repr = '';
+            try { const r = await py.runPythonAsync(src); if (r !== undefined && r !== null) repr = String(r); }
+            catch (e) { return 'Error: ' + String(e.message || e).split('\\n').slice(-3).join('\\n'); }
+            const out = await py.runPythonAsync('sys.stdout.getvalue()');
+            return ((out || '') + (repr ? '\\n' + repr : '')).trim() || '(no output)';
+            """
+            let r = try await wv.callAsyncJavaScript(js, arguments: [:], contentWorld: .page)
+            return (r as? String) ?? "(no output)"
+        } catch { return "Error: " + error.localizedDescription }
     }
 
     func build(_ spec: FileSpec) async throws -> Data {

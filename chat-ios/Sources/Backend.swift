@@ -143,6 +143,7 @@ enum Backend {
         var text: String?; var cost: Double?; var promptTokens: Int?
         var toolRun: String?; var toolDone: String?
         var file: FileSpec?; var serverError: String?
+        var exec: ExecSpec?
     }
 
     static func chatStream(model: String, messages: [[String: Any]], effort: String?) async throws -> AsyncThrowingStream<StreamEvent, Error> {
@@ -180,6 +181,9 @@ enum Backend {
                             }
                             if let f = h["file"], let fd = try? JSONSerialization.data(withJSONObject: f),
                                let spec = try? JSONDecoder().decode(FileSpec.self, from: fd) { ev.file = spec }
+                            if let x = h["exec"] as? [String: Any], let code = x["code"] as? String {
+                                ev.exec = ExecSpec(language: (x["language"] as? String) ?? "python", code: code)
+                            }
                             cont.yield(ev)
                             continue
                         }
