@@ -184,6 +184,12 @@
       <svg width="18" height="18" viewBox="0 0 48 48"><path fill="#EA4335" d="M24 9.5c3.5 0 6.6 1.2 9 3.5l6.7-6.7C35.6 2.4 30.2 0 24 0 14.6 0 6.5 5.4 2.6 13.2l7.8 6.1C12.3 13.4 17.7 9.5 24 9.5z"/><path fill="#4285F4" d="M46.5 24.5c0-1.6-.1-3.1-.4-4.5H24v9h12.7c-.6 3-2.3 5.5-4.8 7.2l7.4 5.8c4.4-4.1 7.2-10.1 7.2-17.5z"/><path fill="#FBBC05" d="M10.4 28.7c-.5-1.5-.8-3-.8-4.7s.3-3.2.8-4.7l-7.8-6.1C.9 16.5 0 20.1 0 24s.9 7.5 2.6 10.8l7.8-6.1z"/><path fill="#34A853" d="M24 48c6.2 0 11.4-2 15.2-5.6l-7.4-5.8c-2 1.4-4.7 2.2-7.8 2.2-6.3 0-11.7-3.9-13.6-9.5l-7.8 6.1C6.5 42.6 14.6 48 24 48z"/></svg>
       Continue with Google
     </button>
+    <button class="gbtn" id="appleBtn" style="margin-top:10px">
+      <svg width="16" height="16" viewBox="0 0 384 512" fill="currentColor"><path d="M318.7 268.7c-.2-36.7 16.4-64.4 50-84.8-18.8-26.9-47.2-41.7-84.7-44.6-35.5-2.8-74.3 20.7-88.5 20.7-15 0-49.4-19.7-76.4-19.7C63.3 141.2 4 184.8 4 273.5q0 39.3 14.4 81.2c12.8 36.7 59 126.7 107.2 125.2 25.2-.6 43-17.9 75.8-17.9 31.8 0 48.3 17.9 76.4 17.9 48.6-.7 90.4-82.5 102.6-119.3-65.2-30.7-61.7-90-61.7-91.9zm-56.6-164.2c27.3-32.4 24.8-61.9 24-72.5-24.1 1.4-52 16.4-67.9 34.9-17.5 19.8-27.8 44.3-25.6 71.9 26.1 2 49.9-11.4 69.5-34.3z"/></svg>
+      Continue with Apple
+    </button>
+    <button class="model-chip" id="guestBtn" style="margin-top:16px;font-size:13px">Try it without an account</button>
+    <div class="muted" style="font-size:11.5px;margin-top:6px">No account: chats stay in this browser only.<br>Sign in anytime for sync, memory, search, and files.</div>
     <div class="muted" id="gateErr" style="margin-top:12px"></div>
   </div>
 </div>
@@ -272,6 +278,19 @@ const priceStr = (m) => m.price[0] === 0 && m.price[1] === 0 ? 'free' : '$' + m.
 let catalog = [];   // full OpenRouter list (fetched with the user's key, cached)
 async function loadCatalog() {
   if (catalog.length) return;
+  if (isGuest()) {
+    try {
+      const r = await fetch('https://openrouter.ai/api/v1/models');
+      catalog = ((await r.json()).data || []).map((m) => ({
+        id: m.id, name: m.name || m.id, context: m.context_length || 0,
+        promptPrice: Number((m.pricing || {}).prompt) || 0,
+        completionPrice: Number((m.pricing || {}).completion) || 0,
+        vision: !!(m.architecture && (m.architecture.input_modalities || []).includes('image')),
+        reasoning: (m.supported_parameters || []).includes('reasoning'),
+      }));
+    } catch {}
+    return;
+  }
   try {
     const cached = JSON.parse(localStorage.catalog || 'null');
     if (cached && Date.now() - cached.at < 3600e3) { catalog = cached.models; return; }
@@ -329,6 +348,11 @@ async function H() { return { 'Content-Type': 'application/json', 'Authorization
 $('googleBtn').onclick = () => {
   location.href = SUPA + '/auth/v1/authorize?provider=google&redirect_to=' + encodeURIComponent(location.origin + '/');
 };
+$('appleBtn').onclick = () => {
+  location.href = SUPA + '/auth/v1/authorize?provider=apple&redirect_to=' + encodeURIComponent(location.origin + '/');
+};
+$('guestBtn').onclick = () => { localStorage.guest = '1'; location.reload(); };
+function isGuest() { return !sess() && localStorage.guest === '1'; }
 function signOut() { saveSess(null); localStorage.removeItem('chats'); location.reload(); }
 
 // ------------------------------------------------ state
@@ -596,12 +620,14 @@ function renderAttach() {
 // ------------------------------------------------ sync + memory
 const pushTimers = new Map();
 function syncPush(chat) {
+  if (isGuest()) return;
   clearTimeout(pushTimers.get(chat.id));
   pushTimers.set(chat.id, setTimeout(async () => {
     fetch('/api/sync', { method: 'POST', headers: await H(), body: JSON.stringify({ chat }) }).catch(() => {});
   }, 800));
 }
 async function syncPull() {
+  if (isGuest()) return;
   try {
     const r = await fetch('/api/sync', { headers: await H() });
     if (!r.ok) return;
@@ -623,6 +649,7 @@ async function syncPull() {
   } catch {}
 }
 async function memorize(user, assistant) {
+  if (isGuest()) return;
   fetch('/api/memorize', { method: 'POST', headers: await H(), body: JSON.stringify({ user, assistant }) }).catch(() => {});
 }
 
@@ -692,12 +719,29 @@ async function send() {
   const reply = { role: 'assistant', content: '', ts: new Date().toISOString() };
   let appended = false;
   try {
-    const r = await fetch('/api/chat', {
-      method: 'POST', signal: aborter.signal, headers: await H(),
-      body: JSON.stringify({ model: chat.model, messages: chat.messages, effort: chat.effort || null }),
-    });
-    if (r.status === 401) { signOut(); return; }
-    if (r.status === 402) { openSheet('keySheet'); throw new Error('add your OpenRouter key first (⚙︎ Settings)'); }
+    let r;
+    if (isGuest()) {
+      const gk = localStorage.guestKey || '';
+      if (!gk) { openSheet('keySheet'); throw new Error('add your OpenRouter key first — or sign in'); }
+      const msgs = [{ role: 'system', content: 'You are Harness, the user\'s personal assistant — warm, sharp, and quick. Be direct and genuinely useful.' },
+        ...chat.messages.map((m) => (m.images && m.images.length)
+          ? { role: m.role, content: [{ type: 'text', text: m.content }, ...m.images.map((u) => ({ type: 'image_url', image_url: { url: u } }))] }
+          : { role: m.role, content: m.content })];
+      r = await fetch('https://openrouter.ai/api/v1/chat/completions', {
+        method: 'POST', signal: aborter.signal,
+        headers: { 'Content-Type': 'application/json', 'Authorization': 'Bearer ' + gk },
+        body: JSON.stringify({ model: chat.model, messages: msgs, stream: true, max_tokens: 8000, usage: { include: true },
+                               ...(chat.effort ? { reasoning: { effort: chat.effort } } : {}) }),
+      });
+      if (r.status === 401) { openSheet('keySheet'); throw new Error('OpenRouter rejected that key — check it in ⚙︎ Settings'); }
+    } else {
+      r = await fetch('/api/chat', {
+        method: 'POST', signal: aborter.signal, headers: await H(),
+        body: JSON.stringify({ model: chat.model, messages: chat.messages, effort: chat.effort || null }),
+      });
+      if (r.status === 401) { signOut(); return; }
+      if (r.status === 402) { openSheet('keySheet'); throw new Error('add your OpenRouter key first (⚙︎ Settings)'); }
+    }
     if (!r.ok) throw new Error((await r.json().catch(() => ({}))).error || 'HTTP ' + r.status);
     const reader = r.body.getReader(); const dec = new TextDecoder();
     let buf = '';
@@ -863,6 +907,12 @@ $('modelSearch').addEventListener('input', () => {
 });
 $('memBtn').onclick = async () => {
   closeSheets();
+  if (isGuest()) {
+    const box = $('memList');
+    box.innerHTML = '<div class="muted" style="padding:8px">Memory needs an account — it syncs what the assistant learns about you across devices. Sign in to enable it.</div>';
+    openSheet('memSheet');
+    return;
+  }
   const box = $('memList'); box.innerHTML = '<div class="muted" style="padding:8px">loading…</div>';
   openSheet('memSheet');
   try {
@@ -881,6 +931,14 @@ $('memBtn').onclick = async () => {
 };
 $('setBtn').onclick = async () => {
   closeSheets(); openSheet('setSheet');
+  if (isGuest()) {
+    $('setEmail').textContent = 'guest — sign in to sync';
+    $('setKeyTail').textContent = localStorage.guestKey ? '…' + localStorage.guestKey.slice(-4) + ' (this device)' : 'not set';
+    $('setSpend').textContent = '—';
+    $('setOut').querySelector('span').textContent = 'Sign in';
+    return;
+  }
+  $('setOut').querySelector('span').textContent = 'Sign out';
   try {
     const p = await (await fetch('/api/profile', { headers: await H() })).json();
     $('setEmail').textContent = p.email || '';
@@ -918,10 +976,21 @@ $('setExport').onclick = async () => {
     el.textContent = 'failed — try again';
   }
 };
-$('setOut').onclick = signOut;
+$('setOut').onclick = () => {
+  if (isGuest()) { localStorage.removeItem('guest'); location.reload(); return; }   // back to the gate to sign in
+  signOut();
+};
 $('keySave').onclick = async () => {
   $('keyErr').textContent = '';
   const key = $('keyInput').value.trim();
+  if (isGuest()) {
+    if (!key.startsWith('sk-or-')) { $('keyErr').textContent = 'OpenRouter keys start with sk-or-'; return; }
+    localStorage.guestKey = key;
+    $('keyInput').value = '';
+    $('keyState').textContent = 'Saved on this device ✓ (…' + key.slice(-4) + ')';
+    setTimeout(closeSheets, 700);
+    return;
+  }
   const r = await fetch('/api/profile', { method: 'POST', headers: await H(), body: JSON.stringify({ key }) });
   const j = await r.json().catch(() => ({}));
   if (!r.ok) { $('keyErr').textContent = j.error || 'could not save'; return; }
@@ -1042,11 +1111,21 @@ input.addEventListener('keydown', (e) => { if (e.key === 'Enter' && !e.shiftKey 
 
 // ------------------------------------------------ boot
 (async () => {
-  parseHash();
+  const cameFromAuth = parseHash();
   const t = await token();
-  if (!t) { $('gate').style.display = 'flex'; return; }
+  if (!t && localStorage.guest !== '1') { $('gate').style.display = 'flex'; return; }
   $('gate').style.display = 'none';
   if (!cur) newChat(); else render();
+  if (t && localStorage.guest === '1') {   // guest just signed in: lossless upgrade
+    localStorage.removeItem('guest');
+    if (localStorage.guestKey) {
+      try {
+        const p = await (await fetch('/api/profile', { headers: await H() })).json();
+        if (p && p.hasKey === false) await fetch('/api/profile', { method: 'POST', headers: await H(), body: JSON.stringify({ key: localStorage.guestKey }) });
+      } catch {}
+    }
+    for (const c of chats.slice(0, 50)) syncPush(c);
+  }
   await syncPull();
   // first-run: nudge for the key
   try {
