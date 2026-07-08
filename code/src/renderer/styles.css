@@ -669,3 +669,10 @@ h3 { margin: 2px 0 4px; }
 .worked:hover { color: var(--text); }
 .worked .chev { display: inline-block; transition: transform .15s ease; font-size: 14px; }
 .worked.open .chev { transform: rotate(90deg); }
+
+/* centered reading column (Codex/Claude style) — no more edge-to-edge in wide windows */
+.log { align-items: center; }
+.log > * { width: min(100%, 830px); flex: none; align-self: center; }   /* beats the per-element align-self */
+.msg-wrap { max-width: none; }          /* the column caps it; internal flex-end keeps user bubbles right */
+.msg.assistant { max-width: none; }
+.composer-wrap > * { max-width: 866px; margin-left: auto; margin-right: auto; width: 100%; box-sizing: border-box; }
