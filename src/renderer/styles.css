@@ -399,3 +399,15 @@ h3 { margin: 2px 0 4px; }
 .msg.assistant { position: relative; }
 .msg.assistant .mctl { opacity: 0; }
 .msg.assistant:hover .mctl { opacity: 1; }
+
+/* ---------- queued follow-ups (Codex-style: queue by default, ↯ to steer) ---------- */
+.queue-note { display: flex; flex-wrap: wrap; align-items: center; gap: 6px; }
+.q-head { font-size: 11px; color: var(--muted); width: 100%; }
+.q-chip {
+  display: inline-flex; align-items: center; gap: 4px; max-width: 420px;
+  background: var(--panel2); border: 1px solid var(--border); border-radius: 8px; padding: 3px 4px 3px 9px;
+  font-size: 12px;
+}
+.q-text { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.q-btn { border: none; background: transparent; color: var(--muted); cursor: pointer; font-size: 12px; padding: 2px 4px; border-radius: 5px; }
+.q-btn:hover { color: var(--text); background: var(--panel3); }

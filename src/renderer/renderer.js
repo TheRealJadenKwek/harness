@@ -560,8 +560,31 @@ function updateComposer() {
   $('sendBtn').style.display = streaming ? 'none' : '';
   $('stopBtn').style.display = streaming ? '' : 'none';
   const q = rec ? rec.queued.length : 0;
-  $('queueNote').style.display = q ? '' : 'none';
-  $('queueNote').textContent = q ? q + ' message' + (q > 1 ? 's' : '') + ' queued — sends when this turn finishes' : '';
+  const note = $('queueNote');
+  note.style.display = q ? '' : 'none';
+  note.innerHTML = '';
+  if (q) {
+    const head = document.createElement('span'); head.className = 'q-head';
+    head.textContent = q + ' queued — sends when this turn finishes · ⌘↩ steers instead';
+    note.appendChild(head);
+    rec.queued.forEach((m, i) => {
+      const chip = document.createElement('span'); chip.className = 'q-chip';
+      const t = document.createElement('span'); t.className = 'q-text'; t.textContent = m.text.slice(0, 60) + (m.text.length > 60 ? '…' : ''); chip.appendChild(t);
+      const st = document.createElement('button'); st.className = 'q-btn'; st.textContent = '↯'; st.title = 'Steer now — interject into the running turn';
+      st.onclick = async () => {
+        if (!rec.streaming) return;
+        if (m.images && m.images.length) { addLine(rec, 'err', '⚠︎ can\'t steer with images — it stays queued'); return; }
+        rec.queued.splice(i, 1);
+        if (!(await steerNow(rec, m.text, m.modelText))) { rec.queued.splice(i, 0, m); addLine(rec, 'err', '⚠︎ steer failed — message re-queued'); }
+        updateComposer();
+      };
+      chip.appendChild(st);
+      const x = document.createElement('button'); x.className = 'q-btn'; x.textContent = '✕'; x.title = 'Remove from queue';
+      x.onclick = () => { rec.queued.splice(i, 1); updateComposer(); };
+      chip.appendChild(x);
+      note.appendChild(chip);
+    });
+  }
 }
 
 // ---------------------------------------------------------------- agent events
@@ -662,11 +685,15 @@ function endTurn(rec) {
 H.onSessionsUpdated(() => refreshSessions());
 
 // ---------------------------------------------------------------- send / stop
-async function sendText(rec, text, images, modelText) {
+async function steerNow(rec, text, modelText) {
+  const st = await H.sessionSteer(rec.meta.id, modelText || text);
+  if (st && st.ok) { addUser(rec, '↳ ' + text, 0, { ts: Date.now(), raw: text }); updateComposer(); return true; }
+  return false;
+}
+async function sendText(rec, text, images, modelText, opts) {
   if (rec.streaming) {
-    // steer the RUNNING turn (mid-task interjection); fall back to queueing
-    const st = await H.sessionSteer(rec.meta.id, modelText || text);
-    if (st && st.ok) { addUser(rec, '↳ ' + text, images ? images.length : 0, { ts: Date.now(), raw: text }); return; }
+    // Codex-style: follow-ups queue by default; steering is an explicit action
+    if (opts && opts.steer && await steerNow(rec, text, modelText)) return;
     rec.queued.push({ text, images, modelText }); updateComposer(); return;
   }
   rec.streaming = true; rec.cur = null;
@@ -676,7 +703,7 @@ async function sendText(rec, text, images, modelText) {
   else rec.streaming = false;
   updateComposer(); renderSidebar();
 }
-async function onSend() {
+async function onSend(opts) {
   const rec = active(); if (!rec) return;
   const text = $('input').value.trim();
   let images = (rec.attachments || []).map((a) => a.dataUrl).filter(Boolean);
@@ -686,9 +713,9 @@ async function onSend() {
   rec.suggestion = null; showSuggestion(rec);
   if (text.startsWith('/') && runSlash(rec, text)) return;
   rec.attachments = []; renderAttachRow();
-  sendText(rec, text || 'See the attached image(s).', images);
+  sendText(rec, text || 'See the attached image(s).', images, undefined, opts);
 }
-$('sendBtn').onclick = onSend;
+$('sendBtn').onclick = () => onSend();
 $('stopBtn').onclick = () => { const rec = active(); if (rec) H.sessionAbort(rec.meta.id); };
 
 // ---------------------------------------------------------------- slash commands
@@ -948,7 +975,12 @@ input.addEventListener('keydown', (ev) => {
       return;
     }
   }
-  if (ev.key === 'Enter' && !ev.shiftKey) { ev.preventDefault(); onSend(); return; }
+  if (ev.key === 'Enter' && !ev.shiftKey) {
+    ev.preventDefault();
+    const rec = active();
+    onSend({ steer: !!((ev.metaKey || ev.ctrlKey) && rec && rec.streaming) });
+    return;
+  }
   if (ev.key === 'Escape') {
     const rec = active();
     if (rec && rec.streaming) { ev.preventDefault(); H.sessionAbort(rec.meta.id); }
