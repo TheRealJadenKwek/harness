@@ -10,10 +10,10 @@ const APP_URL = 'https://harness-chat-web.vercel.app/';
 let win = null;
 
 function createWindow() {
+  const mac = process.platform === 'darwin';
   win = new BrowserWindow({
     width: 1180, height: 800, minWidth: 700, minHeight: 480,
-    titleBarStyle: 'hiddenInset',
-    trafficLightPosition: { x: 14, y: 14 },
+    ...(mac ? { titleBarStyle: 'hiddenInset', trafficLightPosition: { x: 14, y: 14 } } : {}),
     backgroundColor: '#161619',
     webPreferences: { contextIsolation: true, nodeIntegration: false },
   });
@@ -50,14 +50,16 @@ function createWindow() {
 
   // make the app's header the drag region + room for traffic lights
   win.webContents.on('did-finish-load', () => {
-    win.webContents.insertCSS(`
-      header { -webkit-app-region: drag; }
-      header button, header .icon-btn { -webkit-app-region: no-drag; }
-      /* clear the traffic lights: they sit over the sidebar's top-left corner */
-      #side .head { -webkit-app-region: drag; padding-top: 44px !important; }
-      #side .head button { -webkit-app-region: no-drag; }
-      @media (max-width: 899px) { header { padding-left: 76px !important; } }
-    `);
+    if (process.platform === 'darwin') {
+      win.webContents.insertCSS(`
+        header { -webkit-app-region: drag; }
+        header button, header .icon-btn { -webkit-app-region: no-drag; }
+        /* clear the traffic lights: they sit over the sidebar's top-left corner */
+        #side .head { -webkit-app-region: drag; padding-top: 44px !important; }
+        #side .head button { -webkit-app-region: no-drag; }
+        @media (max-width: 899px) { header { padding-left: 76px !important; } }
+      `);
+    }
   });
 
   // html live previews (blob:) open as child windows; anything external → browser
@@ -73,7 +75,15 @@ function createWindow() {
 
 function js(code) { if (win) win.webContents.executeJavaScript(code).catch(() => {}); }
 
-app.on('open-url', (_e, url) => {
+// Windows delivers protocol launches as argv on a second instance
+const gotLock = app.requestSingleInstanceLock();
+if (!gotLock) app.quit();
+app.on('second-instance', (_e, argv) => {
+  const url = argv.find((a) => a.startsWith('harnesschat-desktop://'));
+  if (url) handleAuthUrl(url);
+  if (win) { win.show(); win.focus(); }
+});
+function handleAuthUrl(url) {
   const hashAt = url.indexOf('#');
   if (hashAt < 0 || !win) return;
   const p = new URLSearchParams(url.slice(hashAt + 1));
@@ -84,8 +94,8 @@ app.on('open-url', (_e, url) => {
   win.webContents.executeJavaScript(
     'localStorage.sess = ' + JSON.stringify(sess) + '; location.href = ' + JSON.stringify(APP_URL) + ';'
   ).catch(() => {});
-  win.show(); win.focus();
-});
+}
+app.on('open-url', (_e, url) => { handleAuthUrl(url); if (win) { win.show(); win.focus(); } });
 
 app.whenReady().then(() => {
   Menu.setApplicationMenu(Menu.buildFromTemplate([

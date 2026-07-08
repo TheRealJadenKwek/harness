@@ -1,7 +1,7 @@
 {
   "name": "harness-chat-desktop",
   "version": "1.0.0",
-  "description": "Harness Chat as a native desktop app — a thin shell over harness-chat-web.",
+  "description": "Harness Chat as a native desktop app \u2014 a thin shell over harness-chat-web.",
   "main": "main.js",
   "author": "Jaden Kwek",
   "license": "MIT",
@@ -12,9 +12,28 @@
   "build": {
     "appId": "com.jadenkwek.harnesschat.desktop",
     "productName": "Harness Chat",
-    "directories": { "output": "dist" },
-    "files": ["main.js", "package.json", "assets/**/*"],
-    "mac": { "category": "public.app-category.productivity", "target": "dir", "icon": "assets/icon.icns" }
+    "directories": {
+      "output": "dist"
+    },
+    "files": [
+      "main.js",
+      "package.json",
+      "assets/**/*"
+    ],
+    "mac": {
+      "category": "public.app-category.productivity",
+      "target": "dir",
+      "icon": "assets/icon.icns"
+    },
+    "win": {
+      "target": "nsis",
+      "icon": "assets/icon.png"
+    },
+    "nsis": {
+      "oneClick": true,
+      "perMachine": false,
+      "deleteAppDataOnUninstall": false
+    }
   },
   "devDependencies": {
     "electron": "^33.2.0",
