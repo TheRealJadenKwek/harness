@@ -9,8 +9,9 @@ struct Msg: Codable, Identifiable, Hashable {
     var files: [FileSpec]? = nil  // downloads the model created
     var toolNotes: [String]? = nil
     var execs: [ExecSpec]? = nil  // code the model ran on this device
+    var bridgeDesc: String? = nil // cached vision-bridge description for text-only models
 
-    enum CodingKeys: String, CodingKey { case role, content, images, ts, files, toolNotes, execs }
+    enum CodingKeys: String, CodingKey { case role, content, images, ts, files, toolNotes, execs, bridgeDesc }
     init(role: String, content: String, images: [String]? = nil, ts: String? = nil) {
         self.role = role; self.content = content; self.images = images; self.ts = ts
     }
@@ -23,6 +24,7 @@ struct Msg: Codable, Identifiable, Hashable {
         files = try? c.decodeIfPresent([FileSpec].self, forKey: .files)
         toolNotes = try? c.decodeIfPresent([String].self, forKey: .toolNotes)
         execs = try? c.decodeIfPresent([ExecSpec].self, forKey: .execs)
+        bridgeDesc = try? c.decodeIfPresent(String.self, forKey: .bridgeDesc)
     }
 }
 

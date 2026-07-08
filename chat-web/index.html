@@ -241,7 +241,7 @@
     </div>
   </div>
 </div>
-<input type="file" id="filePick" accept="image/*,.pdf,.txt,.md,.csv,.json,.log,.html,.js,.py,.ts" multiple style="display:none">
+<input type="file" id="filePick" accept="image/*,.pdf,.txt,.md,.csv,.json,.log,.html,.js,.py,.ts,.xlsx,.xls,.docx,.pptx" multiple style="display:none">
 <button id="quoteBtn">↳ Add to message</button>
 <div id="ctxMenu"></div>
 
@@ -461,7 +461,7 @@ function render() {
   const m = findModel(cur ? cur.model : MODELS[0].id);
   $('modelName').textContent = m.name;
   $('attachBtn').style.display = '';
-  $('attachBtn').title = m.vision ? 'Attach photos or documents' : 'Attach documents (this model cannot see images)';
+  $('attachBtn').title = m.vision ? 'Attach photos or documents' : 'Attach photos or documents (images get auto-described for this text-only model)';
   $('effortBtn').style.display = m.reasoning ? '' : 'none';
   $('effortBtn').innerHTML = ICON.brain + ' ' + (cur && cur.effort ? cur.effort : 'auto');
   let stat = '';
@@ -530,16 +530,33 @@ function fileCard(spec) {
     + '<span style="min-width:0"><div class="fn">' + esc(spec.filename) + '</div><div class="fk">' + spec.kind.toUpperCase() + ' · ' + hint + '</div></span>'
     + '<span class="dl" title="Download">⤓</span>';
   if (spec.kind === 'html') {
-    card.onclick = () => {   // live preview in a new tab
-      const url = URL.createObjectURL(new Blob([spec.content || ''], { type: 'text/html' }));
-      window.open(url, '_blank');
-      setTimeout(() => URL.revokeObjectURL(url), 60000);
-    };
+    card.onclick = () => openPreview(spec);
     card.querySelector('.dl').onclick = (e) => { e.stopPropagation(); downloadFile(spec).catch((e2) => alert(e2.message)); };
   } else {
     card.onclick = () => downloadFile(spec).catch((e) => alert('could not build the file: ' + e.message));
   }
   return card;
+}
+function openPreview(spec) {
+  const ov = document.createElement('div');
+  ov.style.cssText = 'position:fixed;inset:0;z-index:300;background:var(--bg);display:flex;flex-direction:column';
+  const bar = document.createElement('div');
+  bar.style.cssText = 'display:flex;align-items:center;gap:10px;padding:10px 14px;border-bottom:1px solid var(--line);font-size:13px;flex:none';
+  bar.innerHTML = '<span style="font-weight:600;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">' + esc(spec.filename || 'preview.html') + '</span>'
+    + '<span style="flex:1"></span>'
+    + '<button class="model-chip" data-pv="tab">open in tab</button>'
+    + '<button class="model-chip" data-pv="close">✕ close</button>';
+  const fr = document.createElement('iframe');
+  fr.setAttribute('sandbox', 'allow-scripts allow-pointer-lock allow-popups allow-modals');
+  fr.style.cssText = 'flex:1;border:0;width:100%;background:#fff';
+  fr.srcdoc = spec.content || '';
+  ov.appendChild(bar); ov.appendChild(fr); document.body.appendChild(ov);
+  bar.querySelector('[data-pv="close"]').onclick = () => ov.remove();
+  bar.querySelector('[data-pv="tab"]').onclick = () => {
+    const url = URL.createObjectURL(new Blob([spec.content || ''], { type: 'text/html' }));
+    window.open(url, '_blank');
+    setTimeout(() => URL.revokeObjectURL(url), 60000);
+  };
 }
 function toolLine(text, done) {
   const el = document.createElement('div'); el.className = 'toolline';
@@ -794,7 +811,7 @@ async function send() {
     await compactChat(chat).catch(() => false);
     w.remove(); save(); render(); syncPush(chat);
   }
-  const images = findModel(chat.model).vision ? pendingImages.slice(0, 4) : [];
+  const images = pendingImages.slice(0, 4);
   $('input').value = ''; autosize();
   pendingImages = [];
   chat.err = null;
@@ -819,9 +836,17 @@ async function send() {
     if (isGuest()) {
       const gk = localStorage.guestKey || '';
       if (!gk) { openSheet('keySheet'); throw new Error('add your OpenRouter key first — or sign in'); }
+      const guestVis = findModel(chat.model).vision;
+      if (!guestVis) for (const m of chat.messages) {
+        if (m.images && m.images.length && !m.bridgeDesc) {
+          try { m.bridgeDesc = await describeImages(m.images, gk); save(); } catch {}
+        }
+      }
       const msgs = [{ role: 'system', content: 'You are Harness, the user\'s personal assistant — warm, sharp, and quick. Be direct and genuinely useful.' },
         ...chat.messages.map((m) => (m.images && m.images.length)
-          ? { role: m.role, content: [{ type: 'text', text: m.content }, ...m.images.map((u) => ({ type: 'image_url', image_url: { url: u } }))] }
+          ? (guestVis
+              ? { role: m.role, content: [{ type: 'text', text: m.content }, ...m.images.map((u) => ({ type: 'image_url', image_url: { url: u } }))] }
+              : { role: m.role, content: m.content + (m.bridgeDesc || '\n\n[an image was attached but could not be described for this text-only model]') })
           : { role: m.role, content: m.content })];
       r = await fetch('https://openrouter.ai/api/v1/chat/completions', {
         method: 'POST', signal: aborter.signal,
@@ -833,7 +858,10 @@ async function send() {
     } else {
       r = await fetch('/api/chat', {
         method: 'POST', signal: aborter.signal, headers: await H(),
-        body: JSON.stringify({ model: chat.model, messages: chat.messages, effort: chat.effort || null, imageModel: localStorage.imageModel || null, videoModel: localStorage.videoModel || null }),
+        body: JSON.stringify({ model: chat.model,
+          messages: chat.messages.map((m) => (m.images && m.images.length && m.bridgeDesc && !findModel(chat.model).vision)
+            ? { role: m.role, content: m.content + m.bridgeDesc } : m),
+          effort: chat.effort || null, imageModel: localStorage.imageModel || null, videoModel: localStorage.videoModel || null }),
       });
       if (r.status === 401) { signOut(); return; }
       if (r.status === 402) { openSheet('keySheet'); throw new Error('add your OpenRouter key first (⚙︎ Settings)'); }
@@ -855,6 +883,7 @@ async function send() {
         if (d.harness) {
           const h = d.harness;
           if (h.error) throw new Error(h.error);
+          if (h.bridged) { for (const b of h.bridged) if (chat.messages[b.i] && chat.messages[b.i].images) chat.messages[b.i].bridgeDesc = b.desc; save(); }
           if (h.tool && cur === chat) {
             const log = $('log');
             if (h.status === 'run') {
@@ -937,6 +966,21 @@ $('sideNew').onclick = newChat;
 $('send').onclick = send;
 $('attachBtn').onclick = () => $('filePick').click();
 let pendingDocs = [];
+async function describeImages(urls, key) {
+  const r = await fetch('https://openrouter.ai/api/v1/chat/completions', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json', 'Authorization': 'Bearer ' + key },
+    body: JSON.stringify({ model: 'google/gemini-3.1-flash', max_tokens: 2000,
+      messages: [{ role: 'user', content: [
+        { type: 'text', text: 'Describe the attached image(s) exhaustively for a text-only AI that must answer questions about them. Transcribe ALL visible text verbatim, describe layout, charts with their values, people, objects, and colors. Organized, no preamble.' },
+        ...urls.map((u) => ({ type: 'image_url', image_url: { url: u } })),
+      ] }] }),
+  });
+  const d = await r.json();
+  const desc = d.choices && d.choices[0] && d.choices[0].message && d.choices[0].message.content;
+  if (!desc) throw new Error('no description');
+  return '\n\n[Attached image(s), auto-described by a vision model because this model cannot see images:]\n' + desc;
+}
 async function extractDoc(f) {
   if (f.type === 'application/pdf' || f.name.endsWith('.pdf')) {
     const pdfjs = await loadLib('pdfjs', 'https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.min.js', 'pdfjsLib');
@@ -950,13 +994,41 @@ async function extractDoc(f) {
     }
     return text.trim();
   }
+  const ext = f.name.toLowerCase().split('.').pop();
+  if (ext === 'xlsx' || ext === 'xls') {
+    const XLSX = await loadLib('xlsx', 'https://cdnjs.cloudflare.com/ajax/libs/xlsx/0.18.5/xlsx.full.min.js', 'XLSX');
+    const wb = XLSX.read(await f.arrayBuffer(), { type: 'array' });
+    let text = '';
+    for (const name of wb.SheetNames.slice(0, 10)) {
+      text += '=== sheet: ' + name + ' ===\n' + XLSX.utils.sheet_to_csv(wb.Sheets[name]).slice(0, 30000) + '\n\n';
+      if (text.length > 60000) break;
+    }
+    return text.trim();
+  }
+  if (ext === 'docx' || ext === 'pptx') {
+    const JSZip = await loadLib('jszip', 'https://cdnjs.cloudflare.com/ajax/libs/jszip/3.10.1/jszip.min.js', 'JSZip');
+    const zip = await JSZip.loadAsync(await f.arrayBuffer());
+    const paths = ext === 'docx' ? ['word/document.xml']
+      : Object.keys(zip.files).filter((q) => /^ppt\/slides\/slide\d+\.xml$/.test(q))
+          .sort((a, b) => parseInt(a.match(/\d+/)[0]) - parseInt(b.match(/\d+/)[0]));
+    let text = '';
+    for (const q of paths) {
+      const file = zip.file(q);
+      if (!file) continue;
+      const xml = await file.async('string');
+      text += (ext === 'pptx' ? '=== ' + q.replace('ppt/slides/', '').replace('.xml', '') + ' ===\n' : '')
+        + xml.replace(/<\/(w:p|a:p)>/g, '\n').replace(/<[^>]+>/g, '')
+             .replace(/&amp;/g, '&').replace(/&lt;/g, '<').replace(/&gt;/g, '>').replace(/&quot;/g, '"')
+             .replace(/&#(\d+);/g, (_, n) => String.fromCharCode(n)).replace(/\n{3,}/g, '\n\n') + '\n';
+      if (text.length > 60000) break;
+    }
+    return text.trim();
+  }
   return (await f.text()).slice(0, 60000);
 }
 $('filePick').onchange = async (e) => {
-  const vision = findModel(cur ? cur.model : '').vision;
   for (const f of [...e.target.files].slice(0, 6)) {
     if (f.type.startsWith('image/')) {
-      if (!vision) continue;
       const url = await downscale(f);
       if (url) pendingImages.push(url);
     } else if (f.size < 15 * 1024 * 1024) {

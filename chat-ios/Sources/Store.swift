@@ -223,12 +223,29 @@ final class Store: ObservableObject {
                     appendDelta(chatID: chatID, acc: acc, appended: &appended)
                 }
             } else {
+                let vis = models.first { $0.id == model }?.vision ?? true
+                // guest + text-only model: describe images client-side once, cache on the message
+                if !authed && !vis, let i = idx(chatID) {
+                    for j in chats[i].messages.indices {
+                        let m = chats[i].messages[j]
+                        if let im = m.images, !im.isEmpty, m.bridgeDesc == nil, !localKey.isEmpty {
+                            toolStatus[chatID] = "describing images for this text-only model"
+                            chats[i].messages[j].bridgeDesc = (try? await Backend.describeImages(im, key: localKey))
+                                ?? "\n\n[an image was attached but could not be described for this text-only model]"
+                        }
+                    }
+                    toolStatus[chatID] = nil
+                    persist()
+                }
                 guard let c = chat(chatID) else { return }
                 let msgs: [[String: Any]] = c.messages.map { m in
-                    if let im = m.images, !im.isEmpty, authed {
-                        return ["role": m.role, "content": m.content, "images": im]
-                    }
                     if let im = m.images, !im.isEmpty {
+                        if !vis {
+                            if let d = m.bridgeDesc { return ["role": m.role, "content": m.content + d] }
+                            if authed { return ["role": m.role, "content": m.content, "images": im] }   // server bridges, sends desc back
+                            return ["role": m.role, "content": m.content]
+                        }
+                        if authed { return ["role": m.role, "content": m.content, "images": im] }
                         var parts: [[String: Any]] = [["type": "text", "text": m.content]]
                         parts += im.map { ["type": "image_url", "image_url": ["url": $0]] }
                         return ["role": m.role, "content": parts]
@@ -264,6 +281,12 @@ final class Store: ObservableObject {
                             fs.append(f)
                             chats[i].messages[last].files = fs
                         }
+                    }
+                    if let bs = ev.bridged, let i = idx(chatID) {
+                        for (mi, d) in bs where chats[i].messages.indices.contains(mi) && chats[i].messages[mi].images != nil {
+                            chats[i].messages[mi].bridgeDesc = d
+                        }
+                        persist()
                     }
                     if let x = ev.exec {
                         if !appended { appendDelta(chatID: chatID, acc: acc, appended: &appended) }

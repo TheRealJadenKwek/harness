@@ -172,6 +172,46 @@ final class WebArtifactBuilder: NSObject, WKNavigationDelegate {
         } catch { return "Error: " + error.localizedDescription }
     }
 
+    // extract readable text from office docs (xlsx via SheetJS, docx/pptx via JSZip)
+    func extractOffice(base64: String, ext: String) async -> String {
+        do {
+            try await ensureWebView()
+            guard let wv = webView else { return "" }
+            let js = """
+            const b64 = \(String(data: try JSONEncoder().encode(base64), encoding: .utf8)!);
+            const ext = \(String(data: try JSONEncoder().encode(ext), encoding: .utf8)!);
+            const bin = Uint8Array.from(atob(b64), (c) => c.charCodeAt(0));
+            if (ext === 'xlsx' || ext === 'xls') {
+              const wb = XLSX.read(bin, { type: 'array' });
+              let text = '';
+              for (const name of wb.SheetNames.slice(0, 10)) {
+                text += '=== sheet: ' + name + ' ===\\n' + XLSX.utils.sheet_to_csv(wb.Sheets[name]).slice(0, 30000) + '\\n\\n';
+                if (text.length > 60000) break;
+              }
+              return text.trim();
+            }
+            const zip = await JSZip.loadAsync(bin);
+            const paths = ext === 'docx' ? ['word/document.xml']
+              : Object.keys(zip.files).filter((q) => /^ppt\\/slides\\/slide\\d+\\.xml$/.test(q))
+                  .sort((a, b) => parseInt(a.match(/\\d+/)[0]) - parseInt(b.match(/\\d+/)[0]));
+            let text = '';
+            for (const q of paths) {
+              const file = zip.file(q);
+              if (!file) continue;
+              const xml = await file.async('string');
+              text += (ext === 'pptx' ? '=== ' + q.replace('ppt/slides/', '').replace('.xml', '') + ' ===\\n' : '')
+                + xml.replace(/<\\/(w:p|a:p)>/g, '\\n').replace(/<[^>]+>/g, '')
+                     .replace(/&amp;/g, '&').replace(/&lt;/g, '<').replace(/&gt;/g, '>').replace(/&quot;/g, '\"')
+                     .replace(/&#(\\d+);/g, (_, n) => String.fromCharCode(n)).replace(/\\n{3,}/g, '\\n\\n') + '\\n';
+              if (text.length > 60000) break;
+            }
+            return text.trim();
+            """
+            let r = try await wv.callAsyncJavaScript(js, arguments: [:], contentWorld: .page)
+            return (r as? String) ?? ""
+        } catch { return "" }
+    }
+
     func build(_ spec: FileSpec) async throws -> Data {
         try await ensureWebView()
         guard let wv = webView else { throw NSError(domain: "wb", code: 1) }

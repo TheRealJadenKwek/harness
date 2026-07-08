@@ -73,6 +73,28 @@ enum Backend {
     }
 
     // Guest mode: no account — call OpenRouter directly with a locally-stored key.
+    // guest-mode vision bridge: a vision model describes images for a text-only model
+    static func describeImages(_ urls: [String], key: String) async throws -> String {
+        var req = URLRequest(url: URL(string: "https://openrouter.ai/api/v1/chat/completions")!)
+        req.httpMethod = "POST"
+        req.setValue("Bearer " + key, forHTTPHeaderField: "Authorization")
+        req.setValue("application/json", forHTTPHeaderField: "Content-Type")
+        var parts: [[String: Any]] = [["type": "text", "text": "Describe the attached image(s) exhaustively for a text-only AI that must answer questions about them. Transcribe ALL visible text verbatim, describe layout, charts with their values, people, objects, and colors. Organized, no preamble."]]
+        parts += urls.map { ["type": "image_url", "image_url": ["url": $0]] }
+        req.httpBody = try JSONSerialization.data(withJSONObject: [
+            "model": "google/gemini-3.1-flash", "max_tokens": 2000,
+            "messages": [["role": "user", "content": parts]],
+        ])
+        let (data, _) = try await URLSession.shared.data(for: req)
+        guard let obj = try JSONSerialization.jsonObject(with: data) as? [String: Any],
+              let ch = (obj["choices"] as? [[String: Any]])?.first,
+              let msg = ch["message"] as? [String: Any],
+              let desc = msg["content"] as? String, !desc.isEmpty else {
+            throw NSError(domain: "bridge", code: 1, userInfo: [NSLocalizedDescriptionKey: "no description"])
+        }
+        return "\n\n[Attached image(s), auto-described by a vision model because this model cannot see images:]\n" + desc
+    }
+
     static func directStream(model: String, messages: [[String: Any]], effort: String?, key: String) async throws -> AsyncThrowingStream<StreamEvent, Error> {
         var req = URLRequest(url: URL(string: "https://openrouter.ai/api/v1/chat/completions")!)
         req.httpMethod = "POST"
@@ -144,6 +166,7 @@ enum Backend {
         var toolRun: String?; var toolDone: String?
         var file: FileSpec?; var serverError: String?
         var exec: ExecSpec?
+        var bridged: [(Int, String)]?
     }
 
     static func chatStream(model: String, messages: [[String: Any]], effort: String?) async throws -> AsyncThrowingStream<StreamEvent, Error> {
@@ -183,6 +206,12 @@ enum Backend {
                                let spec = try? JSONDecoder().decode(FileSpec.self, from: fd) { ev.file = spec }
                             if let x = h["exec"] as? [String: Any], let code = x["code"] as? String {
                                 ev.exec = ExecSpec(language: (x["language"] as? String) ?? "python", code: code)
+                            }
+                            if let bs = h["bridged"] as? [[String: Any]] {
+                                ev.bridged = bs.compactMap { b in
+                                    guard let i = b["i"] as? Int, let d = b["desc"] as? String else { return nil }
+                                    return (i, d)
+                                }
                             }
                             cont.yield(ev)
                             continue

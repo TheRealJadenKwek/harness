@@ -92,10 +92,8 @@ struct ChatView: View {
                 }
                 HStack(spacing: 10) {
                     Menu {
-                        if modelSupportsVision {
-                            Button { showCamera = true } label: { Label("Take Photo", systemImage: "camera") }
-                            photoPickerButton
-                        }
+                        Button { showCamera = true } label: { Label("Take Photo", systemImage: "camera") }
+                        photoPickerButton
                         Button { showDocPicker = true } label: { Label("Attach Document", systemImage: "doc.badge.plus") }
                     } label: {
                         Image(systemName: "plus.circle").font(.system(size: 24)).foregroundStyle(.secondary)
@@ -151,19 +149,33 @@ struct ChatView: View {
             .onDisappear { if !modelSupportsVision { pendingImages = [] } }
         }
         .fileImporter(isPresented: $showDocPicker,
-                      allowedContentTypes: [.pdf, .plainText, .text, .sourceCode, .commaSeparatedText, .json],
+                      allowedContentTypes: [.pdf, .plainText, .text, .sourceCode, .commaSeparatedText, .json,
+                                            .spreadsheet, .presentation,
+                                            UTType(filenameExtension: "xlsx"), UTType(filenameExtension: "docx"),
+                                            UTType(filenameExtension: "pptx")].compactMap { $0 },
                       allowsMultipleSelection: true) { result in
             guard case .success(let urls) = result else { return }
             for url in urls.prefix(4) {
                 let ok = url.startAccessingSecurityScopedResource()
+                let ext = url.pathExtension.lowercased()
+                let name = url.lastPathComponent
+                if ["xlsx", "xls", "docx", "pptx"].contains(ext) {
+                    guard let data = try? Data(contentsOf: url) else { if ok { url.stopAccessingSecurityScopedResource() }; continue }
+                    if ok { url.stopAccessingSecurityScopedResource() }
+                    Task { @MainActor in
+                        let text = await WebArtifactBuilder.shared.extractOffice(base64: data.base64EncodedString(), ext: ext)
+                        if !text.isEmpty { pendingDocs.append((name: name, text: String(text.prefix(60000)))) }
+                    }
+                    continue
+                }
                 defer { if ok { url.stopAccessingSecurityScopedResource() } }
                 var text = ""
-                if url.pathExtension.lowercased() == "pdf", let doc = PDFDocument(url: url) {
+                if ext == "pdf", let doc = PDFDocument(url: url) {
                     text = doc.string ?? ""
                 } else {
                     text = (try? String(contentsOf: url, encoding: .utf8)) ?? ""
                 }
-                if !text.isEmpty { pendingDocs.append((name: url.lastPathComponent, text: String(text.prefix(60000)))) }
+                if !text.isEmpty { pendingDocs.append((name: name, text: String(text.prefix(60000)))) }
             }
         }
         .fullScreenCover(isPresented: $showCamera) {
@@ -223,7 +235,7 @@ struct ChatView: View {
         var docBlock = ""
         for d in pendingDocs { docBlock += "[Attached document: " + d.name + "]\n-----BEGIN DOCUMENT-----\n" + d.text.prefix(40000) + "\n-----END DOCUMENT-----\n\n" }
         pendingDocs = []
-        let imgs = modelSupportsVision ? pendingImages : []
+        let imgs = pendingImages
         pendingImages = []
         store.send(chatID: chatID, text: docBlock + text, images: imgs)
     }
@@ -264,6 +276,7 @@ struct MessageBubble: View {
                     ForEach(msg.files ?? [], id: \.self) { f in
                         if f.kind == "image", let du = f.dataUrl { InlineMediaView(dataUrl: du, isVideo: false, filename: f.filename) }
                         else if f.kind == "video", let du = f.dataUrl { InlineMediaView(dataUrl: du, isVideo: true, filename: f.filename) }
+                        else if f.kind == "html" { HTMLFileCardView(spec: f) }
                         else { FileCardView(spec: f) }
                     }
                     if let think = parts.think {
@@ -462,4 +475,68 @@ struct InlineMediaView: View {
             ShareSheet(url: item.url)
         }
     }
+}
+
+
+import WebKit
+
+struct HTMLFileCardView: View {
+    let spec: FileSpec
+    @State private var showPreview = false
+    var body: some View {
+        Button { showPreview = true } label: {
+            HStack(spacing: 12) {
+                Image(systemName: "globe").font(.system(size: 22)).foregroundStyle(Color(red: 0.30, green: 0.49, blue: 1.0))
+                VStack(alignment: .leading, spacing: 2) {
+                    Text(spec.filename).font(.subheadline.weight(.medium)).lineLimit(1)
+                    Text("HTML · tap to preview").font(.caption2).foregroundStyle(.secondary)
+                }
+                Spacer(minLength: 8)
+                Image(systemName: "play.circle").foregroundStyle(.secondary)
+            }
+            .padding(12)
+            .background(Color(.systemGray6), in: RoundedRectangle(cornerRadius: 14))
+        }
+        .buttonStyle(.plain)
+        .frame(maxWidth: 300, alignment: .leading)
+        .fullScreenCover(isPresented: $showPreview) { HTMLPreviewSheet(spec: spec) }
+    }
+}
+
+struct HTMLPreviewSheet: View {
+    let spec: FileSpec
+    @Environment(\.dismiss) private var dismiss
+    @State private var shareURL: URL?
+    var body: some View {
+        NavigationStack {
+            HTMLWebView(html: spec.content ?? "")
+                .ignoresSafeArea(edges: .bottom)
+                .navigationTitle(spec.filename)
+                .navigationBarTitleDisplayMode(.inline)
+                .toolbar {
+                    ToolbarItem(placement: .topBarLeading) { Button("Close") { dismiss() } }
+                    ToolbarItem(placement: .topBarTrailing) {
+                        Button {
+                            let url = FileManager.default.temporaryDirectory.appendingPathComponent(spec.filename.isEmpty ? "page.html" : spec.filename)
+                            try? (spec.content ?? "").data(using: .utf8)?.write(to: url)
+                            shareURL = url
+                        } label: { Image(systemName: "square.and.arrow.up") }
+                    }
+                }
+                .sheet(item: Binding(get: { shareURL.map(ShareItem.init) }, set: { _ in shareURL = nil })) { item in
+                    ShareSheet(url: item.url)
+                }
+        }
+    }
+}
+
+struct HTMLWebView: UIViewRepresentable {
+    let html: String
+    func makeUIView(context: Context) -> WKWebView {
+        let cfg = WKWebViewConfiguration()
+        let wv = WKWebView(frame: .zero, configuration: cfg)
+        wv.loadHTMLString(html, baseURL: nil)
+        return wv
+    }
+    func updateUIView(_ uiView: WKWebView, context: Context) {}
 }

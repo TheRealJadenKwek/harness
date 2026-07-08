@@ -99,18 +99,25 @@ async function webSearch(q) {
 }
 
 // which models can do native tool calls (catalog cached while the function is warm)
-let toolModels = null, toolModelsAt = 0;
+let toolModels = null, toolModelsAt = 0, visionModels = null;
 async function supportsTools(model, key) {
   if (!toolModels || Date.now() - toolModelsAt > 3600e3) {
     try {
       const r = await fetch('https://openrouter.ai/api/v1/models', { headers: { 'Authorization': 'Bearer ' + key } });
       const data = (await r.json()).data || [];
       toolModels = new Set(data.filter((m) => (m.supported_parameters || []).includes('tools')).map((m) => m.id));
+      visionModels = new Set(data.filter((m) => ((m.architecture || {}).input_modalities || []).includes('image')).map((m) => m.id));
       toolModelsAt = Date.now();
     } catch { return true; }   // unknown → try; worst case the provider ignores it
   }
   return toolModels.has(model);
 }
+async function supportsVision(model, key) {
+  await supportsTools(model, key);            // fills the shared catalog cache
+  return visionModels ? visionModels.has(model) : true;
+}
+const BRIDGE_PREFS = ['google/gemini-3.1-flash', 'google/gemini-2.5-flash', 'openai/gpt-4o-mini', 'anthropic/claude-3.5-haiku'];
+const BRIDGE_PROMPT = 'Describe the attached image(s) exhaustively for a text-only AI that must answer questions about them. Transcribe ALL visible text verbatim, describe layout, charts with their values, people, objects, and colors. Organized, no preamble.';
 
 module.exports = async (req, res) => {
   if (req.method !== 'POST') { res.status(405).json({ error: 'POST only' }); return; }
@@ -162,6 +169,43 @@ module.exports = async (req, res) => {
   res.setHeader('Content-Type', 'text/event-stream');
   res.setHeader('Cache-Control', 'no-cache');
   const send = (obj) => res.write('data: ' + JSON.stringify(obj) + '\n\n');
+
+  // vision bridge: text-only model + attached images → a vision model describes them first
+  try {
+    const hasImages = convo.some((m) => Array.isArray(m.content) && m.content.some((p) => p.type === 'image_url'));
+    if (hasImages && !(await supportsVision(model, key))) {
+      const bridgeModel = (visionModels && BRIDGE_PREFS.find((x) => visionModels.has(x))) || BRIDGE_PREFS[0];
+      send({ harness: { tool: 'describing images for this text-only model', status: 'run' } });
+      const bridged = [];
+      for (let i = 0; i < convo.length; i++) {
+        const m = convo[i];
+        if (!Array.isArray(m.content)) continue;
+        const imgs = m.content.filter((p) => p.type === 'image_url');
+        if (!imgs.length) { m.content = (m.content.find((p) => p.type === 'text') || {}).text || ''; continue; }
+        const txt = (m.content.find((p) => p.type === 'text') || {}).text || '';
+        let desc = null;
+        try {
+          const r = await fetch('https://openrouter.ai/api/v1/chat/completions', {
+            method: 'POST',
+            headers: { 'Authorization': 'Bearer ' + key, 'Content-Type': 'application/json' },
+            body: JSON.stringify({ model: bridgeModel, max_tokens: 2000,
+              messages: [{ role: 'user', content: [{ type: 'text', text: BRIDGE_PROMPT }, ...imgs] }] }),
+          });
+          const d = await r.json();
+          desc = d.choices && d.choices[0] && d.choices[0].message && d.choices[0].message.content;
+        } catch {}
+        if (desc) {
+          const block = '\n\n[' + imgs.length + ' attached image(s), auto-described by ' + bridgeModel + ' because this model cannot see images:]\n' + desc;
+          m.content = txt + block;
+          bridged.push({ i: i - 1, desc: block });   // -1: system msg was unshifted
+        } else {
+          m.content = txt + '\n\n[an image was attached but could not be described for this text-only model]';
+        }
+      }
+      send({ harness: { tool: 'describing images for this text-only model', status: 'done' } });
+      if (bridged.length) send({ harness: { bridged } });
+    }
+  } catch {}
 
   try {
     for (let round = 0; round < MAX_ROUNDS; round++) {
