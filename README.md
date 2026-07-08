@@ -1,5 +1,21 @@
 # Harness
 
+Everything Harness in one repo — a small family of AI apps that share one design language (monochrome, terracotta ✳) and one idea: your models, your keys, no middleman.
+
+| Directory | What it is |
+|---|---|
+| **`code/`** | **Harness Code** — Claude Code / Codex-class desktop coding agent for ANY model (340+ via OpenRouter, local models via Ollama). Electron, zero-dep agent core. |
+| **`ios/` + `server/`** | **Harness Code mobile** — your computer's coding agents (Claude Code, Codex, Harness Code) as a native iPhone app over Tailscale. |
+| **`chat-ios/`** | **Harness Chat (iOS)** — ChatGPT-style app for OpenRouter + on-device MLX models, synced with the web app. |
+| **`chat-web/`** | **Harness Chat (web)** — the same chat as a PWA: Google sign-in, BYOK, server-side history + automatic memory (Vercel + Supabase). |
+| **`relay/`** | Push-notification relay for the mobile remote. |
+
+Each directory was its own repo (histories preserved via subtree merges); the old repos are archived.
+
+---
+
+# Harness
+
 **Your computer's AI coding CLIs, as a native iPhone app.**
 
 Harness turns Claude Code, Codex, and [Harness Code](https://github.com/TheRealJadenKwek/harness-code) (an open, any-model desktop agent — 340+ models via OpenRouter) running on your own Mac or Windows PC into a phone-first experience: start threads, watch replies stream with full markdown, read reasoning summaries, review the diffs and files your agents produce, answer their questions with a tap, and get a push notification when a long task finishes — from anywhere, over your own private [Tailscale](https://tailscale.com) network.
