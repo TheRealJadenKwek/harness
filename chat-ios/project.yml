@@ -36,6 +36,7 @@ targets:
       properties:
         UILaunchScreen: {}
         CFBundleDisplayName: Harness Chat
+        ITSAppUsesNonExemptEncryption: false
         CFBundleURLTypes:
           - CFBundleURLSchemes: [harnesschat]
             CFBundleURLName: com.jadenkwek.harnesschat.auth
