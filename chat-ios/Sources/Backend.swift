@@ -72,6 +72,73 @@ enum Backend {
         return (data, (resp as? HTTPURLResponse)?.statusCode ?? 0)
     }
 
+    // Guest mode: no account — call OpenRouter directly with a locally-stored key.
+    static func directStream(model: String, messages: [[String: Any]], effort: String?, key: String) async throws -> AsyncThrowingStream<StreamEvent, Error> {
+        var req = URLRequest(url: URL(string: "https://openrouter.ai/api/v1/chat/completions")!)
+        req.httpMethod = "POST"
+        req.setValue("Bearer " + key, forHTTPHeaderField: "Authorization")
+        req.setValue("application/json", forHTTPHeaderField: "Content-Type")
+        var body: [String: Any] = ["model": model, "messages": messages, "stream": true,
+                                   "max_tokens": 8000, "usage": ["include": true]]
+        if let e = effort { body["reasoning"] = ["effort": e] }
+        req.httpBody = try JSONSerialization.data(withJSONObject: body)
+        let (bytes, resp) = try await URLSession.shared.bytes(for: req)
+        let code = (resp as? HTTPURLResponse)?.statusCode ?? 0
+        if code >= 300 {
+            var err = ""
+            for try await line in bytes.lines { err += line; if err.count > 400 { break } }
+            throw NSError(domain: "or", code: code, userInfo: [NSLocalizedDescriptionKey: "HTTP \(code): \(err.prefix(200))"])
+        }
+        return AsyncThrowingStream { cont in
+            let task = Task {
+                do {
+                    for try await line in bytes.lines {
+                        guard line.hasPrefix("data:") else { continue }
+                        let payload = line.dropFirst(5).trimmingCharacters(in: .whitespaces)
+                        if payload == "[DONE]" { continue }
+                        guard let d = payload.data(using: .utf8),
+                              let obj = try? JSONSerialization.jsonObject(with: d) as? [String: Any] else { continue }
+                        var ev = StreamEvent()
+                        if let u = obj["usage"] as? [String: Any] {
+                            ev.cost = u["cost"] as? Double
+                            ev.promptTokens = u["prompt_tokens"] as? Int
+                        }
+                        if let ch = (obj["choices"] as? [[String: Any]])?.first,
+                           let delta = ch["delta"] as? [String: Any],
+                           let text = delta["content"] as? String, !text.isEmpty { ev.text = text }
+                        if ev.text != nil || ev.cost != nil { cont.yield(ev) }
+                    }
+                    cont.finish()
+                } catch { cont.finish(throwing: error) }
+            }
+            cont.onTermination = { _ in task.cancel() }
+        }
+    }
+
+    // the OpenRouter catalog is public — guests get the model list keylessly
+    static func publicModels() async -> [ORModel] {
+        guard let (data, _) = try? await URLSession.shared.data(from: URL(string: "https://openrouter.ai/api/v1/models")!) else { return [] }
+        struct Raw: Codable {
+            struct M: Codable {
+                let id: String; let name: String?; let context_length: Int?
+                struct P: Codable { let prompt: String?; let completion: String? }
+                let pricing: P?
+                struct A: Codable { let input_modalities: [String]? }
+                let architecture: A?
+                let supported_parameters: [String]?
+            }
+            let data: [M]
+        }
+        guard let raw = try? JSONDecoder().decode(Raw.self, from: data) else { return [] }
+        return raw.data.map {
+            ORModel(id: $0.id, name: $0.name ?? $0.id, context: $0.context_length ?? 0,
+                    promptPrice: Double($0.pricing?.prompt ?? "0") ?? 0,
+                    completionPrice: Double($0.pricing?.completion ?? "0") ?? 0,
+                    vision: $0.architecture?.input_modalities?.contains("image") ?? false,
+                    reasoning: $0.supported_parameters?.contains("reasoning") ?? false)
+        }.sorted { $0.id < $1.id }
+    }
+
     struct StreamEvent {
         var text: String?; var cost: Double?; var promptTokens: Int?
         var toolRun: String?; var toolDone: String?

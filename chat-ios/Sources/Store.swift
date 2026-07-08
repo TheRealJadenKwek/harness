@@ -8,6 +8,7 @@ final class Store: ObservableObject {
     @Published var models: [ORModel] = []
     @Published var favorites: Set<String> = []
     @Published var authed = Backend.session != nil
+    @Published var guest = UserDefaults.standard.bool(forKey: "guestMode")
     @Published var live: Set<String> = []          // chat ids currently streaming (parallel)
     @Published var profile: Profile? = nil
     @Published var errors: [String: String] = [:]  // chat id → last error
@@ -27,6 +28,18 @@ final class Store: ObservableObject {
            let saved = try? JSONDecoder().decode([Chat].self, from: d) { chats = saved }
         if let favs = UserDefaults.standard.array(forKey: "favModels") as? [String] { favorites = Set(favs) }
         if authed { Task { await bootSync() } }
+        else if guest { Task { await loadModels() } }
+    }
+
+    var usable: Bool { authed || guest }
+    var localKey: String {
+        get { UserDefaults.standard.string(forKey: "guestKey") ?? "" }
+        set { UserDefaults.standard.set(newValue, forKey: "guestKey") }
+    }
+    func enterGuestMode() {
+        guest = true
+        UserDefaults.standard.set(true, forKey: "guestMode")
+        Task { await loadModels() }
     }
 
     func bootSync() async {
@@ -35,7 +48,12 @@ final class Store: ObservableObject {
         await syncPull()
     }
 
-    func signedIn() { authed = true; Task { await bootSync() } }
+    func signedIn() {
+        authed = true
+        guest = false
+        UserDefaults.standard.set(false, forKey: "guestMode")
+        Task { await bootSync() }
+    }
     func signOut() {
         for (_, t) in tasks { t.cancel() }
         tasks = [:]; live = []
@@ -54,6 +72,7 @@ final class Store: ObservableObject {
     }
 
     func loadModels() async {
+        if !authed { models = await Backend.publicModels(); return }
         struct R: Codable { var models: [ORModel] }
         if let (d, code) = try? await Backend.request("/models"), code == 200,
            let r = try? JSONDecoder().decode(R.self, from: d) {
@@ -78,6 +97,7 @@ final class Store: ObservableObject {
     }
 
     func syncPull() async {
+        guard authed else { return }
         guard let (d, code) = try? await Backend.request("/sync"), code == 200,
               let obj = try? JSONSerialization.jsonObject(with: d) as? [String: Any],
               let remote = obj["chats"] as? [[String: Any]] else { return }
@@ -100,6 +120,7 @@ final class Store: ObservableObject {
     }
 
     func syncPush(_ chat: Chat) {
+        guard authed else { return }
         pushTimers[chat.id]?.cancel()
         pushTimers[chat.id] = Task { [weak self] in
             try? await Task.sleep(nanoseconds: 900_000_000)
@@ -192,11 +213,26 @@ final class Store: ObservableObject {
             } else {
                 guard let c = chat(chatID) else { return }
                 let msgs: [[String: Any]] = c.messages.map { m in
-                    var d: [String: Any] = ["role": m.role, "content": m.content]
-                    if let im = m.images, !im.isEmpty { d["images"] = im }
-                    return d
+                    if let im = m.images, !im.isEmpty, authed {
+                        return ["role": m.role, "content": m.content, "images": im]
+                    }
+                    if let im = m.images, !im.isEmpty {
+                        var parts: [[String: Any]] = [["type": "text", "text": m.content]]
+                        parts += im.map { ["type": "image_url", "image_url": ["url": $0]] }
+                        return ["role": m.role, "content": parts]
+                    }
+                    return ["role": m.role, "content": m.content]
                 }
-                for try await ev in try await Backend.chatStream(model: model, messages: msgs, effort: effort) {
+                let stream: AsyncThrowingStream<Backend.StreamEvent, Error>
+                if authed {
+                    stream = try await Backend.chatStream(model: model, messages: msgs, effort: effort)
+                } else {
+                    guard !localKey.isEmpty else {
+                        throw NSError(domain: "key", code: 402, userInfo: [NSLocalizedDescriptionKey: "add your OpenRouter key in Settings (or use an on-device model — free)"])
+                    }
+                    stream = try await Backend.directStream(model: model, messages: msgs, effort: effort, key: localKey)
+                }
+                for try await ev in stream {
                     if Task.isCancelled { break }
                     if let e = ev.serverError { throw NSError(domain: "api", code: 1, userInfo: [NSLocalizedDescriptionKey: e]) }
                     if let q = ev.toolRun { toolStatus[chatID] = "searching: " + q }
@@ -235,7 +271,7 @@ final class Store: ObservableObject {
                 chats[i].messages.removeLast()
             }
         }
-        if !acc.isEmpty, let c = chat(chatID),
+        if authed, !acc.isEmpty, let c = chat(chatID),
            let lastUser = c.messages.last(where: { $0.role == "user" }) {
             _ = try? await Backend.request("/memorize", method: "POST",
                                            body: ["user": lastUser.content, "assistant": String(acc.prefix(2000))])

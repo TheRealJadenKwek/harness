@@ -12,6 +12,29 @@ struct SettingsView: View {
     var body: some View {
         NavigationStack {
             Form {
+                if store.guest && !store.authed {
+                    Section("Account") {
+                        Text("Using without an account — chats stay on this phone.")
+                            .font(.caption).foregroundStyle(.secondary)
+                        Button("Sign in with Apple") {
+                            AppleSignIn.shared.start { ok in if ok { store.signedIn(); dismiss() } }
+                        }
+                        Button("Sign in with Google") {
+                            GoogleSignIn.shared.start { ok in Task { @MainActor in if ok { store.signedIn(); dismiss() } } }
+                        }
+                    }
+                    Section("OpenRouter key (stored on this phone)") {
+                        SecureField(store.localKey.isEmpty ? "sk-or-…" : "Replace key (…\(String(store.localKey.suffix(4))))", text: $key)
+                            .textInputAutocapitalization(.never).autocorrectionDisabled()
+                        Button("Save") {
+                            store.localKey = key.trimmingCharacters(in: .whitespaces)
+                            key = ""
+                        }.disabled(key.trimmingCharacters(in: .whitespaces).isEmpty)
+                        Link("Get a key at openrouter.ai/settings/keys", destination: URL(string: "https://openrouter.ai/settings/keys")!)
+                            .font(.caption)
+                        Text("On-device models are free and need no key.").font(.caption).foregroundStyle(.secondary)
+                    }
+                } else {
                 Section("Account") {
                     LabeledContent("Signed in as", value: store.profile?.email ?? "…")
                     if let s = store.profile?.spend, let u = s.usage {
@@ -69,6 +92,7 @@ struct SettingsView: View {
                 Section {
                     Text("Chats, memory, and your key are shared with the web app — sign in with the same Google account anywhere.")
                         .font(.caption).foregroundStyle(.secondary)
+                }
                 }
             }
             .navigationTitle("Settings")

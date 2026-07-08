@@ -6,7 +6,7 @@ struct HarnessChatApp: App {
     var body: some Scene {
         WindowGroup {
             Group {
-                if store.authed {
+                if store.authed || store.guest {
                     ChatListView()
                 } else {
                     SignInView()
@@ -72,6 +72,11 @@ struct SignInView: View {
             .disabled(busy)
             if busy { ProgressView() }
             if let e = error { Text(e).font(.caption).foregroundStyle(.red) }
+            Button("Use without an account") { store.enterGuestMode() }
+                .font(.subheadline).foregroundStyle(.secondary)
+                .padding(.top, 14)
+            Text("No account: chats stay on this phone only.\nSign in anytime for sync, memory, search, and files.")
+                .font(.caption2).foregroundStyle(.tertiary).multilineTextAlignment(.center)
             Spacer(); Spacer()
         }
     }
