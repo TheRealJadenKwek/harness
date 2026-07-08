@@ -169,6 +169,7 @@
         <button class="snav" data-sec="mcp">Connectors · MCP</button>
         <button class="snav" data-sec="skills">Skills</button>
         <button class="snav" data-sec="plugins">Plugins</button>
+        <button class="snav" data-sec="automations">Automations</button>
         <button class="snav" data-sec="shortcuts">Shortcuts</button>
         <div class="spacer"></div>
         <button id="settingsClose" class="sheet-close">Close</button>
@@ -213,6 +214,35 @@
           <div class="menu-sep"></div>
           <h3>Appshots</h3>
           <p class="muted">Press <b>⌘⇧H</b> anywhere on your Mac to capture the screen and attach it to the active chat — Harness comes to the front with the shot ready to send. Requires Screen Recording permission for Harness Code (System Settings → Privacy).</p>
+        </div>
+
+        <div id="sec-automations" class="ssec" style="display:none">
+          <h3>Automations</h3>
+          <p class="muted">Scheduled agent runs. Each run opens a fresh chat with the result (unread badge + notification). Schedules fire while Harness Code is running.</p>
+          <div id="autoList" class="settings-list"></div>
+          <div class="menu-sep"></div>
+          <h3>New automation</h3>
+          <label>Name</label>
+          <input id="autoName" placeholder="Morning repo check" autocomplete="off">
+          <label>Prompt</label>
+          <textarea id="autoPrompt" rows="4" placeholder="Pull the repo, run the test suite, and summarize anything that broke since yesterday." style="width:100%;resize:vertical;font:inherit;background:var(--bg);color:var(--text);border:1px solid var(--border);border-radius:8px;padding:8px"></textarea>
+          <div class="row" style="justify-content:flex-start;gap:8px;flex-wrap:wrap;align-items:center">
+            <select id="autoType" style="font:inherit;background:var(--bg);color:var(--text);border:1px solid var(--border);border-radius:8px;padding:6px">
+              <option value="daily">Daily at</option>
+              <option value="weekly">Weekly on</option>
+              <option value="hourly">Hourly at minute</option>
+              <option value="interval">Every N minutes</option>
+            </select>
+            <select id="autoDow" style="display:none;font:inherit;background:var(--bg);color:var(--text);border:1px solid var(--border);border-radius:8px;padding:6px">
+              <option value="1">Mon</option><option value="2">Tue</option><option value="3">Wed</option><option value="4">Thu</option><option value="5">Fri</option><option value="6">Sat</option><option value="0">Sun</option>
+            </select>
+            <input id="autoTime" type="time" value="09:00" style="width:110px">
+            <input id="autoMinutes" type="number" value="60" min="1" style="width:80px;display:none">
+            <input id="autoCwd" placeholder="folder (default: last used)" style="flex:1;min-width:180px">
+          </div>
+          <div class="row" style="justify-content:flex-start;margin-top:8px">
+            <button id="autoAddBtn" class="primary">Add automation</button>
+          </div>
         </div>
 
         <div id="sec-mcp" class="ssec" style="display:none">

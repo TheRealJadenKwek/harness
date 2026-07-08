@@ -718,6 +718,55 @@ async function onSend(opts) {
 $('sendBtn').onclick = () => onSend();
 $('stopBtn').onclick = () => { const rec = active(); if (rec) H.sessionAbort(rec.meta.id); };
 
+function hideSettings() { $('settingsSheet').style.display = 'none'; }
+// ---------------------------------------------------------------- automations
+async function refreshAutomations() {
+  const box = $('autoList'); if (!box) return;
+  const list = await H.automationList();
+  box.innerHTML = list.length ? '' : '<div class="muted">No automations yet.</div>';
+  for (const a of list) {
+    const row = document.createElement('div');
+    row.className = 'settings-row';
+    const next = a.enabled && a.nextRun ? new Date(a.nextRun).toLocaleString([], { month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit' }) : 'paused';
+    row.innerHTML = '<div style="flex:1;min-width:0"><div>' + esc(a.name) + ' <span class="mi-hint">' + esc(a.scheduleText) + ' · next: ' + next + '</span></div>'
+      + '<div class="mi-hint" style="overflow:hidden;text-overflow:ellipsis;white-space:nowrap">' + esc(a.prompt.slice(0, 90)) + '</div></div>';
+    const mk = (label, fn, danger) => {
+      const b = document.createElement('button');
+      b.className = 'sheet-close'; b.textContent = label; if (danger) b.style.color = 'var(--red)';
+      b.onclick = fn; row.appendChild(b); return b;
+    };
+    mk('Run now', async () => { const r = await H.automationRunNow(a.id); if (r.ok) { hideSettings(); await refreshSessions(); activate(r.sessionId); } });
+    mk(a.enabled ? 'Pause' : 'Resume', async () => { await H.automationSave({ ...a, enabled: !a.enabled }); refreshAutomations(); });
+    mk('✕', async () => { if (confirm('Delete "' + a.name + '"?')) { await H.automationDelete(a.id); refreshAutomations(); } }, true);
+    box.appendChild(row);
+  }
+}
+if ($('autoType')) {
+  $('autoType').onchange = () => {
+    const t = $('autoType').value;
+    $('autoDow').style.display = t === 'weekly' ? '' : 'none';
+    $('autoTime').style.display = (t === 'daily' || t === 'weekly') ? '' : 'none';
+    $('autoMinutes').style.display = (t === 'interval' || t === 'hourly') ? '' : 'none';
+    if (t === 'hourly') $('autoMinutes').placeholder = 'minute';
+  };
+  $('autoAddBtn').onclick = async () => {
+    const name = $('autoName').value.trim();
+    const prompt = $('autoPrompt').value.trim();
+    if (!name || !prompt) return alert('name and prompt are required');
+    const t = $('autoType').value;
+    const [hh, mm] = ($('autoTime').value || '09:00').split(':').map(Number);
+    const schedule = t === 'interval' ? { type: 'interval', minutes: Number($('autoMinutes').value) || 60 }
+      : t === 'hourly' ? { type: 'hourly', mm: Number($('autoMinutes').value) % 60 || 0 }
+      : t === 'weekly' ? { type: 'weekly', dow: Number($('autoDow').value), hh, mm }
+      : { type: 'daily', hh, mm };
+    const rec = active();
+    await H.automationSave({ name, prompt, schedule, cwd: $('autoCwd').value.trim() || (rec ? rec.meta.cwd : null), model: rec ? rec.meta.model : null, mode: 'auto', enabled: true });
+    $('autoName').value = ''; $('autoPrompt').value = '';
+    refreshAutomations();
+  };
+}
+H.onOpenSession(async ({ id }) => { await refreshSessions(); activate(id); });
+
 // ---------------------------------------------------------------- slash commands
 const SLASH = [
   { cmd: '/new', desc: 'New chat' },
@@ -1077,7 +1126,7 @@ async function attachFiles() {
 }
 function openSettings(sec) {
   $('settingsSheet').style.display = 'flex';
-  renderMcpList(); renderSkillsList(); renderPluginsList();
+  renderMcpList(); renderSkillsList(); renderPluginsList(); refreshAutomations();
   const b = document.querySelector('.snav[data-sec=' + sec + ']');
   if (b) b.onclick();
 }
@@ -1592,7 +1641,7 @@ async function chooseModel(v) {
 $('settingsBtn').onclick = () => {
   $('settingsSheet').style.display = 'flex';
   $('keyInput').value = '';
-  renderMcpList(); renderSkillsList(); renderPluginsList(); renderSpend(); renderRules(); renderTrash();
+  renderMcpList(); renderSkillsList(); renderPluginsList(); renderSpend(); renderRules(); renderTrash(); refreshAutomations();
   H.getConfig().then((c) => { $('sandboxToggle').checked = !!c.sandboxBash; $('suggestToggle').checked = !!c.suggestions; });
 };
 $('sandboxToggle').onchange = () => H.setConfig({ sandboxBash: $('sandboxToggle').checked });

@@ -1804,6 +1804,137 @@ function maybeGoalContinue(rec, wasAborted, errored) {
   }, 500);
 }
 
+// ---- automations: scheduled agent runs -------------------------------------
+// Stored in ~/.harness-code/automations.json. Each run creates a fresh session
+// (so results are reviewable chats), fires while the app is running, and posts
+// a macOS notification when the turn completes.
+const { Notification } = require('electron');
+const automationsPath = () => path.join(app.getPath('home'), '.harness-code', 'automations.json');
+function loadAutomations() {
+  try { return JSON.parse(fs.readFileSync(automationsPath(), 'utf8')); } catch { return []; }
+}
+function saveAutomations(list) {
+  try {
+    fs.mkdirSync(path.dirname(automationsPath()), { recursive: true });
+    fs.writeFileSync(automationsPath(), JSON.stringify(list, null, 2));
+  } catch {}
+}
+// schedule: {type:'interval', minutes} | {type:'daily', hh, mm} | {type:'weekly', dow, hh, mm} | {type:'hourly', mm}
+function nextRunOf(sched, from = Date.now()) {
+  const d = new Date(from);
+  if (sched.type === 'interval') return from + Math.max(1, sched.minutes || 60) * 60000;
+  if (sched.type === 'hourly') {
+    d.setMinutes(sched.mm || 0, 0, 0);
+    if (d.getTime() <= from) d.setHours(d.getHours() + 1);
+    return d.getTime();
+  }
+  if (sched.type === 'daily') {
+    d.setHours(sched.hh || 9, sched.mm || 0, 0, 0);
+    if (d.getTime() <= from) d.setDate(d.getDate() + 1);
+    return d.getTime();
+  }
+  if (sched.type === 'weekly') {
+    d.setHours(sched.hh || 9, sched.mm || 0, 0, 0);
+    const want = sched.dow == null ? 1 : sched.dow;
+    while (d.getDay() !== want || d.getTime() <= from) d.setDate(d.getDate() + 1);
+    return d.getTime();
+  }
+  return from + 3600000;
+}
+function describeSchedule(sched) {
+  const two = (n) => String(n).padStart(2, '0');
+  const days = ['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat'];
+  if (sched.type === 'interval') return 'every ' + (sched.minutes || 60) + ' min';
+  if (sched.type === 'hourly') return 'hourly at :' + two(sched.mm || 0);
+  if (sched.type === 'daily') return 'daily at ' + two(sched.hh || 9) + ':' + two(sched.mm || 0);
+  if (sched.type === 'weekly') return days[sched.dow == null ? 1 : sched.dow] + ' at ' + two(sched.hh || 9) + ':' + two(sched.mm || 0);
+  return '?';
+}
+function runAutomation(auto) {
+  const cfg = loadConfig();
+  const rec = {
+    id: newId(),
+    title: ('⏱ ' + auto.name + ' — ' + new Date().toLocaleString([], { month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit' })).slice(0, 60),
+    cwd: auto.cwd || cfg.cwd || app.getPath('home'),
+    model: auto.model || cfg.model,
+    mode: auto.mode || 'auto',
+    effort: null, goal: null,
+    createdAt: Date.now(), updatedAt: Date.now(),
+    usage: { prompt_tokens: 0, completion_tokens: 0, cost: 0 },
+    agent: null, savedMessages: [], transcript: [], abort: null, cur: null, checkpoints: [],
+  };
+  sessions.set(rec.id, rec);
+  const started = beginTurn(rec, { text: auto.prompt });
+  if (!started.ok) { sessions.delete(rec.id); return null; }
+  sessionsChanged();
+  // notify when the turn finishes (abort clears)
+  const watch = setInterval(() => {
+    if (rec.abort) return;
+    clearInterval(watch);
+    rec.unread = true;
+    saveSession(rec);
+    sessionsChanged();
+    try {
+      const last = [...rec.transcript].reverse().find((i) => i.t === 'assistant');
+      new Notification({
+        title: '⏱ ' + auto.name,
+        body: ((last && last.text) || 'run finished').slice(0, 120),
+      }).on('click', () => { if (win) { win.show(); sendToUI('open-session', { id: rec.id }); } }).show();
+    } catch {}
+  }, 2000);
+  return rec.id;
+}
+setInterval(() => {
+  const list = loadAutomations();
+  let dirty = false;
+  for (const a of list) {
+    if (!a.enabled) continue;
+    if (!a.nextRun) { a.nextRun = nextRunOf(a.schedule); dirty = true; continue; }
+    if (Date.now() >= a.nextRun) {
+      a.lastRun = Date.now();
+      a.lastSession = runAutomation(a);
+      a.nextRun = nextRunOf(a.schedule);
+      dirty = true;
+    }
+  }
+  if (dirty) saveAutomations(list);
+}, 20000);
+ipcMain.handle('automation-list', () => loadAutomations().map((a) => ({ ...a, scheduleText: describeSchedule(a.schedule) })));
+ipcMain.handle('automation-save', (_e, auto) => {
+  const list = loadAutomations();
+  const i = list.findIndex((a) => a.id === auto.id);
+  const clean = {
+    id: auto.id || newId(),
+    name: String(auto.name || 'Automation').slice(0, 60),
+    prompt: String(auto.prompt || '').slice(0, 8000),
+    schedule: auto.schedule || { type: 'daily', hh: 9, mm: 0 },
+    cwd: auto.cwd || null,
+    model: auto.model || null,
+    mode: ['plan', 'ask', 'edits', 'auto', 'bypass'].includes(auto.mode) ? auto.mode : 'auto',
+    enabled: auto.enabled !== false,
+    lastRun: i >= 0 ? list[i].lastRun : null,
+    lastSession: i >= 0 ? list[i].lastSession : null,
+    nextRun: null,   // recomputed by the scheduler
+  };
+  clean.nextRun = clean.enabled ? nextRunOf(clean.schedule) : null;
+  if (i >= 0) list[i] = clean; else list.push(clean);
+  saveAutomations(list);
+  return clean;
+});
+ipcMain.handle('automation-delete', (_e, id) => {
+  saveAutomations(loadAutomations().filter((a) => a.id !== id));
+  return { ok: true };
+});
+ipcMain.handle('automation-run-now', (_e, id) => {
+  const a = loadAutomations().find((x) => x.id === id);
+  if (!a) return { ok: false };
+  const sid = runAutomation(a);
+  const list = loadAutomations();
+  const i = list.findIndex((x) => x.id === id);
+  if (i >= 0) { list[i].lastRun = Date.now(); list[i].lastSession = sid; saveAutomations(list); }
+  return { ok: !!sid, sessionId: sid };
+});
+
 // One turn pipeline shared by the renderer (IPC) and the remote API (iOS harness).
 // `remote` additionally mirrors the user bubble into the desktop UI.
 function beginTurn(rec, { text, images, modelText, remote, goalAuto }) {
