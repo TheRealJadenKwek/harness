@@ -1145,6 +1145,12 @@ function startApiServer() {
       if (req.method === 'GET' && u.pathname === '/api/sessions') {
         return json([...sessions.values()].sort((a, b) => b.updatedAt - a.updatedAt).map(metaOf));
       }
+      const getMatch = u.pathname.match(/^\/api\/sessions\/([^/]+)$/);
+      if (req.method === 'GET' && getMatch) {
+        const rec = sessions.get(getMatch[1]);
+        if (!rec) return json({ error: 'no such session' }, 404);
+        return json({ meta: metaOf(rec), transcript: rec.transcript });
+      }
       if (req.method === 'GET' && u.pathname === '/api/models') {
         return json((modelsMem || []).map((m) => ({ value: m.value, label: m.label })));
       }
@@ -1198,7 +1204,9 @@ function startApiServer() {
   let pi = 0;
   srv.on('error', () => { if (++pi < ports.length) srv.listen(ports[pi], '127.0.0.1'); });
   srv.on('listening', () => {
-    try { fs.writeFileSync(path.join(path.dirname(apiTokenPath()), 'api-port'), String(ports[pi])); } catch {}
+    const write = () => { try { fs.writeFileSync(path.join(path.dirname(apiTokenPath()), 'api-port'), String(ports[pi])); } catch {} };
+    write();
+    setInterval(write, 60000);   // self-heal: a stale file from a dead instance gets reclaimed
   });
   srv.listen(ports[0], '127.0.0.1');
 }
