@@ -2323,6 +2323,22 @@ const MCP_CATALOG = [
   { name: 'thinking', label: 'Seq. Thinking', cmd: 'npx -y @modelcontextprotocol/server-sequential-thinking', auth: 'none', desc: 'Structured reasoning aid' },
   { name: 'postgres', label: 'Postgres', cmd: 'npx -y @modelcontextprotocol/server-postgres {ARG}', auth: 'prompt:Postgres connection string (postgres://user:pass@host/db)', desc: 'Query your database' },
 ];
+const CAT_ICON = {
+  github: '<svg viewBox="0 0 24 24" width="20" height="20" fill="currentColor"><path d="M12 .297c-6.63 0-12 5.373-12 12 0 5.303 3.438 9.8 8.205 11.385.6.113.82-.258.82-.577 0-.285-.01-1.04-.015-2.04-3.338.724-4.042-1.61-4.042-1.61C4.422 18.07 3.633 17.7 3.633 17.7c-1.087-.744.084-.729.084-.729 1.205.084 1.838 1.236 1.838 1.236 1.07 1.835 2.809 1.305 3.495.998.108-.776.417-1.305.76-1.605-2.665-.3-5.466-1.332-5.466-5.93 0-1.31.465-2.38 1.235-3.22-.135-.303-.54-1.523.105-3.176 0 0 1.005-.322 3.3 1.23.96-.267 1.98-.399 3-.405 1.02.006 2.04.138 3 .405 2.28-1.552 3.285-1.23 3.285-1.23.645 1.653.24 2.873.12 3.176.765.84 1.23 1.91 1.23 3.22 0 4.61-2.805 5.625-5.475 5.92.42.36.81 1.096.81 2.22 0 1.606-.015 2.896-.015 3.286 0 .315.21.69.825.57C20.565 22.092 24 17.592 24 12.297c0-6.627-5.373-12-12-12"/></svg>',
+  vercel: '<svg viewBox="0 0 24 24" width="20" height="20" fill="currentColor"><path d="M24 22.525H0l12-21.05 12 21.05z"/></svg>',
+  linear: '<svg viewBox="0 0 24 24" width="20" height="20" fill="#5E6AD2"><path d="M2.53 14.77a.6.6 0 0 1 .16-.57l11.51-11.5a.6.6 0 0 1 .57-.16 9.98 9.98 0 0 1 4.35 2.54 9.98 9.98 0 0 1 2.54 4.35.6.6 0 0 1-.16.57l-11.5 11.51a.6.6 0 0 1-.57.16 9.98 9.98 0 0 1-4.36-2.54 9.98 9.98 0 0 1-2.54-4.36zM2.02 12.1a.3.3 0 0 0 .5.23l9.82-9.82a.3.3 0 0 0-.24-.5 10.02 10.02 0 0 0-10.08 10.1zM12.4 21.98a.3.3 0 0 1-.24-.5l9.32-9.32a.3.3 0 0 1 .5.24 10.02 10.02 0 0 1-9.58 9.58z"/></svg>',
+  notion: '<svg viewBox="0 0 24 24" width="20" height="20"><rect x="3" y="3" width="18" height="18" rx="3" fill="none" stroke="currentColor" stroke-width="1.6"/><text x="12" y="16.4" text-anchor="middle" font-family="Georgia,serif" font-weight="700" font-size="12.5" fill="currentColor">N</text></svg>',
+  sentry: '<svg viewBox="0 0 24 24" width="20" height="20" fill="none" stroke="#8d67c5" stroke-width="1.9" stroke-linecap="round"><path d="M12 3.5 3.6 18h4M12 3.5 20.4 18h-8.1M12 9l3.4 6"/></svg>',
+  stripe: '<svg viewBox="0 0 24 24" width="20" height="20"><rect x="2.5" y="2.5" width="19" height="19" rx="4.5" fill="#635BFF"/><text x="12" y="16.6" text-anchor="middle" font-family="-apple-system" font-weight="800" font-size="12.5" fill="#fff">S</text></svg>',
+  supabase: '<svg viewBox="0 0 24 24" width="20" height="20" fill="#3FCF8E"><path d="M13 2 3 14h9l-1 8 10-12h-9l1-8z"/></svg>',
+  figma: '<svg viewBox="0 0 24 24" width="20" height="20"><circle cx="15" cy="12" r="3.4" fill="#1ABCFE"/><path d="M5.5 5.4A3.4 3.4 0 0 1 8.9 2h3.4v6.8H8.9a3.4 3.4 0 0 1-3.4-3.4z" fill="#F24E1E"/><path d="M5.5 12a3.4 3.4 0 0 1 3.4-3.4h3.4v6.8H8.9A3.4 3.4 0 0 1 5.5 12z" fill="#A259FF"/><path d="M5.5 18.6a3.4 3.4 0 0 1 3.4-3.4h3.4v3.3A3.5 3.5 0 1 1 5.5 18.6z" fill="#0ACF83"/><path d="M12.3 2h3.4a3.4 3.4 0 1 1 0 6.8h-3.4z" fill="#FF7262"/></svg>',
+  context7: '<svg viewBox="0 0 24 24" width="20" height="20"><rect x="2.5" y="2.5" width="19" height="19" rx="4.5" fill="none" stroke="currentColor" stroke-width="1.6"/><text x="12" y="16.2" text-anchor="middle" font-family="-apple-system" font-weight="700" font-size="10.5" fill="currentColor">C7</text></svg>',
+  deepwiki: '<svg viewBox="0 0 24 24" width="20" height="20" fill="none" stroke="#0fa4af" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M2 4h6a4 4 0 0 1 4 4v12a3 3 0 0 0-3-3H2zM22 4h-6a4 4 0 0 0-4 4v12a3 3 0 0 1 3-3h7z"/></svg>',
+  playwright: '<svg viewBox="0 0 24 24" width="20" height="20" fill="none" stroke="#2EAD33" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="9.2"/><path d="M8.5 9.7c.5.6 1.3.6 1.8 0M13.7 9.7c.5.6 1.3.6 1.8 0M8.3 14.2c2.3 1.6 5.1 1.6 7.4 0"/></svg>',
+  memory: '<svg viewBox="0 0 24 24" width="20" height="20" fill="none" stroke="#c678dd" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><path d="M9.5 2A2.5 2.5 0 0 1 12 4.5v15a2.5 2.5 0 0 1-4.96.44A2.5 2.5 0 0 1 4.5 18a2.5 2.5 0 0 1-.5-4.95 2.5 2.5 0 0 1 .5-4.9A2.5 2.5 0 0 1 7 4.5 2.5 2.5 0 0 1 9.5 2Z"/><path d="M14.5 2A2.5 2.5 0 0 0 12 4.5v15a2.5 2.5 0 0 0 4.96.44A2.5 2.5 0 0 0 19.5 18a2.5 2.5 0 0 0 .5-4.95 2.5 2.5 0 0 0-.5-4.9A2.5 2.5 0 0 0 17 4.5 2.5 2.5 0 0 0 14.5 2Z"/></svg>',
+  thinking: '<svg viewBox="0 0 24 24" width="20" height="20" fill="none" stroke="var(--blue)" stroke-width="1.8" stroke-linecap="round"><path d="M8 6h13M8 12h13M8 18h13"/><path d="M3 6h.01M3 12h.01M3 18h.01"/></svg>',
+  postgres: '<svg viewBox="0 0 24 24" width="20" height="20" fill="none" stroke="#4169A1" stroke-width="1.8" stroke-linecap="round"><ellipse cx="12" cy="5.5" rx="8" ry="3"/><path d="M4 5.5V18.5c0 1.66 3.58 3 8 3s8-1.34 8-3V5.5M4 12c0 1.66 3.58 3 8 3s8-1.34 8-3"/></svg>',
+};
 async function renderMcpCatalog(installed) {
   const box = $('mcpCatalog'); if (!box) return;
   box.innerHTML = '';
@@ -2331,8 +2347,8 @@ async function renderMcpCatalog(installed) {
     const el = document.createElement('button');
     el.className = 'cat-card';
     const on = have.has(c.name);
-    el.innerHTML = '<b>' + esc(c.label) + (on ? ' <span class="dot ok">●</span>' : '') + '</b><i>' + esc(c.desc) + '</i>'
-      + '<span class="mi-hint">' + (on ? 'installed' : c.auth === 'oauth' ? 'one click · sign in' : c.auth === 'none' ? 'one click' : 'needs a key') + '</span>';
+    el.innerHTML = '<span class="ci">' + (CAT_ICON[c.name] || '') + '</span><span class="ct"><b>' + esc(c.label) + (on ? ' <span class="dot ok">●</span>' : '') + '</b><i>' + esc(c.desc) + '</i>'
+      + '<span class="mi-hint">' + (on ? 'installed' : c.auth === 'oauth' ? 'one click · sign in' : c.auth === 'none' ? 'one click' : 'needs a key') + '</span></span>';
     el.disabled = on;
     el.onclick = async () => {
       let cmd = c.cmd;

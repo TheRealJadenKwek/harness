@@ -680,7 +680,7 @@ h3 { margin: 2px 0 4px; }
 
 /* connectors catalog */
 .cat-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(168px, 1fr)); gap: 8px; margin: 6px 0 4px; }
-.cat-card { display: flex; flex-direction: column; gap: 3px; align-items: flex-start; text-align: left;
+.cat-card { display: flex; flex-direction: row; gap: 11px; align-items: flex-start; text-align: left;
             padding: 10px 12px; border: 1px solid var(--border); border-radius: 12px; background: transparent;
             color: inherit; font: inherit; cursor: pointer; transition: background .12s, border-color .12s, transform .12s; }
 .cat-card:hover:not(:disabled) { background: color-mix(in srgb, var(--accent, #2f63e8) 6%, transparent);
@@ -696,3 +696,9 @@ h3 { margin: 2px 0 4px; }
 .term-prompt { color: var(--green); font-family: var(--mono); font-weight: 700; }
 #termIn { flex: 1; border: 0; outline: none; background: transparent; color: var(--text); font: 12px var(--mono); }
 #tab-terminal { display: flex; flex-direction: column; }
+
+.cat-card .ci { flex: none; width: 22px; margin-top: 2px; display: flex; color: var(--text); }
+.cat-card .ct { display: flex; flex-direction: column; gap: 3px; min-width: 0; }
+
+/* sheets hold dense settings/model content — solid, not glass */
+.sheet-inner { background: var(--bg); -webkit-backdrop-filter: none; backdrop-filter: none; }
