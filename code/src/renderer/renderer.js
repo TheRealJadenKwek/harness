@@ -973,7 +973,7 @@ function updateTitlebar() {
   const mm = S.models.find((x) => x.value === m.model);
   const canReason = mm ? !!mm.reasoning : false;
   $('effortBtn').style.display = canReason ? '' : 'none';
-  $('effortBtn').textContent = m.effort ? '◔ ' + m.effort[0].toUpperCase() + m.effort.slice(1) : 'Effort';
+  $('effortBtn').textContent = m.effort ? '◔ ' + m.effort[0].toUpperCase() + m.effort.slice(1) + ' effort' : 'Default effort';
   const u = m.usage || { prompt_tokens: 0, completion_tokens: 0, cost: 0 };
   const tot = (u.prompt_tokens || 0) + (u.completion_tokens || 0);
   $('usageLabel').textContent = tot ? fmtTokens(tot) + ' tok' + (u.cost ? ' · $' + u.cost.toFixed(u.cost < 0.1 ? 4 : 2) : '') : '';
