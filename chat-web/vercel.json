@@ -1,6 +1,10 @@
 {
   "functions": {
-    "api/chat.js": { "maxDuration": 120 },
-    "api/memorize.js": { "maxDuration": 30 }
+    "api/chat.js": {
+      "maxDuration": 300
+    },
+    "api/memorize.js": {
+      "maxDuration": 30
+    }
   }
 }

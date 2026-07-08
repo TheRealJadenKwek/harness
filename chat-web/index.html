@@ -296,8 +296,14 @@ async function loadCatalog() {
   if (catalog.length) return;
   if (isGuest()) {
     try {
-      const r = await fetch('https://openrouter.ai/api/v1/models');
-      catalog = ((await r.json()).data || []).map((m) => ({
+      const [b, im, vd] = await Promise.all([
+        fetch('https://openrouter.ai/api/v1/models').then((r) => r.json()),
+        fetch('https://openrouter.ai/api/v1/models?output_modalities=image').then((r) => r.json()),
+        fetch('https://openrouter.ai/api/v1/models?output_modalities=video').then((r) => r.json()),
+      ]);
+      const byId = new Map();
+      for (const m of [...(b.data || []), ...(im.data || []), ...(vd.data || [])]) byId.set(m.id, m);
+      catalog = [...byId.values()].map((m) => ({
         id: m.id, name: m.name || m.id, context: m.context_length || 0,
         promptPrice: Number((m.pricing || {}).prompt) || 0,
         completionPrice: Number((m.pricing || {}).completion) || 0,

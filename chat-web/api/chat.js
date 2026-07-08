@@ -143,7 +143,7 @@ module.exports = async (req, res) => {
     type: 'function',
     function: {
       name: 'generate_video',
-      description: 'Generate a short video from a text prompt using the user\'s chosen video model (billed to their key). The result is shown to the user as a playable card.',
+      description: 'Generate a short video from a text prompt using the user\'s chosen video model. NOTE: video generation is comparatively expensive (typically $0.20-$1 per clip, billed to the user\'s key) and takes 1-3 minutes — only call it when the user explicitly asks for a video. The result is shown as a playable card.',
       parameters: { type: 'object', properties: { prompt: { type: 'string' } }, required: ['prompt'] },
     },
   }] : []) : null;
@@ -244,6 +244,7 @@ module.exports = async (req, res) => {
                                      messages: [{ role: 'user', content: String(args.prompt || '').slice(0, 2000) }] }),
             });
             const ij = await ir.json();
+            if (ij.usage && (ij.usage.cost || ij.usage.total_cost)) send({ usage: { cost: ij.usage.cost || ij.usage.total_cost } });
             const imgs = (((ij.choices || [])[0] || {}).message || {}).images || [];
             const dataUrl = imgs[0] && imgs[0].image_url && imgs[0].image_url.url;
             if (dataUrl) {
@@ -258,27 +259,33 @@ module.exports = async (req, res) => {
         } else if (tc.function.name === 'generate_video' && vidModel) {
           send({ harness: { tool: 'generate_video', status: 'run', detail: String(args.prompt || '').slice(0, 80) } });
           try {
-            const vr = await fetch('https://openrouter.ai/api/v1/chat/completions', {
+            // dedicated async endpoint: create job -> poll -> fetch content
+            const cj = await (await fetch('https://openrouter.ai/api/v1/videos', {
               method: 'POST',
               headers: { 'Authorization': 'Bearer ' + key, 'Content-Type': 'application/json' },
-              body: JSON.stringify({ model: vidModel, modalities: ['video', 'text'],
-                                     messages: [{ role: 'user', content: String(args.prompt || '').slice(0, 2000) }] }),
-            });
-            const vj = await vr.json();
-            const msg = (((vj.choices || [])[0] || {}).message || {});
-            const vids = msg.videos || [];
-            const url = (vids[0] && (vids[0].video_url && vids[0].video_url.url || vids[0].url))
-              || ((msg.images || [])[0] && msg.images[0].image_url && msg.images[0].image_url.url)
-              || (typeof msg.content === 'string' && (msg.content.match(/https?:\S+\.(mp4|webm|mov)\S*/) || [])[0]);
-            if (url) {
-              send({ harness: { file: { kind: 'video', filename: 'video.mp4', dataUrl: String(url).slice(0, 20000000) } } });
-              send({ harness: { tool: 'generate_video', status: 'done', detail: 'video delivered' } });
-              result = { ok: true, note: 'video generated and shown to the user' };
-            } else {
-              send({ harness: { tool: 'generate_video', status: 'done', detail: 'no video returned' } });
-              result = { error: (vj.error && vj.error.message) || 'model returned no video' };
+              body: JSON.stringify({ model: vidModel, prompt: String(args.prompt || '').slice(0, 2000) }),
+            })).json();
+            if (!cj.id) throw new Error((cj.error && cj.error.message) || 'video job rejected');
+            let job = cj;
+            const deadline = Date.now() + 220000;
+            while (job.status !== 'completed' && Date.now() < deadline) {
+              if (job.status === 'failed' || job.status === 'error') throw new Error('video generation failed');
+              await new Promise((ok) => setTimeout(ok, 5000));
+              job = await (await fetch('https://openrouter.ai/api/v1/videos/' + cj.id, { headers: { 'Authorization': 'Bearer ' + key } })).json();
             }
-          } catch (e) { result = { error: String(e.message || e).slice(0, 200) }; }
+            if (job.status !== 'completed' || !(job.unsigned_urls || [])[0]) throw new Error('video timed out — it may still complete on OpenRouter');
+            if (job.usage && job.usage.cost) send({ usage: { cost: job.usage.cost } });
+            const vres = await fetch(job.unsigned_urls[0], { headers: { 'Authorization': 'Bearer ' + key } });
+            const buf = Buffer.from(await vres.arrayBuffer());
+            if (buf.length > 40000000) throw new Error('video too large to deliver inline');
+            const mime = vres.headers.get('content-type') || 'video/mp4';
+            send({ harness: { file: { kind: 'video', filename: 'video.mp4', dataUrl: 'data:' + mime + ';base64,' + buf.toString('base64') } } });
+            send({ harness: { tool: 'generate_video', status: 'done', detail: 'video delivered ($' + ((job.usage && job.usage.cost) || 0).toFixed(2) + ')' } });
+            result = { ok: true, cost: (job.usage && job.usage.cost) || null, note: 'video generated and shown to the user' };
+          } catch (e) {
+            send({ harness: { tool: 'generate_video', status: 'done', detail: String(e.message || e).slice(0, 60) } });
+            result = { error: String(e.message || e).slice(0, 200) };
+          }
         } else if (tc.function.name === 'run_code') {
           const spec = { language: args.language === 'javascript' ? 'javascript' : 'python', code: String(args.code || '').slice(0, 100000) };
           send({ harness: { exec: spec } });

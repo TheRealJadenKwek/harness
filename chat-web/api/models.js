@@ -7,8 +7,16 @@ module.exports = async (req, res) => {
   const key = await userKey(user.id);
   if (!key) { res.status(402).json({ error: 'no_key' }); return; }
   try {
-    const r = await fetch('https://openrouter.ai/api/v1/models', { headers: { 'Authorization': 'Bearer ' + key } });
-    const data = (await r.json()).data || [];
+    // media models are EXCLUDED from the default list — merge the three catalogs
+    const H = { 'Authorization': 'Bearer ' + key };
+    const [base, img, vid] = await Promise.all([
+      fetch('https://openrouter.ai/api/v1/models', { headers: H }).then((r) => r.json()),
+      fetch('https://openrouter.ai/api/v1/models?output_modalities=image', { headers: H }).then((r) => r.json()),
+      fetch('https://openrouter.ai/api/v1/models?output_modalities=video', { headers: H }).then((r) => r.json()),
+    ]);
+    const byId = new Map();
+    for (const m of [...(base.data || []), ...(img.data || []), ...(vid.data || [])]) byId.set(m.id, m);
+    const data = [...byId.values()];
     res.setHeader('Cache-Control', 's-maxage=3600');
     res.json({ models: data.map((m) => ({
       id: m.id, name: m.name || m.id, context: m.context_length || 0,
