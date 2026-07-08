@@ -191,6 +191,50 @@ function addSideChat(rec, q, a) {   // legacy inline replay of old {t:'sidechat'
 // ---- side chat popup (/btw): its own thread, never touches the agent context ----
 function scEl() { return document.getElementById('scpop'); }
 function scScroll() { const b = document.getElementById('scBody'); if (b) b.scrollTop = b.scrollHeight; }
+// popup placement state: free position or docked as a top-right tab
+function scState() { try { return JSON.parse(localStorage.scPos || '{}'); } catch { return {}; } }
+function scSaveState(patch) { localStorage.scPos = JSON.stringify({ ...scState(), ...patch }); }
+function scApplyPos(pop) {
+  const st = scState();
+  if (st.docked) {
+    pop.style.left = 'auto'; pop.style.top = '46px'; pop.style.right = '14px'; pop.style.bottom = 'auto';
+  } else if (typeof st.x === 'number') {
+    const r = pop.getBoundingClientRect();
+    const x = Math.min(Math.max(st.x, 8), innerWidth - (r.width || 400) - 8);
+    const y = Math.min(Math.max(st.y, 8), innerHeight - 80);
+    pop.style.left = x + 'px'; pop.style.top = y + 'px'; pop.style.right = 'auto'; pop.style.bottom = 'auto';
+  }
+}
+function scTabEl() { return document.getElementById('sctab'); }
+function scShowTab() {
+  let tab = scTabEl();
+  if (!tab) {
+    tab = document.createElement('button');
+    tab.id = 'sctab';
+    tab.innerHTML = '◦ Side chat<span class="sct-dot"></span>';
+    tab.title = 'Side chat (docked) — click to open';
+    tab.onclick = () => {
+      const pop = scEl();
+      const r = active(); if (!r) return;
+      if (pop && pop.style.display !== 'none') { pop.style.display = 'none'; }
+      else { openSidePopup(r); }
+      tab.classList.remove('unread');
+    };
+    document.body.appendChild(tab);
+  }
+  tab.style.display = '';
+}
+function scDock() {
+  scSaveState({ docked: true });
+  const pop = scEl();
+  if (pop) { pop.style.display = 'none'; }
+  scShowTab();
+}
+function scUndock() {
+  scSaveState({ docked: false });
+  const tab = scTabEl();
+  if (tab) tab.style.display = 'none';
+}
 function openSidePopup(rec) {
   let pop = scEl();
   if (!pop) {
@@ -201,7 +245,35 @@ function openSidePopup(rec) {
       + '<div id="scBody"></div>'
       + '<div class="sc-inrow"><textarea id="scInput" rows="1" placeholder="Ask on the side…"></textarea><button class="sc-btn" id="scSend" title="Send">↵</button></div>';
     document.body.appendChild(pop);
-    document.getElementById('scClose').onclick = () => { pop.style.display = 'none'; };
+    // drag anywhere by the header; drop near the top-right corner to dock into a tab
+    const bar = pop.querySelector('.sc-bar');
+    bar.addEventListener('mousedown', (e) => {
+      if (e.target.closest('.sc-btn')) return;
+      e.preventDefault();
+      const r = pop.getBoundingClientRect();
+      const dx = e.clientX - r.left, dy = e.clientY - r.top;
+      let snapping = false;
+      const move = (ev) => {
+        const x = Math.min(Math.max(ev.clientX - dx, 8), innerWidth - r.width - 8);
+        const y = Math.min(Math.max(ev.clientY - dy, 8), innerHeight - r.height - 8);
+        pop.style.left = x + 'px'; pop.style.top = y + 'px';
+        pop.style.right = 'auto'; pop.style.bottom = 'auto';
+        snapping = (innerWidth - (x + r.width) < 80) && (y < 90);
+        pop.classList.toggle('sc-snap', snapping);
+      };
+      const up = () => {
+        document.removeEventListener('mousemove', move);
+        document.removeEventListener('mouseup', up);
+        pop.classList.remove('sc-snap');
+        if (snapping) { scDock(); return; }
+        const rr = pop.getBoundingClientRect();
+        scUndock();
+        scSaveState({ x: rr.left, y: rr.top });
+      };
+      document.addEventListener('mousemove', move);
+      document.addEventListener('mouseup', up);
+    });
+    document.getElementById('scClose').onclick = () => { pop.style.display = 'none'; if (scState().docked) scShowTab(); };
     document.getElementById('scClear').onclick = () => {
       const r = active(); if (!r) return;
       r.side = []; document.getElementById('scBody').innerHTML = '';
@@ -215,6 +287,8 @@ function openSidePopup(rec) {
     });
   }
   pop.style.display = 'flex';
+  scApplyPos(pop);
+  if (scState().docked) scShowTab();
   const body = document.getElementById('scBody');
   body.innerHTML = '';
   rec.side = rec.side || [];
@@ -723,6 +797,8 @@ function ckRun() {
   ckClose();
   if (it) it.run();
 }
+if (scState().docked) scShowTab();
+
 document.addEventListener('keydown', (e) => {
   if ((e.metaKey || e.ctrlKey) && e.key.toLowerCase() === 'k' && !e.shiftKey && !e.altKey) {
     e.preventDefault();
@@ -881,6 +957,8 @@ H.onEvent((e) => {
     if (rec.sideStream) { rec.sideStream.acc += e.text; rec.sideStream.el.textContent = rec.sideStream.acc; scScroll(); }
   }
   else if (e.type === 'sidechat_done') {
+    const scp = scEl();
+    if ((!scp || scp.style.display === 'none') && scTabEl() && scTabEl().style.display !== 'none') scTabEl().classList.add('unread');
     if (rec.sideStream) {
       const { el, acc } = rec.sideStream;
       if (e.error) { el.textContent = '⚠︎ ' + e.error; rec.side.push({ role: 'assistant', content: '⚠︎ ' + e.error }); }

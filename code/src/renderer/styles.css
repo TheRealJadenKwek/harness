@@ -528,3 +528,16 @@ h3 { margin: 2px 0 4px; }
 .ck-row .ck-hint { color:var(--muted); font-size:12px; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
 .ck-row .ck-label { flex:none; max-width:55%; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
 .ck-empty { padding:18px; text-align:center; color:var(--muted); font-size:13px; }
+
+/* ---- side chat: drag + dock ---- */
+#scpop .sc-bar { cursor: grab; user-select: none; -webkit-app-region: no-drag; }
+#scpop .sc-bar:active { cursor: grabbing; }
+#scpop.sc-snap { outline: 2.5px solid var(--accent, #2f63e8); outline-offset: 2px; transform: scale(.985); transition: transform .1s; }
+#sctab { position: fixed; top: 9px; right: 14px; z-index: 181; -webkit-app-region: no-drag;
+         display: inline-flex; align-items: center; gap: 6px;
+         border: 1px solid var(--border); border-radius: 20px; padding: 4px 13px;
+         background: var(--panel); color: var(--text); font: 600 12px/1.4 inherit; cursor: pointer;
+         box-shadow: 0 2px 8px rgba(0,0,0,.10); transition: transform .12s, box-shadow .12s; }
+#sctab:hover { transform: translateY(1px); box-shadow: 0 3px 12px rgba(0,0,0,.16); }
+#sctab .sct-dot { width: 7px; height: 7px; border-radius: 50%; background: var(--accent, #2f63e8); display: none; }
+#sctab.unread .sct-dot { display: block; }
