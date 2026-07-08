@@ -721,6 +721,9 @@ $('stopBtn').onclick = () => { const rec = active(); if (rec) H.sessionAbort(rec
 function hideSettings() { $('settingsSheet').style.display = 'none'; }
 // ---------------------------------------------------------------- automations
 async function refreshAutomations() {
+  if ($('autoModelList') && !$('autoModelList').children.length && S.models && S.models.length) {
+    for (const m of S.models) { const o = document.createElement('option'); o.value = m.value; $('autoModelList').appendChild(o); }
+  }
   const box = $('autoList'); if (!box) return;
   const list = await H.automationList();
   box.innerHTML = list.length ? '' : '<div class="muted">No automations yet.</div>';
@@ -728,7 +731,8 @@ async function refreshAutomations() {
     const row = document.createElement('div');
     row.className = 'settings-row';
     const next = a.enabled && a.nextRun ? new Date(a.nextRun).toLocaleString([], { month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit' }) : 'paused';
-    row.innerHTML = '<div style="flex:1;min-width:0"><div>' + esc(a.name) + ' <span class="mi-hint">' + esc(a.scheduleText) + ' · next: ' + next + '</span></div>'
+    const modelTag = a.model ? ' · ' + shortModel(a.model) : '';
+    row.innerHTML = '<div style="flex:1;min-width:0"><div>' + esc(a.name) + ' <span class="mi-hint">' + esc(a.scheduleText) + ' · next: ' + next + esc(modelTag) + '</span></div>'
       + '<div class="mi-hint" style="overflow:hidden;text-overflow:ellipsis;white-space:nowrap">' + esc(a.prompt.slice(0, 90)) + '</div></div>';
     const mk = (label, fn, danger) => {
       const b = document.createElement('button');
@@ -760,7 +764,7 @@ if ($('autoType')) {
       : t === 'weekly' ? { type: 'weekly', dow: Number($('autoDow').value), hh, mm }
       : { type: 'daily', hh, mm };
     const rec = active();
-    await H.automationSave({ name, prompt, schedule, cwd: $('autoCwd').value.trim() || (rec ? rec.meta.cwd : null), model: rec ? rec.meta.model : null, mode: 'auto', enabled: true });
+    await H.automationSave({ name, prompt, schedule, cwd: $('autoCwd').value.trim() || (rec ? rec.meta.cwd : null), model: $('autoModel').value.trim() || (rec ? rec.meta.model : null), mode: 'auto', enabled: true });
     $('autoName').value = ''; $('autoPrompt').value = '';
     refreshAutomations();
   };

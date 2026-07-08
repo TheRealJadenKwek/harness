@@ -958,9 +958,34 @@ async function runSubAgent(rec, task) {
 }
 
 function makeExtraTools(rec, noAgent) {
+  const autoTools = {
+    ...AUTOMATION_TOOLS,
+    create_automation: {
+      ...AUTOMATION_TOOLS.create_automation,
+      run: async (a) => {
+        const list = loadAutomations();
+        const clean = {
+          id: newId(),
+          name: String(a.name || 'Automation').slice(0, 60),
+          prompt: String(a.prompt || '').slice(0, 8000),
+          schedule: scheduleFromArgs(a),
+          cwd: a.folder || rec.cwd,
+          model: a.model || rec.model,
+          mode: 'auto',
+          enabled: true,
+          lastRun: null, lastSession: null,
+          nextRun: null,
+        };
+        clean.nextRun = nextRunOf(clean.schedule);
+        list.push(clean);
+        saveAutomations(list);
+        return { ok: true, id: clean.id, schedule: describeSchedule(clean.schedule), next_run: new Date(clean.nextRun).toLocaleString(), model: clean.model, note: 'runs while the app is open; the user can manage it in Settings → Automations' };
+      },
+    },
+  };
   return {
     get schemas() {
-      const out = [...Object.values(BROWSER_TOOLS), ...Object.values(COMPUTER_TOOLS)].map((t) => ({ type: 'function', function: t.schema }));
+      const out = [...Object.values(BROWSER_TOOLS), ...Object.values(COMPUTER_TOOLS), ...Object.values(autoTools)].map((t) => ({ type: 'function', function: t.schema }));
       if (!noAgent) out.push({ type: 'function', function: AGENT_TOOL_SCHEMA });
       for (const [srv, client] of mcpClients) {
         if (client.status !== 'running') continue;
@@ -975,11 +1000,12 @@ function makeExtraTools(rec, noAgent) {
       return out;
     },
     has(name) {
-      if (BROWSER_TOOLS[name] || COMPUTER_TOOLS[name]) return true;
+      if (BROWSER_TOOLS[name] || COMPUTER_TOOLS[name] || autoTools[name]) return true;
       if (name === 'agent' && !noAgent) return true;
       return name.startsWith('mcp__') && this._route(name) !== null;
     },
     gate(name, args) {
+      if (autoTools[name]) return autoTools[name].gate(args || {});
       if (BROWSER_TOOLS[name]) return BROWSER_TOOLS[name].gate(args || {});
       if (COMPUTER_TOOLS[name]) return COMPUTER_TOOLS[name].gate(args || {});
       if (name === 'agent') return { kind: 'agent', detail: String((args || {}).task || '').slice(0, 160), danger: false };
@@ -997,6 +1023,7 @@ function makeExtraTools(rec, noAgent) {
       return null;
     },
     run(name, args) {
+      if (autoTools[name]) return autoTools[name].run(args || {});
       if (BROWSER_TOOLS[name]) return BROWSER_TOOLS[name].run(args || {});
       if (COMPUTER_TOOLS[name]) return COMPUTER_TOOLS[name].run(args || {}, rec);
       if (name === 'agent' && !noAgent) return runSubAgent(rec, String((args || {}).task || ''));
@@ -1899,6 +1926,51 @@ setInterval(() => {
   }
   if (dirty) saveAutomations(list);
 }, 20000);
+// Agent-facing automation tools: any chat can set up scheduled runs.
+function scheduleFromArgs(a) {
+  const t = String(a.schedule_type || 'daily');
+  const [hh, mm] = String(a.time || '09:00').split(':').map((n) => Number(n) || 0);
+  if (t === 'interval') return { type: 'interval', minutes: Math.max(1, Number(a.minutes) || 60) };
+  if (t === 'hourly') return { type: 'hourly', mm: (Number(a.minutes) || 0) % 60 };
+  if (t === 'weekly') {
+    const days = { sun: 0, mon: 1, tue: 2, wed: 3, thu: 4, fri: 5, sat: 6 };
+    const dow = typeof a.day_of_week === 'number' ? a.day_of_week : (days[String(a.day_of_week || 'mon').slice(0, 3).toLowerCase()] ?? 1);
+    return { type: 'weekly', dow, hh, mm };
+  }
+  return { type: 'daily', hh, mm };
+}
+const AUTOMATION_TOOLS = {
+  create_automation: {
+    schema: { name: 'create_automation', description: 'Schedule a recurring agent task for the user. It runs this app\'s full agent (files/bash/search) on a schedule; each run appears as a chat + notification. schedule_type: "daily" (with time "HH:MM"), "weekly" (with day_of_week + time), "hourly" (with minutes = minute of the hour), or "interval" (with minutes = every N minutes).', parameters: { type: 'object', properties: {
+      name: { type: 'string' }, prompt: { type: 'string', description: 'the task the agent should perform each run — self-contained, no references to this conversation' },
+      schedule_type: { type: 'string', enum: ['daily', 'weekly', 'hourly', 'interval'] },
+      time: { type: 'string', description: 'HH:MM for daily/weekly' },
+      day_of_week: { type: 'string', description: 'mon…sun for weekly' },
+      minutes: { type: 'number' },
+      folder: { type: 'string', description: 'working directory (defaults to this chat\'s)' },
+      model: { type: 'string', description: 'model id (defaults to this chat\'s model)' },
+    }, required: ['name', 'prompt', 'schedule_type'] } },
+    gate: (a) => ({ kind: 'automation', detail: 'schedule "' + (a.name || '?') + '"', danger: false }),
+    run: null,   // bound per-session below (needs the session's cwd/model)
+  },
+  list_automations: {
+    schema: { name: 'list_automations', description: 'List the user\'s scheduled automations.', parameters: { type: 'object', properties: {} } },
+    gate: () => null,
+    run: async () => ({ automations: loadAutomations().map((a) => ({ id: a.id, name: a.name, schedule: describeSchedule(a.schedule), enabled: a.enabled, next_run: a.nextRun ? new Date(a.nextRun).toLocaleString() : null, prompt: a.prompt.slice(0, 120) })) }),
+  },
+  delete_automation: {
+    schema: { name: 'delete_automation', description: 'Delete one of the user\'s automations by id or exact name.', parameters: { type: 'object', properties: { id: { type: 'string' }, name: { type: 'string' } }, required: [] } },
+    gate: (a) => ({ kind: 'automation', detail: 'delete "' + (a.name || a.id || '?') + '"', danger: false }),
+    run: async (a) => {
+      const list = loadAutomations();
+      const hit = list.find((x) => x.id === a.id || x.name === a.name);
+      if (!hit) return { error: 'no automation matched' };
+      saveAutomations(list.filter((x) => x.id !== hit.id));
+      return { ok: true, deleted: hit.name };
+    },
+  },
+};
+
 ipcMain.handle('automation-list', () => loadAutomations().map((a) => ({ ...a, scheduleText: describeSchedule(a.schedule) })));
 ipcMain.handle('automation-save', (_e, auto) => {
   const list = loadAutomations();
