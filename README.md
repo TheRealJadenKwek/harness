@@ -1,87 +1,95 @@
+<div align="center">
+
 # ⬡ Harness Code
 
-Your own coding agent on the desktop — like Codex or Claude Code, but **OpenRouter-native**: code with open-source models (GLM, Qwen, DeepSeek, Llama…), frontier models, and older "nostalgic" models behind one key.
+**A Claude Code / Codex–class coding agent for your desktop — that runs on _any_ model.**
 
-Built from scratch (a real agent loop, not a wrapper). Electron GUI + a zero-dependency Node agent core.
+One OpenRouter key unlocks 340+ models — frontier, open-source, or gloriously obsolete — inside a full agentic environment: multi-session chats, sandboxed tools, git panels, computer use with its own cursor, an iPhone bridge, and zero runtime dependencies.
 
-![screenshot](docs/screenshot.png)
+[![License: MIT](https://img.shields.io/badge/license-MIT-black.svg)](LICENSE)
+![Platform](https://img.shields.io/badge/platform-macOS-black)
+![Electron](https://img.shields.io/badge/electron-33-black)
+![Dependencies](https://img.shields.io/badge/runtime%20deps-0-black)
 
-## Features
+<img src="docs/hero-light.png" width="850" alt="Harness Code — light theme, agent running tools with vision input">
 
-- **Multi-session sidebar** — parallel chats, each with its own working directory, model, and permission mode. Sessions run concurrently and **persist across restarts**.
-- **Agentic loop** — read / list / glob / grep / write / edit / bash tools, streamed tool-call assembly, up to 40 steps per turn.
-- **Streaming UI** — markdown answers (code blocks, inline code, links), collapsible ✳ thinking blocks, collapsible tool cards with args + results.
-- **Inline diffs** in the chat for every write/edit, plus a **git Changes panel** (⌘D): status by file, colored unified diffs, auto-refresh as the agent edits.
-- **Run & Preview** (▷) — start a dev server (suggestions from package.json scripts); its URL is auto-detected (logs + port probing) and loads in an embedded **live preview** with a URL bar.
-- **Background tasks** — a process manager for dev servers/watchers: live logs, running badge, stop kills the whole process tree.
-- **Files panel** (⇧⌘F) — lazy project tree with read-only file preview. **⋮ menu**: Open in Finder / Terminal / VS Code, sessions folder.
-- **Five permission modes** per session, picked from a menu on the mode pill (1–5): 📋 Plan (read-only) / 🔨 Manual (approve everything) / ✎ Accept edits (file edits auto-approve, bash asks) / ⚡ Auto (routine work auto-approves) / ⚠ Bypass (everything auto-approves). The **destructive-action guard** (rm, resets, overwrites, sudo…) stops and asks in every mode except Bypass. Per-model trust memory: each model remembers the mode you last used with it.
-- **@-file mentions** with fuzzy autocomplete, **slash commands** (`/model`, `/mode`, `/dir`, `/clear`, `/compact`, `/rename`, `/diff`, `/help`).
-- **/compact + auto-compaction** — manual or automatic at ~75% context fill; old tool outputs and stale screenshots are trimmed continuously.
-- **Live plan card** — the model maintains a visible checklist (`update_plan`) and ticks items off as it works.
-- **Checkpoints** — every turn that edits files gets a one-click "⤺ revert" that restores pre-turn contents (new files removed).
-- **Project memory** — `HARNESS.md` (or `AGENTS.md`/`CLAUDE.md`) in the working directory loads into the system prompt every turn.
-- **Works with non-tool-calling models** — a ReAct text protocol kicks in automatically for models without native function calling (detected from the catalog), so old/nostalgic models can still drive the full agent loop.
-- **Paste images** — ⌘V an image straight into the composer.
-- **Suggested replies** — after each turn a ghost-text draft of your likely next message appears in the composer; **⇥ Tab** accepts it (toggle in Settings).
-- **Voice input** — 🎙 records, transcribes **locally** via whisper.cpp (nothing leaves the Mac), and drops the text into the composer.
-- **Model-generated chat titles**, **cross-session search** (sidebar box searches titles + full transcripts), **per-file discard** in the Changes panel.
-- **Hooks** — `~/.harness-code/hooks.json` pre_tool/post_tool commands; a non-zero pre_tool exit vetoes the tool call.
-- **Self-update** — Settings → Check for updates: pulls from GitHub, refreshes the installed app, offers relaunch.
-- **CLI session viewer** — a read-only, live-tailing view of your Claude Code and Codex **CLI** sessions in the sidebar: watch any terminal/phone-driven CLI session stream in the desktop UI (Esc to return).
-- **Remote API + iOS bridge** — a localhost, token-gated API (`~/.harness-code/api-token` + `api-port`) lets the [Harness](https://github.com/TheRealJadenKwek/harness) Mac server front this app as a third engine next to the claude/codex CLIs: chats started from the iOS app live inside Harness Code and **stream in the desktop UI in real time** (📱 bubbles), with full continuity both ways.
-- **Message queueing** — type while the agent is working; messages send when the turn ends.
-- **Model picker** (⌘K) — the full OpenRouter catalog (300+), searchable, with pricing and context length, cached for instant open. Type any model id, including ones not in the list.
-- **＋ attach menu** (⌘U) — add photos (sent to vision models as real image input), files (inserted as @mentions), or a folder; jump to slash commands.
-- **Reasoning effort selector** — faster ↔ smarter per session (OpenRouter unified `reasoning.effort`).
-- **Context & usage popover** — click the token meter: context-window fill bar for the current model, session cost, and your live OpenRouter credit balance.
-- **MCP connectors** — stdio servers by command, or **remote servers by URL** (`https://… [bearer-token]`, Streamable HTTP); tools advertised as `mcp__server__tool`, approval-gated like everything else.
-- **Skills** — markdown playbooks in `~/.harness-code/skills/`, invoked as `/name` from the composer.
-- **Plugins** — installable bundles of skills + MCP servers (`plugin.json` + `skills/*.md`), from a local folder or git URL; toggle from the ＋ menu or Settings. Plugin servers run with cwd = the plugin folder and may use `${PLUGIN_DIR}`.
-- **Agent browser** — `browser_open/read/click/fill/eval` tools drive the visible Preview panel, so you watch the model browse.
-- **Computer use with a second cursor** — the agent drives its own orange **"AI" ghost cursor** that glides Codex-style across a click-through overlay, while **your cursor stays yours**: clicks are posted directly at coordinates (native CGEvent `tap`, with instant warp-back so the real pointer ends where it was). Banner + glow + click ripples show when the AI cursor is active; **Esc stops it instantly**. The ghost is visible in the model's screenshots for aim verification (banner is not). Tools: `computer_screenshot` (vision, cursor visible) / `computer_move` / `computer_click` / `computer_type` / `computer_key` / `computer_open_app`, plus `applescript`. Clicks/typing always danger-gated. Best with vision models trained for pointing (Claude); use the move→verify→click loop.
-- **AI spend** (Settings → General) — today / week / month / YTD / all-time from a local per-turn ledger, 14-day bars, plus your account-wide OpenRouter usage.
-- **Appshots** — press ⌘⇧H anywhere to capture the screen and attach it to the active chat (needs Screen Recording permission).
-- **/fork · /goal · /loop** — duplicate a session with full history, pin a standing goal into the system prompt, or re-run a prompt on an interval.
-- **Monochrome UI, light & dark** — follows the system theme.
-- **Permission rules** — "Always allow" on any approval saves a per-project prefix rule (manage in Settings); destructive actions never skip approval.
-- **Sandboxed shell** — bash runs under macOS Seatbelt: reads unrestricted, writes limited to the project + temp (toggle in Settings).
-- **Worktrees** — right-click a chat → "Fork to worktree": an isolated git worktree + branch per session; deleted with the session. **Commit / PR buttons** in the Changes panel (PR via `gh`).
-- **Mid-turn steering** — hit Enter while the agent works and your message is injected into the running turn (↳), not queued.
-- **Sub-agents** — the model can delegate self-contained tasks to a fresh-context `agent` tool (same toolset, no recursive spawning).
-- **Keyboard-first** — ⌘N new chat, ⌘K models, ⌘B sidebar, ⌘D changes panel, ⌘1–9 switch session, ⇧Tab cycle mode, Enter/Esc approve/deny, Esc stop.
+</div>
 
-## Run
+---
+
+## Why this exists
+
+Claude Code and Codex are phenomenal — and locked to their vendors' models. Harness Code is the same class of tool, built from scratch, **model-agnostic by design**: run GLM-5 in the morning, Fable 5 for the hard parts, DeepSeek for volume, and GPT-3.5 for nostalgia — same tools, same panels, same permission system. Models without native tool-calling get an automatic ReAct text protocol, so even pre-2024 models can drive the full agent loop.
+
+The agent core is pure Node with **zero dependencies** — no LangChain, no SDK, ~1,500 lines you can actually read.
+
+## What it does
+
+**The agent loop** — read / list / glob / grep / write / edit / bash / applescript tools, streamed tool-call assembly, live plan checklist the model ticks off, self-verification discipline baked into the prompt, sub-agent delegation, mid-turn steering (your message injects into the *running* turn).
+
+**Safety you can feel** — five permission modes (Plan → Manual → Accept-edits → Auto → Bypass) with a destructive-action guard that interrupts even trusted models, "always allow" rules per project, macOS Seatbelt sandboxing (writes confined to the project), per-turn **checkpoints with one-click revert**, deleted-chat trash, and pre/post tool hooks that can veto any call.
+
+**A real workspace** — git Changes panel with per-file discard + commit/PR buttons, worktree-per-session for parallel tasks, Files panel, background task runner with **live dev-server preview**, project memory via `HARNESS.md`, `/compact` plus automatic context management that keeps even 16k-context models alive on long sessions.
+
+<div align="center"><img src="docs/changes-panel.png" width="850" alt="Git changes panel with colored diffs"></div>
+
+**Computer & browser use** — the agent drives a visible browser (you watch it click), and for desktop control it gets its **own orange "AI" cursor** that glides across a takeover overlay while *your* cursor stays yours. Screenshots reach vision models with coordinate scaling handled; Esc hands control back instantly.
+
+<div align="center"><img src="docs/computer-use.png" width="850" alt="Second-cursor computer use with takeover banner"></div>
+
+**Extensible** — MCP connectors (stdio *and* remote Streamable-HTTP), markdown skills invoked as `/name`, installable plugins bundling both, and a token-gated local API.
+
+**Phone-native** — pair with [Harness](https://github.com/TheRealJadenKwek/harness) (the iOS app) and every chat exists on both screens at once: message from your phone, watch it stream on your desktop, and vice versa.
+
+**Daily-driver polish** — ghost-text suggested replies (Tab accepts), local whisper voice input (nothing leaves your Mac), vision image paste, model favourites, per-model reasoning-effort memory, spend tracking (day/week/month/YTD), model-written chat titles, cross-session search, one-click code copy, a live ✳ working indicator with elapsed time, and a read-only viewer that live-tails your Claude Code / Codex CLI sessions.
+
+## vs. Claude Code / Codex desktop
+
+| | Harness Code | Claude Code | Codex |
+|---|---|---|---|
+| Models | **Any of 340+ (OpenRouter)** | Claude only | OpenAI only |
+| Old / non-tool-calling models | ✅ auto ReAct fallback | — | — |
+| Computer use | ✅ second cursor (yours stays free) | via API | ✅ takes your cursor |
+| Phone companion | ✅ two-way live sync | ✅ | ✅ |
+| Spend tracking | ✅ built-in + credits | plan-based | plan-based |
+| Agent core you can read | ✅ ~1,500 LOC, 0 deps | closed | partially open |
+| Checkpoints / revert | ✅ | ✅ | ✅ |
+| MCP / plugins / skills / hooks | ✅ | ✅ | ✅ |
+
+## Quickstart
 
 ```bash
+git clone https://github.com/TheRealJadenKwek/harness-code
+cd harness-code
 npm install
 npm start
 ```
 
-The OpenRouter key is set in Settings on first launch; it bootstraps from `~/.claude-harness/keys.json` if present. Stored locally only.
+Paste your OpenRouter key in Settings. That's the whole setup.
 
 Headless (no GUI):
 
 ```bash
-node run-headless.js "openai/gpt-4o-mini" "/path/to/project" "add a test for foo()" --auto
+node run-headless.js "deepseek/deepseek-v4-pro" ~/myproject "add tests for utils.py" --auto
 ```
 
 ## Architecture
 
 ```
 src/
-  agent/           the core — pure Node, testable headless
-    provider.js    OpenRouter (OpenAI-compatible) streaming + tool-call assembly
-    tools.js       read/list/glob/grep/write/edit/bash, path-scoped, approval-gated
-    agent.js       the agentic loop + /compact + persistence hooks
-    prompt.js      system prompt (per permission mode)
-  main/            Electron main: session manager, persistence, git, models cache, IPC
-  renderer/        the desktop UI (vanilla JS, no framework)
-run-headless.js    drive the agent from the terminal (no GUI) for testing
+  agent/           pure-Node core — usable headless, zero deps
+    provider.js    OpenRouter streaming + tool-call assembly
+    tools.js       file/search/shell tools, Seatbelt sandbox, danger guard
+    agent.js       the loop: plan → act → verify · context fitting · steering
+    mcp.js         MCP client (stdio + Streamable HTTP)
+    prompt.js      system prompt + HARNESS.md project memory
+  main/            Electron main: sessions, persistence, git, tasks, remote API
+  renderer/        the UI — vanilla JS, no framework
+assets/hc-cursor   native Swift cursor helper (CGEvent) for computer use
 ```
 
-Sessions persist to `~/Library/Application Support/harness-code/sessions/`.
+Sessions persist to `~/Library/Application Support/harness-code/`. Keyboard-first: ⌘N new chat · ⌘K models · ⌘D changes · ⇧⌘F files · ⇧Tab cycle mode · Tab accept suggestion · Esc stop.
 
 ## License
 
-MIT
+MIT — build whatever you want with it.
