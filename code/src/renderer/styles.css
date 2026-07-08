@@ -588,7 +588,8 @@ h3 { margin: 2px 0 4px; }
 
 /* menus + popovers: glass */
 .menu {
-  background: var(--glass);
+  /* dense popovers need near-opaque fill — content bleeding through makes them unreadable */
+  background: color-mix(in srgb, var(--panel) 92%, transparent);
   -webkit-backdrop-filter: blur(26px) saturate(1.5); backdrop-filter: blur(26px) saturate(1.5);
   border: 1px solid var(--edge); border-radius: 14px;
   box-shadow: var(--glass-shadow-hi), inset 0 1px 0 var(--glass-brd);
@@ -639,7 +640,7 @@ h3 { margin: 2px 0 4px; }
 .chap-tick:hover { width: 17px; background: color-mix(in srgb, var(--text) 55%, transparent); }
 .chap-tick.cur { width: 17px; height: 4px; background: var(--text); }
 #chapTip { position: fixed; z-index: 200; width: min(430px, 44vw); pointer-events: none;
-           background: var(--glass); -webkit-backdrop-filter: blur(28px) saturate(1.5); backdrop-filter: blur(28px) saturate(1.5);
+           background: color-mix(in srgb, var(--panel) 92%, transparent); -webkit-backdrop-filter: blur(28px) saturate(1.5); backdrop-filter: blur(28px) saturate(1.5);
            border: 1px solid var(--edge); border-radius: 14px; padding: 12px 15px;
            box-shadow: var(--glass-shadow-hi), inset 0 1px 0 var(--glass-brd); }
 #chapTip .ct-q { font-weight: 600; font-size: 13px; margin-bottom: 5px;
