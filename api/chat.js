@@ -20,7 +20,8 @@ module.exports = async (req, res) => {
   const key = await userKey(user.id);
   if (!key) { res.status(402).json({ error: 'no_key' }); return; }
 
-  const { model, messages } = req.body || {};
+  const { model, messages, effort } = req.body || {};
+  const eff = ['low', 'medium', 'high'].includes(effort) ? effort : null;
   if (!ALLOWED.has(model)) { res.status(400).json({ error: 'unknown model' }); return; }
   if (!Array.isArray(messages) || !messages.length || messages.length > 400) {
     res.status(400).json({ error: 'bad messages' }); return;
@@ -53,7 +54,7 @@ module.exports = async (req, res) => {
       'HTTP-Referer': 'https://harness-chat-web.vercel.app',
       'X-Title': 'Harness Chat Web',
     },
-    body: JSON.stringify({ model, messages: clean, stream: true, max_tokens: 8000 }),
+    body: JSON.stringify({ model, messages: clean, stream: true, max_tokens: 8000, ...(eff ? { reasoning: { effort: eff } } : {}) }),
   });
 
   if (!upstream.ok) {

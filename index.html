@@ -97,6 +97,22 @@
   ol.steps { margin:8px 0 14px; padding-left:20px; font-size:14px; }
   ol.steps li { margin-bottom:6px; }
   ol.steps a { color:inherit; }
+  /* message hover controls (Claude Code style) */
+  .mwrap { display:flex; flex-direction:column; gap:3px; }
+  .mwrap.right { align-self:flex-end; align-items:flex-end; }
+  .mwrap.left { align-self:flex-start; align-items:flex-start; }
+  .mwrap .msg { align-self:auto; }
+  .mctl { display:flex; align-items:center; gap:2px; opacity:0; transition:opacity .12s; }
+  .mwrap:hover .mctl { opacity:1; }
+  .mctl button { border:none; background:transparent; color:var(--muted); cursor:pointer; font-size:13px; padding:3px 6px; border-radius:6px; }
+  .mctl button:hover { background:var(--panel2); color:var(--text); }
+  .mctl .time { font-size:11px; color:var(--muted); margin-left:4px; }
+  #quoteBtn { position:fixed; z-index:40; display:none; border:1px solid var(--border); background:var(--panel);
+              color:var(--text); font-size:12px; padding:5px 10px; border-radius:8px; cursor:pointer; box-shadow:0 4px 14px rgba(0,0,0,.25); }
+  .quote-chip { max-width:820px; margin:0 auto 6px; background:var(--panel2); border-left:3px solid var(--muted);
+                border-radius:8px; padding:7px 10px; font-size:13px; color:var(--muted); display:flex; gap:8px; align-items:flex-start; }
+  .quote-chip span { flex:1; overflow:hidden; display:-webkit-box; -webkit-line-clamp:2; -webkit-box-orient:vertical; }
+  .quote-chip button { border:none; background:none; color:var(--muted); cursor:pointer; }
   /* auth gate */
   #gate { position:fixed; inset:0; background:var(--bg); z-index:50; display:flex; align-items:center; justify-content:center; }
   #gate .card { width:min(360px, 88vw); text-align:center; }
@@ -138,17 +154,19 @@
     </header>
     <div id="log"></div>
     <div class="composer">
+      <div class="quote-chip" id="quoteChip" style="display:none"><span id="quoteText"></span><button id="quoteX">✕</button></div>
       <div class="attach-row" id="attachRow" style="display:none"></div>
       <div class="box">
         <button id="attachBtn" title="Attach a photo">＋</button>
         <textarea id="input" rows="1" placeholder="Message…"></textarea>
         <button id="send">↑</button>
       </div>
-      <div class="model-row"><button class="model-chip" id="modelBtn">◆ …</button></div>
+      <div class="model-row"><button class="model-chip" id="modelBtn">◆ …</button> <button class="model-chip" id="effortBtn" style="display:none">🧠</button></div>
     </div>
   </div>
 </div>
 <input type="file" id="filePick" accept="image/*" multiple style="display:none">
+<button id="quoteBtn">↳ Add to message</button>
 
 <div id="scrim"></div>
 <div class="sheet" id="memSheet">
@@ -182,12 +200,13 @@
 const SUPA = 'https://kwcjxhjcsitgalinikal.supabase.co';
 const ANON = 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6Imt3Y2p4aGpjc2l0Z2FsaW5pa2FsIiwicm9sZSI6ImFub24iLCJpYXQiOjE3ODM0OTA1ODYsImV4cCI6MjA5OTA2NjU4Nn0.EVZvDD5LzQsEcQy6XjLvHXEYVmA0JIn7FVfP8H1tRLU';
 const MODELS = [
-  { id: 'minimax/minimax-m3',                name: 'MiniMax M3',        desc: 'default 🖼', vision: true },
-  { id: 'deepseek/deepseek-v4-pro',          name: 'DeepSeek V4 Pro',   desc: 'smart', vision: false },
-  { id: 'deepseek/deepseek-v4-flash',        name: 'DeepSeek V4 Flash', desc: 'fastest', vision: false },
-  { id: 'nvidia/nemotron-3-ultra-550b-a55b:free', name: 'Nemotron 3 Ultra', desc: 'free!', vision: false },
-  { id: 'qwen/qwen3.6-27b',                  name: 'Qwen 3.6 27B',      desc: 'cheap 🖼', vision: true },
+  { id: 'minimax/minimax-m3',                name: 'MiniMax M3',        desc: 'default 🖼', vision: true, reasoning: true },
+  { id: 'deepseek/deepseek-v4-pro',          name: 'DeepSeek V4 Pro',   desc: 'smart', vision: false, reasoning: true },
+  { id: 'deepseek/deepseek-v4-flash',        name: 'DeepSeek V4 Flash', desc: 'fastest', vision: false, reasoning: true },
+  { id: 'nvidia/nemotron-3-ultra-550b-a55b:free', name: 'Nemotron 3 Ultra', desc: 'free!', vision: false, reasoning: true },
+  { id: 'qwen/qwen3.6-27b',                  name: 'Qwen 3.6 27B',      desc: 'cheap 🖼', vision: true, reasoning: true },
 ];
+const EFFORTS = [null, 'low', 'medium', 'high'];
 const $ = (id) => document.getElementById(id);
 
 // ------------------------------------------------ auth (Supabase, Google)
@@ -267,8 +286,11 @@ function render() {
   const m = MODELS.find((x) => x.id === (cur ? cur.model : '')) || MODELS[0];
   $('modelBtn').textContent = '◆ ' + m.name;
   $('attachBtn').classList.toggle('off', !m.vision);
+  const em = MODELS.find((x) => x.id === (cur ? cur.model : '')) || MODELS[0];
+  $('effortBtn').style.display = em.reasoning ? '' : 'none';
+  $('effortBtn').textContent = '🧠 ' + (cur && cur.effort ? cur.effort : 'auto');
   if (cur) {
-    for (const msg of cur.messages) log.appendChild(bubble(msg));
+    cur.messages.forEach((msg, idx) => log.appendChild(bubble(msg, cur, idx)));
     if (live.has(cur.id) && (!cur.messages.length || cur.messages[cur.messages.length - 1].role === 'user')) {
       const w = document.createElement('div'); w.className = 'working'; w.innerHTML = '<span class="star">✳</span> thinking…';
       log.appendChild(w);
@@ -280,15 +302,65 @@ function render() {
   renderList();
   renderAttach();
 }
-function bubble(msg) {
+function timeago(ts) {
+  if (!ts) return '';
+  const d = Date.now() - new Date(ts).getTime();
+  if (d < 60e3) return 'just now';
+  if (d < 3600e3) return Math.floor(d / 60e3) + 'm ago';
+  if (d < 86400e3) return Math.floor(d / 3600e3) + 'h ago';
+  return Math.floor(d / 86400e3) + 'd ago';
+}
+function copyBtn(text) {
+  const b = document.createElement('button'); b.textContent = '⧉'; b.title = 'Copy';
+  b.onclick = (e) => {
+    e.stopPropagation();
+    navigator.clipboard.writeText(text).then(() => { b.textContent = '✓'; setTimeout(() => (b.textContent = '⧉'), 900); }).catch(() => {});
+  };
+  return b;
+}
+function bubble(msg, chat, idx) {
+  const wrap = document.createElement('div');
+  wrap.className = 'mwrap ' + (msg.role === 'user' ? 'right' : 'left');
   const el = document.createElement('div');
   el.className = 'msg ' + (msg.role === 'user' ? 'user' : 'bot');
   if (msg.role === 'user') {
     if (msg.images) for (const u of msg.images) { const im = document.createElement('img'); im.src = u; el.appendChild(im); }
     el.appendChild(document.createTextNode(msg.content));
   } else el.innerHTML = md(msg.content);
-  el.onclick = () => { if (navigator.clipboard) navigator.clipboard.writeText(msg.content).catch(() => {}); };
-  return el;
+  wrap.appendChild(el);
+  const ctl = document.createElement('div'); ctl.className = 'mctl';
+  ctl.appendChild(copyBtn(msg.content));
+  if (msg.role === 'user' && chat) {
+    const rw = document.createElement('button'); rw.textContent = '↩'; rw.title = 'Rewind — remove this message and everything after it';
+    rw.onclick = () => doRewind(chat, idx);
+    ctl.appendChild(rw);
+    const fk = document.createElement('button'); fk.textContent = '⑂'; fk.title = 'Fork a new chat from this point';
+    fk.onclick = () => doFork(chat, idx);
+    ctl.appendChild(fk);
+  }
+  if (msg.ts) { const t = document.createElement('span'); t.className = 'time'; t.textContent = timeago(msg.ts); t.title = new Date(msg.ts).toLocaleString(); ctl.appendChild(t); }
+  wrap.appendChild(ctl);
+  return wrap;
+}
+function doRewind(chat, idx) {
+  if (live.has(chat.id)) return;
+  if (!confirm('Rewind to before this message? Everything after it is removed (the text goes back into the box).')) return;
+  const msg = chat.messages[idx];
+  chat.messages = chat.messages.slice(0, idx);
+  chat.err = null;
+  chat.updatedAt = new Date().toISOString();
+  save(); render(); syncPush(chat);
+  $('input').value = msg.content; autosize(); $('input').focus();
+}
+function doFork(chat, idx) {
+  const msg = chat.messages[idx];
+  const fork = { id: Date.now().toString(36) + Math.random().toString(36).slice(2, 5),
+                 title: (chat.title + ' (fork)').slice(0, 48), model: chat.model, effort: chat.effort,
+                 messages: JSON.parse(JSON.stringify(chat.messages.slice(0, idx))),
+                 updatedAt: new Date().toISOString() };
+  chats.unshift(fork); cur = fork;
+  save(); render(); syncPush(fork);
+  $('input').value = msg.content; autosize(); $('input').focus();
 }
 function renderList() {
   const box = $('chatlist'); box.innerHTML = '';
@@ -366,7 +438,9 @@ async function send() {
   $('input').value = ''; autosize();
   pendingImages = [];
   chat.err = null;
-  chat.messages.push({ role: 'user', content: text || 'What do you see?', ...(images.length ? { images } : {}) });
+  const quoted = quote ? '> ' + quote.replace(/\n/g, '\n> ') + '\n\n' : '';
+  chat.messages.push({ role: 'user', content: quoted + (text || 'What do you see?'), ts: new Date().toISOString(), ...(images.length ? { images } : {}) });
+  quote = null; renderQuote();
   if (chat.title === 'New chat') chat.title = (text || 'Photo').slice(0, 40);
   chat.updatedAt = new Date().toISOString();
   save(); render();
@@ -375,12 +449,12 @@ async function send() {
   live.set(chat.id, { aborter });
   updateSendBtn(); renderList();
   let acc = '';
-  const reply = { role: 'assistant', content: '' };
+  const reply = { role: 'assistant', content: '', ts: new Date().toISOString() };
   let appended = false;
   try {
     const r = await fetch('/api/chat', {
       method: 'POST', signal: aborter.signal, headers: await H(),
-      body: JSON.stringify({ model: chat.model, messages: chat.messages }),
+      body: JSON.stringify({ model: chat.model, messages: chat.messages, effort: chat.effort || null }),
     });
     if (r.status === 401) { signOut(); return; }
     if (r.status === 402) { openSheet('keySheet'); throw new Error('add your OpenRouter key first (⚙︎ Settings)'); }
@@ -405,10 +479,10 @@ async function send() {
           if (!appended) { chat.messages.push(reply); appended = true; if (cur === chat) render(); }
           else if (cur === chat) {   // live paint only if this chat is on screen
             const log = $('log');
-            const last = log.lastElementChild;
-            if (last && last.classList.contains('bot')) {
+            const botEl = log.lastElementChild && log.lastElementChild.querySelector('.msg.bot');
+            if (botEl) {
               const stick = log.scrollHeight - log.scrollTop - log.clientHeight < 90;
-              last.innerHTML = md(acc);
+              botEl.innerHTML = md(acc);
               if (stick) log.scrollTop = log.scrollHeight;
             }
           }
@@ -522,6 +596,42 @@ $('keySave').onclick = async () => {
   $('keyState').textContent = 'Saved ✓ (' + j.keyTail + ')';
   setTimeout(closeSheets, 700);
 };
+// highlight assistant text → attach the selection as context
+let quote = null;
+function renderQuote() {
+  $('quoteChip').style.display = quote ? '' : 'none';
+  $('quoteText').textContent = quote || '';
+}
+$('quoteX').onclick = () => { quote = null; renderQuote(); };
+document.addEventListener('selectionchange', () => {
+  const sel = getSelection();
+  const btn = $('quoteBtn');
+  if (!sel || sel.isCollapsed || !sel.rangeCount) { btn.style.display = 'none'; return; }
+  const node = sel.anchorNode && (sel.anchorNode.nodeType === 1 ? sel.anchorNode : sel.anchorNode.parentElement);
+  if (!node || !node.closest('.msg.bot')) { btn.style.display = 'none'; return; }
+  const rect = sel.getRangeAt(0).getBoundingClientRect();
+  btn.style.display = 'block';
+  btn.style.left = Math.max(8, rect.left + rect.width / 2 - 55) + 'px';
+  btn.style.top = Math.max(8, rect.top - 38) + 'px';
+});
+$('quoteBtn').onmousedown = (e) => {
+  e.preventDefault();
+  const sel = getSelection();
+  quote = (quote ? quote + '\n' : '') + String(sel).trim().slice(0, 1500);
+  sel.removeAllRanges();
+  $('quoteBtn').style.display = 'none';
+  renderQuote();
+  $('input').focus();
+};
+
+// effort cycle: auto → low → medium → high
+$('effortBtn').onclick = () => {
+  if (!cur) return;
+  const i = EFFORTS.indexOf(cur.effort || null);
+  cur.effort = EFFORTS[(i + 1) % EFFORTS.length];
+  save(); render();
+};
+
 const input = $('input');
 function autosize() { input.style.height = 'auto'; if (input.value) input.style.height = Math.min(130, input.scrollHeight) + 'px'; }
 input.addEventListener('input', autosize);
