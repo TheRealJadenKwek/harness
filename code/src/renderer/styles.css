@@ -672,7 +672,8 @@ h3 { margin: 2px 0 4px; }
 
 /* centered reading column (Codex/Claude style) — no more edge-to-edge in wide windows */
 .log { align-items: center; }
-.log > * { width: min(100%, 830px); flex: none; align-self: center; }   /* beats the per-element align-self */
+.log > * { width: min(100%, 830px); flex: none; align-self: center; }
+.log > .msg.assistant { align-self: center; }   /* .msg.assistant's own align-self outranks .log>* — match its specificity */
 .msg-wrap { max-width: none; }          /* the column caps it; internal flex-end keeps user bubbles right */
 .msg.assistant { max-width: none; }
 .composer-wrap > * { max-width: 866px; margin-left: auto; margin-right: auto; width: 100%; box-sizing: border-box; }
