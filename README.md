@@ -2,7 +2,7 @@
 
 **Your computer's AI coding CLIs, as a native iPhone app.**
 
-Harness turns Claude Code and Codex running on your own Mac or Windows PC into a phone-first experience: start threads, watch replies stream with full markdown, read reasoning summaries, review the diffs and files your agents produce, answer their questions with a tap, and get a push notification when a long task finishes — from anywhere, over your own private [Tailscale](https://tailscale.com) network.
+Harness turns Claude Code, Codex, and [Harness Code](https://github.com/TheRealJadenKwek/harness-code) (an open, any-model desktop agent — 340+ models via OpenRouter) running on your own Mac or Windows PC into a phone-first experience: start threads, watch replies stream with full markdown, read reasoning summaries, review the diffs and files your agents produce, answer their questions with a tap, and get a push notification when a long task finishes — from anywhere, over your own private [Tailscale](https://tailscale.com) network.
 
 Your computer does the work; your phone is the remote. No accounts, no middleman, no data leaves your devices.
 
@@ -68,6 +68,10 @@ No Mac handy? The app ships with a fully offline **demo mode** ("Explore the dem
 - Archive, trash with 30-day recovery, search, drafts, deep-linked push notifications
 - Server-driven model catalog: add any new model id to `providers.json` and it appears in the app's picker — no rebuild
 - Bring-your-own-key providers (any Anthropic- or OpenAI-compatible endpoint) via `providers.json`
+
+## Bring your own engine
+
+Beyond the Claude and Codex CLIs, Harness fronts **[Harness Code](https://github.com/TheRealJadenKwek/harness-code)** — a from-scratch desktop coding agent that runs on any of 340+ OpenRouter models. Chats with that engine are *shared live*: the session exists in the desktop app, so a message sent from your phone streams on your Mac's screen in real time, and either device can continue any conversation. New engines are a single generator function in `server/server.py`.
 
 ## Security model
 
