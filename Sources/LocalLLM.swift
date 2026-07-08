@@ -27,7 +27,9 @@ final class LocalLLM: ObservableObject {
     @Published var ready: Set<String> = []               // repos with weights on disk
     private var containers: [String: ModelContainer] = [:]
 
-    init() {
+    init() { refresh() }
+
+    func refresh() {
         for s in LocalModels.specs where LocalLLM.onDisk(s.repo) { ready.insert(s.repo) }
     }
 
@@ -50,7 +52,7 @@ final class LocalLLM: ObservableObject {
         loading.insert(repo)
         defer { loading.remove(repo); progress[repo] = nil }
         let c = try await LLMModelFactory.shared.loadContainer(
-            configuration: ModelConfiguration(id: repo)
+            configuration: ModelConfiguration(id: repo, overrideTokenizer: "PreTrainedTokenizer")
         ) { [weak self] p in
             Task { @MainActor in self?.progress[repo] = p.fractionCompleted }
         }

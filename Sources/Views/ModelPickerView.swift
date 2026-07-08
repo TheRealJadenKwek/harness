@@ -92,7 +92,7 @@ struct ModelPickerView: View {
             .navigationTitle("\(store.models.count) models")
             .navigationBarTitleDisplayMode(.inline)
             .toolbar { ToolbarItem(placement: .confirmationAction) { Button("Done") { dismiss() } } }
-            .task { if store.models.isEmpty { await store.loadModels() } }
+            .task { local.refresh(); if store.models.isEmpty { await store.loadModels() } }
         }
     }
 }
