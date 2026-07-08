@@ -54,11 +54,13 @@ struct ChatView: View {
                     }
                 }
                 HStack(spacing: 10) {
-                    Menu {
-                        Button { showCamera = true } label: { Label("Take Photo", systemImage: "camera") }
-                        photoPickerButton
-                    } label: {
-                        Image(systemName: "plus.circle").font(.system(size: 24)).foregroundStyle(.secondary)
+                    if modelSupportsVision {
+                        Menu {
+                            Button { showCamera = true } label: { Label("Take Photo", systemImage: "camera") }
+                            photoPickerButton
+                        } label: {
+                            Image(systemName: "plus.circle").font(.system(size: 24)).foregroundStyle(.secondary)
+                        }
                     }
                     TextField("Message…", text: $input, axis: .vertical)
                         .lineLimit(1...5)
@@ -81,7 +83,11 @@ struct ChatView: View {
         .navigationTitle(chat.title).navigationBarTitleDisplayMode(.inline)
         .sheet(isPresented: $showPicker) {
             ModelPickerView(selected: $chat.model)
-                .onDisappear { store.defaultModel = chat.model; store.update(chat) }
+                .onDisappear {
+                    store.defaultModel = chat.model
+                    store.update(chat)
+                    if !modelSupportsVision { pendingImages = [] }
+                }
         }
         .fullScreenCover(isPresented: $showCamera) {
             CameraPicker { img in addImage(img) }.ignoresSafeArea()
@@ -97,6 +103,10 @@ struct ChatView: View {
                 photoItems = []
             }
         }
+    }
+
+    private var modelSupportsVision: Bool {
+        store.models.first { $0.id == chat.model }?.vision ?? false
     }
 
     private var photoPickerButton: some View {

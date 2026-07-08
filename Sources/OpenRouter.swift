@@ -14,6 +14,8 @@ enum OpenRouter {
                 let context_length: Int?
                 struct P: Codable { let prompt: String?; let completion: String? }
                 let pricing: P?
+                struct A: Codable { let input_modalities: [String]? }
+                let architecture: A?
             }
             let data: [M]
         }
@@ -21,7 +23,8 @@ enum OpenRouter {
         return raw.data.map {
             ORModel(id: $0.id, name: $0.name ?? $0.id, context: $0.context_length ?? 0,
                     promptPrice: Double($0.pricing?.prompt ?? "0") ?? 0,
-                    completionPrice: Double($0.pricing?.completion ?? "0") ?? 0)
+                    completionPrice: Double($0.pricing?.completion ?? "0") ?? 0,
+                    vision: $0.architecture?.input_modalities?.contains("image") ?? false)
         }.sorted { $0.id < $1.id }
     }
 

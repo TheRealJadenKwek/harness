@@ -21,4 +21,5 @@ struct ORModel: Codable, Identifiable, Hashable {
     let context: Int
     let promptPrice: Double
     let completionPrice: Double
+    let vision: Bool
 }

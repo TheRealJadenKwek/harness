@@ -30,7 +30,10 @@ struct ModelPickerView: View {
                     } label: {
                         HStack {
                             VStack(alignment: .leading, spacing: 2) {
-                                Text(m.name).foregroundStyle(.primary).lineLimit(1)
+                                HStack(spacing: 4) {
+                                    Text(m.name).foregroundStyle(.primary).lineLimit(1)
+                                    if m.vision { Text("🖼").font(.caption2) }
+                                }
                                 Text("\(m.id) · \(m.context / 1000)k ctx · $\(String(format: "%.2f", m.promptPrice * 1e6))/$\(String(format: "%.2f", m.completionPrice * 1e6)) per M")
                                     .font(.caption2).foregroundStyle(.secondary).lineLimit(1)
                             }
