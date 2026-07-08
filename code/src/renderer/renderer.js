@@ -33,13 +33,36 @@ function fmtTokens(n) { return n >= 1000 ? (n / 1000).toFixed(1) + 'k' : String(
 
 // Minimal safe markdown: escape first, then transform. Fenced code is lifted out
 // before inline rules run and restored after.
+// compact single-pass syntax highlighter: comment | string | keyword | number
+const HL_KW = {
+  js: 'const|let|var|function|return|if|else|for|while|do|class|extends|import|from|export|default|new|async|await|try|catch|finally|throw|typeof|instanceof|this|null|undefined|true|false|switch|case|break|continue|of|in|yield|static|get|set',
+  py: 'def|return|if|elif|else|for|while|class|import|from|as|try|except|finally|raise|with|pass|yield|lambda|global|nonlocal|assert|del|not|and|or|in|is|None|True|False|self|async|await|print',
+  swift: 'func|let|var|return|if|else|guard|for|while|class|struct|enum|extension|protocol|import|init|self|nil|true|false|try|catch|throw|throws|async|await|switch|case|default|break|continue|private|public|static|override|some|any|in',
+  sh: 'if|then|else|elif|fi|for|do|done|while|case|esac|function|echo|export|local|return|exit|source|set|cd|sudo|true|false',
+};
+function hl(code, lang) {
+  const e = esc(code);
+  const L = (lang || '').toLowerCase();
+  const fam = /^(py|python)$/.test(L) ? 'py' : /^(swift)$/.test(L) ? 'swift' : /^(sh|bash|zsh|shell)$/.test(L) ? 'sh'
+            : /^(js|jsx|ts|tsx|javascript|typescript|json|java|c|cpp|cs|go|rust|kt)$/.test(L) ? 'js' : null;
+  const kw = fam ? HL_KW[fam] : HL_KW.js + '|' + HL_KW.py;
+  const cm = fam === 'py' || fam === 'sh' ? '#[^\\n]*' : fam === 'js' || fam === 'swift' ? '\\/\\/[^\\n]*|\\/\\*[\\s\\S]*?\\*\\/' : '\\/\\/[^\\n]*|#[^\\n]*|\\/\\*[\\s\\S]*?\\*\\/';
+  const re = new RegExp('(' + cm + ')|("(?:\\\\.|[^"\\\\\\n])*"|\'(?:\\\\.|[^\'\\\\\\n])*\'|`(?:\\\\.|[^`\\\\])*`)|\\b(' + kw + ')\\b|\\b(0x[0-9a-fA-F]+|\\d+\\.?\\d*)\\b', 'g');
+  return e.replace(re, (m, c, st, k, n) =>
+    c ? '<span class="hl-cm">' + c + '</span>'
+    : st ? '<span class="hl-str">' + st + '</span>'
+    : k ? '<span class="hl-kw">' + k + '</span>'
+    : '<span class="hl-num">' + n + '</span>');
+}
 function md(src) {
-  let s = esc(src || '');
   const blocks = [];
+  let s = String(src || '');
   s = s.replace(/```([\w+-]*)\n?([\s\S]*?)(?:```|$)/g, (_, lang, code) => {
-    blocks.push('<pre class="code"><button class="code-copy" title="Copy code">⧉</button><code>' + code.replace(/\n$/, '') + '</code></pre>');
+    blocks.push('<pre class="code">' + (lang ? '<span class="code-lang">' + esc(lang) + '</span>' : '')
+      + '<button class="code-copy" title="Copy code">⧉</button><code>' + hl(code.replace(/\n$/, ''), lang) + '</code></pre>');
     return '\uE000' + (blocks.length - 1) + '\uE001';
   });
+  s = esc(s);
   s = s.replace(/`([^`\n]+)`/g, '<code class="ic">$1</code>');
   s = s.replace(/^#### (.*)$/gm, '<h4>$1</h4>');
   s = s.replace(/^### (.*)$/gm, '<h4>$1</h4>');
@@ -50,6 +73,14 @@ function md(src) {
   s = s.replace(/\[([^\]]+)\]\((https?:[^)\s]+)\)/g, '<a href="$2" class="ext">$1</a>');
   s = s.replace(/\[([^\]]+)\]\((?:sandbox:|file:\/\/)?(\/[^)\s]+)\)/g, '<a class="reveal" data-p="$2">$1 ↗</a>');
   s = s.replace(/^(\s*)[-*] /gm, '$1• ');
+  s = s.replace(/(?:^\|.+\|[ \t]*(?:\n|$)){2,}/gm, (block) => {
+    const rows = block.trim().split('\n').map((r) => r.replace(/^\s*\||\|\s*$/g, '').split('|').map((c) => c.trim()));
+    if (rows.length < 2 || !/^[:\s|-]+$/.test(rows[1].join('|'))) return block;
+    const head = rows[0], body = rows.slice(2);
+    return '<div class="tbl-wrap"><table><thead><tr>' + head.map((c) => '<th>' + c + '</th>').join('')
+      + '</tr></thead><tbody>' + body.map((r) => '<tr>' + r.map((c) => '<td>' + c + '</td>').join('') + '</tr>').join('')
+      + '</tbody></table></div>';
+  });
   s = s.replace(/\uE000(\d+)\uE001/g, (_, i) => blocks[+i]);
   s = s.replace(/<\/(h2|h3|h4|pre)>\n/g, '</$1>');
   return s;
