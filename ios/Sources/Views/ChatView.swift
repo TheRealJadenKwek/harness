@@ -485,14 +485,12 @@ struct ChatView: View {
             }
         }
         .padding(.horizontal, 8).padding(.vertical, 6)
-        .background(
-            RoundedRectangle(cornerRadius: 26, style: .continuous)
-                .fill(Color.appSurface)
-                .overlay(RoundedRectangle(cornerRadius: 26, style: .continuous)
-                    .stroke(Color.appBorder, lineWidth: 1))
-        )
+        .background(.ultraThinMaterial, in: RoundedRectangle(cornerRadius: 26, style: .continuous))
+        .overlay(RoundedRectangle(cornerRadius: 26, style: .continuous)
+            .strokeBorder(Color.appBorder.opacity(0.8), lineWidth: 1))
+        .shadow(color: .black.opacity(0.10), radius: 14, y: 5)
+        .shadow(color: .black.opacity(0.05), radius: 2, y: 1)
         .padding(.horizontal, 12).padding(.bottom, 8).padding(.top, 4)
-        .background(Color.appBG)
     }
 }
 

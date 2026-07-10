@@ -67,9 +67,24 @@ enum EffortCatalog {
 }
 
 func engineIcon(_ engine: String?) -> String {
-    switch engine {
+    let e = engine ?? ""
+    if e.contains("harness") { return "terminal" }
+    switch e {
     case "codex": return "chevron.left.forwardslash.chevron.right"
     case "gemini": return "diamond"
     default: return "sparkles"
+    }
+}
+
+/// Human engine name for a thread — provider beats engine (Harness Code
+/// threads ride the codex wire protocol but are their own engine).
+func engineName(_ t: ThreadSummary) -> String {
+    let p = t.provider.isEmpty ? t.engine : t.provider
+    if p.contains("harness") { return "Harness Code" }
+    switch p {
+    case "codex": return "Codex"
+    case "claude": return "Claude Code"
+    case "gemini": return "Gemini"
+    default: return p.isEmpty ? t.engine : p
     }
 }

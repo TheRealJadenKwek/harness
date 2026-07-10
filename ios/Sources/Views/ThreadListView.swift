@@ -156,8 +156,15 @@ struct ThreadRow: View {
                 Text(s).font(.caption).foregroundStyle(Color.appSecondary).lineLimit(1)
             }
             HStack(spacing: 6) {
-                Image(systemName: engineIcon(t.engine)).foregroundStyle(Color.appSecondary)
-                Text(t.model ?? t.engine)
+                HStack(spacing: 3) {
+                    Image(systemName: engineIcon(t.provider.isEmpty ? t.engine : t.provider)).font(.system(size: 9))
+                    Text(engineName(t))
+                }
+                .font(.caption2.weight(.medium))
+                .padding(.horizontal, 6).padding(.vertical, 2)
+                .background(Capsule().fill(Color.appSecondary.opacity(0.12)))
+                .foregroundStyle(Color.appText.opacity(0.75))
+                if let m = t.model { Text(m).lineLimit(1) }
                 if let cost = t.total_cost, cost > 0 { Text(String(format: "· ~$%.2f", cost)) }
                 Spacer()
                 if let c = t.message_count { Text("\(c) msgs") }
