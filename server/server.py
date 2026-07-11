@@ -2279,12 +2279,31 @@ def _session_files(cap=60):
     files.sort(key=lambda ep: os.path.getmtime(ep[1]) if os.path.exists(ep[1]) else 0, reverse=True)
     return files[:cap]
 
+_SESS_PARSE_CACHE = {}   # path -> (mtime, parsed) — the light parse is expensive across ~800 files
+_TITLE_MAP_CACHE = {'at': 0.0, 'c': {}, 'x': {}}
+def _cached_parse(engine, path):
+    try:
+        mt = os.path.getmtime(path)
+    except Exception:
+        return None
+    hit = _SESS_PARSE_CACHE.get(path)
+    if hit and hit[0] == mt:
+        return hit[1]
+    parsed = _parse_claude_session(path) if engine == 'claude' else _parse_codex_session(path)
+    _SESS_PARSE_CACHE[path] = (mt, parsed)
+    if len(_SESS_PARSE_CACHE) > 4000:
+        _SESS_PARSE_CACHE.clear()
+    return parsed
+
 def list_desktop_sessions(query=None):
     out = []
     q = (query or '').strip().lower()
-    ctitles, xtitles = claude_title_map(), codex_title_map()
+    now = time.time()
+    if now - _TITLE_MAP_CACHE['at'] > 10:
+        _TITLE_MAP_CACHE.update(at=now, c=claude_title_map(), x=codex_title_map())
+    ctitles, xtitles = _TITLE_MAP_CACHE['c'], _TITLE_MAP_CACHE['x']
     for engine, path in _session_files(cap=2000 if q else 60):
-        s = _parse_claude_session(path) if engine == 'claude' else _parse_codex_session(path)
+        s = _cached_parse(engine, path)
         if not s or s['turns'] == 0:
             continue
         # Claude resolves --resume per PROJECT DIR (derived from cwd): if the session's cwd
@@ -2292,6 +2311,7 @@ def list_desktop_sessions(query=None):
         # and fail with "No conversation found" — don't offer those.
         if engine == 'claude' and valid_cwd(s['cwd']) is None:
             continue
+        s = dict(s)                               # cache copy stays pristine
         desktop = (ctitles if engine == 'claude' else xtitles).get(s['id'])
         if desktop:                               # desktop sidebar name (incl. renames) wins
             s['title'] = desktop
