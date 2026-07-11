@@ -736,7 +736,7 @@ def notify_push(thread, text, questions=None):
     who = 'Codex' if thread.get('engine') == 'codex' else 'Claude'
     title = (thread.get('title') or who)[:60]
     if questions:
-        body = '❓ ' + str((questions[0] or {}).get('question') or 'Has a question for you')[:150]
+        body = 'Question: ' + str((questions[0] or {}).get('question') or 'Has a question for you')[:150]
     else:
         body = (text or '').replace('\n', ' ').strip()[:170] or 'Done'
     if relay_configured():                     # no local APNs key -> hosted relay
@@ -1312,7 +1312,7 @@ def run_claude_stream(thread, provider, text, images=None):
     if not final and proc.returncode not in (0, None):
         tail = ''.join(err_buf)[-800:]
         yield {'type': 'error', 'message': 'claude exit %s: %s' % (proc.returncode, tail)}; return
-    yield {'type': 'done', 'text': ('⚠️ ' + final) if saw_error else (final or '(no output)'),
+    yield {'type': 'done', 'text': ('[errored] ' + final) if saw_error else (final or '(no output)'),
            'session_id': session_id or thread.get('session_id'),
            'tools': tools, 'usage': usage, 'thinking': ''.join(thinking_buf) or None,
            'questions': questions_buf or None}
@@ -1641,6 +1641,17 @@ def run_harnesscode_stream(thread, provider, text, images=None):
         yield {'type': 'error', 'message': 'harness-code HTTP %s: %s' % (ex.code, ex.read()[:150])}
     except Exception as ex:
         yield {'type': 'error', 'message': 'harness-code: %s — is the Harness Code app open on the Mac?' % ex}
+
+def _hc_favs():
+    """Starred models from the desktop app — the phone's preset list."""
+    import urllib.request
+    try:
+        rq = urllib.request.Request(_hc_url(launch=False) + '/api/favs',
+                                    headers={'X-HC-Token': _hc_token()})
+        with urllib.request.urlopen(rq, timeout=3) as r:
+            return (json.load(r) or {}).get('favs') or []
+    except Exception:
+        return []
 
 def _hc_thread_for_session(sid):
     """Find the harness-code thread mirroring desktop session `sid` (fresh scan — cheap)."""
@@ -2317,7 +2328,7 @@ def import_desktop_session(sid, engine):
         return None, 'session cwd is outside your home folder — continue it on the desktop'
     cwd = cwd or HOME
     now = time.time()
-    t = {'id': uuid.uuid4().hex, 'title': ('📥 ' + parsed['title'])[:80],
+    t = {'id': uuid.uuid4().hex, 'title': parsed['title'][:80],
          'engine': prov['engine'], 'provider': prov['id'], 'model': prov.get('model'),
          'cwd': cwd, 'permission_mode': 'bypass', 'effort': 'default',
          'session_id': sid,                       # <- the resume key; continuation just works
@@ -2438,7 +2449,7 @@ def _auto_thread(a):
         return t
     prov = provider_by_id(a.get('provider') or 'claude') or provider_by_id('claude')
     now = time.time()
-    t = {'id': uuid.uuid4().hex, 'title': ('⚡ ' + a['name'])[:80],
+    t = {'id': uuid.uuid4().hex, 'title': a['name'][:80],
          'engine': prov['engine'], 'provider': prov['id'],
          'model': a.get('model') or prov.get('model'),
          'cwd': (valid_cwd(a.get('cwd')) if a.get('cwd') else None) or HOME,
@@ -2720,7 +2731,15 @@ class Handler(BaseHTTPRequestHandler):
         if not self._authed():
             return self._json(401, {'error': 'unauthorized'})
         if path == '/providers':
-            return self._json(200, [_provider_public(p) for p in load_providers()])
+            out = []
+            for p in load_providers():
+                pub = _provider_public(p)
+                if p.get('engine') == 'harness-code':
+                    favs = _hc_favs()
+                    if favs:                       # desktop stars ARE the phone preset list
+                        pub['models'] = [{'label': f['label'][:70], 'value': f['value']} for f in favs]
+                out.append(pub)
+            return self._json(200, out)
         if path.startswith('/providers/') and path.endswith('/models'):
             pid = path.split('/')[2]
             p = provider_by_id(pid)
@@ -2969,7 +2988,7 @@ class Handler(BaseHTTPRequestHandler):
             results = []
             for t in toks:
                 ok, code, reason = apns_send(t, {'aps': {'alert': {
-                    'title': 'Harness Code', 'body': 'Push is working ✅'}, 'sound': 'default'}})
+                    'title': 'Harness Code', 'body': 'Push is working.'}, 'sound': 'default'}})
                 results.append({'token': t[:8], 'code': code, 'reason': reason, 'ok': ok})
             return self._json(200, {'ok': True, 'sent': results})
         if path.startswith('/providers/'):
@@ -3007,6 +3026,16 @@ class Handler(BaseHTTPRequestHandler):
                      'left off, and continue from there.' % (hpath, 'Claude' if engine == 'claude' else 'Codex'))
             log('handoff %s(%s) -> %s thread %s' % (engine, sid[:8], target, t['id'][:8]))
             return self._json(200, {'thread': thread_summary(t), 'draft': draft})
+        if path == '/desktop/fav':                       # star/unstar a model (syncs to desktop)
+            import urllib.request as _ur
+            try:
+                rq = _ur.Request(_hc_url(launch=False) + '/api/favs',
+                                 headers={'X-HC-Token': _hc_token(), 'Content-Type': 'application/json'},
+                                 data=json.dumps({'model': body.get('model'), 'on': bool(body.get('on'))}).encode())
+                with _ur.urlopen(rq, timeout=5) as r:
+                    return self._json(200, json.load(r))
+            except Exception as e:
+                return self._json(502, {'error': 'desktop app not reachable: %s' % e})
         if path == '/desktop/import':                    # continue a desktop CLI session
             sid = (body.get('id') or '').strip()
             engine = (body.get('engine') or '').strip()

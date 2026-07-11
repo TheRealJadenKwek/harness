@@ -87,7 +87,7 @@ enum Demo {
     .n{font-size:24px;font-weight:700;color:#4f8cff}.l{font-size:12px;color:#8b90a0;margin-top:4px}
     .chart{width:100%;height:90px;background:#1f232c;border-radius:14px;padding:10px;box-sizing:border-box}
     </style></head><body><div class=card>
-    <h1>📊 Q4 Dashboard</h1><p class=sub>Built by Claude — previewed on your phone</p>
+    <h1>Q4 Dashboard</h1><p class=sub>Built by Claude — previewed on your phone</p>
     <div class=row><div class=stat><div class=n>$2.4M</div><div class=l>Revenue</div></div>
     <div class=stat><div class=n>+18%</div><div class=l>Growth</div></div>
     <div class=stat><div class=n>1,204</div><div class=l>Users</div></div></div>
