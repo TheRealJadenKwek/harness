@@ -190,8 +190,9 @@ struct HarnessAPI {
         _ = try await URLSession.shared.data(for: try makeRequest("/threads/\(id)/stop", method: "POST"))
     }
 
-    func desktopSessions() async throws -> [DesktopSession] {
-        try await decode(try makeRequest("/desktop/sessions"), as: [DesktopSession].self)
+    func desktopSessions(query: String = "") async throws -> [DesktopSession] {
+        let q = query.addingPercentEncoding(withAllowedCharacters: .urlQueryAllowed) ?? ""
+        return try await decode(try makeRequest(q.isEmpty ? "/desktop/sessions" : "/desktop/sessions?q=\(q)"), as: [DesktopSession].self)
     }
 
     /// Bind a desktop CLI session to a new harness thread; the next message resumes it.

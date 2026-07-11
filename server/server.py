@@ -1720,6 +1720,7 @@ def hc_watch_loop():
                     if st:
                         continue
                     t = _hc_thread_for_session(sid)
+                    log('hc-watch: user_message sid=%s -> thread=%s job=%s' % (sid, t and t['id'], t and job_for(t['id'])))
                     if not t or job_for(t['id']):        # unmapped session, or the phone started this turn
                         continue
                     lock = _lock_for(t['id'])
@@ -1758,7 +1759,10 @@ def hc_watch_loop():
                     close(sid, False, err=e.get('message'))
             for sid in list(active):
                 close(sid, False, err='desktop connection lost')
-        except Exception:
+        except Exception as ex:
+            if not isinstance(ex, RuntimeError):
+                import traceback
+                log('hc-watch loop error: %s' % traceback.format_exc().strip().splitlines()[-1])
             for sid in list(active):
                 close(sid, False, err='desktop connection lost')
         time.sleep(5)
@@ -2254,7 +2258,7 @@ def _parse_codex_session(path, full=False):
         out['messages'] = messages[-120:]
     return out
 
-def _session_files():
+def _session_files(cap=60):
     """(engine, path) for recent desktop sessions, newest first, capped."""
     files = []
     for p in glob.glob(os.path.join(CLAUDE_SESS_DIR, '*', '*.jsonl')):
@@ -2262,12 +2266,13 @@ def _session_files():
     for p in glob.glob(os.path.join(CODEX_SESS_DIR, '*', '*', '*', 'rollout-*.jsonl')):
         files.append(('codex', p))
     files.sort(key=lambda ep: os.path.getmtime(ep[1]) if os.path.exists(ep[1]) else 0, reverse=True)
-    return files[:60]
+    return files[:cap]
 
-def list_desktop_sessions():
+def list_desktop_sessions(query=None):
     out = []
+    q = (query or '').strip().lower()
     ctitles, xtitles = claude_title_map(), codex_title_map()
-    for engine, path in _session_files():
+    for engine, path in _session_files(cap=2000 if q else 60):
         s = _parse_claude_session(path) if engine == 'claude' else _parse_codex_session(path)
         if not s or s['turns'] == 0:
             continue
@@ -2279,8 +2284,12 @@ def list_desktop_sessions():
         desktop = (ctitles if engine == 'claude' else xtitles).get(s['id'])
         if desktop:                               # desktop sidebar name (incl. renames) wins
             s['title'] = desktop
+        if q and q not in s['title'].lower() and q not in s['id'].lower() and q not in (s.get('cwd') or '').lower():
+            continue
         out.append(s)
-    return out[:40]
+        if q and len(out) >= 60:
+            break
+    return out[:40] if not q else out
 
 def _find_session_path(sid, engine):
     if engine == 'claude':
@@ -2732,7 +2741,8 @@ class Handler(BaseHTTPRequestHandler):
             return self._json(200, {'managed': managed,
                                     'system': list_automations(show_all=q.get('all', [''])[0] == '1')})
         if path == '/desktop/sessions':
-            return self._json(200, list_desktop_sessions())
+            qq = urllib.parse.parse_qs(urllib.parse.urlparse(self.path).query)
+            return self._json(200, list_desktop_sessions(qq.get('q', [''])[0]))
         if path == '/usage':
             with _usage_lock:
                 return self._json(200, json.loads(json.dumps(RATE_LIMITS)))

@@ -8,6 +8,8 @@ struct DesktopImportView: View {
     @Environment(\.dismiss) private var dismiss
     @State private var sessions: [DesktopSession] = []
     @State private var loading = true
+    @State private var query = ""
+    @State private var searchTask: Task<Void, Never>?
     @State private var importing: String?
     @State private var errorText: String?
     /// Reached via the New-thread sheet's NavigationLink (pushed), so it must NOT wrap
@@ -64,6 +66,15 @@ struct DesktopImportView: View {
             .scrollContentBackground(.hidden)
             .background(Color.appBG)
             .navigationTitle("Continue from desktop")
+            .searchable(text: $query, prompt: "Search all your desktop chats…")
+            .onChange(of: query) { _, q in
+                searchTask?.cancel()
+                searchTask = Task {
+                    try? await Task.sleep(nanoseconds: 350_000_000)   // debounce
+                    guard !Task.isCancelled else { return }
+                    await load()
+                }
+            }
             .navigationBarTitleDisplayMode(.inline)
             .toolbarBackground(Color.appBG, for: .navigationBar)
             .toolbarBackground(.visible, for: .navigationBar)
@@ -89,7 +100,7 @@ struct DesktopImportView: View {
 
     private func load() async {
         loading = true
-        sessions = (try? await app.api.desktopSessions()) ?? []
+        sessions = (try? await app.api.desktopSessions(query: query)) ?? []
         loading = false
     }
 
