@@ -1271,6 +1271,19 @@ function makeExtraTools(rec, noAgent) {
 
 // ---- skills: markdown playbooks in ~/.harness-code/skills, invoked as /name ---------
 const skillsDir = () => path.join(app.getPath('home'), '.harness-code', 'skills');
+function findSkill(name) {
+  const clean = String(name || '').replace(/[^\w-]/g, '');
+  if (!clean) return null;
+  try {
+    const f = path.join(skillsDir(), clean + '.md');
+    if (fs.existsSync(f)) return fs.readFileSync(f, 'utf8');
+  } catch {}
+  for (const p of listPlugins()) {
+    if (!p.enabled || !p.skills.includes(clean)) continue;
+    try { return fs.readFileSync(path.join(pluginsDir(), p.dir, 'skills', clean + '.md'), 'utf8'); } catch {}
+  }
+  return null;
+}
 ipcMain.handle('skills-list', () => {
   const readSkill = (file, name, plugin) => {
     let content = '';
@@ -2335,7 +2348,12 @@ function beginTurn(rec, { text, images, modelText, remote, goalAuto }) {
   rec.abort = new AbortController();
   rec.curCkpt = { id: Date.now().toString(36) + Math.random().toString(36).slice(2, 5), ts: Date.now(), files: {} };
   sessionsChanged();
-  const sendText = modelText || text;   // skills expand for the model; the transcript shows what was typed
+  let sendText = modelText || text;   // skills expand for the model; the transcript shows what was typed
+  if (!modelText) {
+    const m = String(text || '').match(/^\/([\w-]+)\s*([\s\S]*)$/);
+    const sk = m && findSkill(m[1]);
+    if (sk) sendText = 'Follow this skill/playbook:\n\n' + sk + '\n\n---\nTask: ' + (m[2].trim() || 'apply the skill to the current context');
+  }
   const payload = images && images.length ? { text: sendText, images } : sendText;
   (async () => {
     try {
