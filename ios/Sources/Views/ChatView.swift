@@ -204,7 +204,15 @@ struct ChatView: View {
                     if was && !now && atBottom { DispatchQueue.main.async { pinToBottom(proxy) } }
                 }
                 .onChange(of: inputFocused) { _, f in     // re-pin when the keyboard opens at the bottom
-                    if f && atBottom { DispatchQueue.main.async { proxy.scrollTo("bottom", anchor: .bottom) } }
+                    // pin once immediately and again after the keyboard animation settles —
+                    // the early pin lands before the viewport shrinks, leaving the last
+                    // message hidden under the keyboard
+                    if f && atBottom {
+                        DispatchQueue.main.async { proxy.scrollTo("bottom", anchor: .bottom) }
+                        DispatchQueue.main.asyncAfter(deadline: .now() + 0.35) {
+                            if atBottom { withAnimation(.easeOut(duration: 0.15)) { proxy.scrollTo("bottom", anchor: .bottom) } }
+                        }
+                    }
                 }
                 .overlay(alignment: .bottomTrailing) { jumpButton(proxy) }
             }

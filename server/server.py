@@ -1588,18 +1588,37 @@ def run_harnesscode_stream(thread, provider, text, images=None):
                                      data=json.dumps(payload).encode())
         resp = urllib.request.urlopen(req, timeout=JOB_TIMEOUT)
         final = []
+        # The desktop agent emits one event PER TOKEN (~100+/sec on fast models) — that
+        # firehose of tiny NDJSON lines pegs the phone's main thread. Coalesce consecutive
+        # text/thinking deltas into ~80ms batches; non-delta events flush the buffer first.
+        buf_kind, buf_parts, flush_at = None, [], 0.0
+        def _flushed():
+            out = {'type': buf_kind, 'delta': ''.join(buf_parts)}
+            return out
         for line in resp:
             try:
                 e = json.loads(line.decode('utf-8', 'replace'))
             except Exception:
                 continue
             t = e.get('type')
-            if t == 'text':
-                final.append(e.get('delta', ''))
-                yield {'type': 'text', 'delta': e.get('delta', '')}
-            elif t == 'reasoning':
-                yield {'type': 'thinking', 'delta': e.get('delta', '')}
-            elif t == 'tool_call':
+            if t in ('text', 'reasoning'):
+                kind = 'text' if t == 'text' else 'thinking'
+                if t == 'text':
+                    final.append(e.get('delta', ''))
+                if buf_kind and buf_kind != kind and buf_parts:
+                    yield _flushed()
+                    buf_parts = []
+                buf_kind = kind
+                buf_parts.append(e.get('delta', ''))
+                now = time.time()
+                if now >= flush_at:
+                    yield _flushed()
+                    buf_kind, buf_parts, flush_at = None, [], now + 0.08
+                continue
+            if buf_kind and buf_parts:
+                yield _flushed()
+                buf_kind, buf_parts = None, []
+            if t == 'tool_call':
                 yield {'type': 'tool', 'name': e.get('name', ''),
                        'summary': json.dumps(e.get('args') or {})[:140], 'detail': None}
             elif t == 'approval_request':
