@@ -12,6 +12,7 @@ struct ChatView: View {
     @State private var showCommands = false
     @State private var photoItems: [PhotosPickerItem] = []
     @State private var showModelCustom = false
+    @State private var showModelSearch = false
     @State private var modelCustomText = ""
     @State private var atBottom = true          // is the scroll parked at the latest message?
     @State private var viewportH: CGFloat = 0
@@ -298,6 +299,13 @@ struct ChatView: View {
         } message: {
             Text("Your next message runs in this directory (starts a fresh session there).")
         }
+        .sheet(isPresented: $showModelSearch) {
+            NavigationStack {
+                ModelSearchView(providerId: vm.provider,
+                                defaultLabel: defaultModelText(vm.provider),
+                                model: $vm.model)
+            }
+        }
         .alert("Custom model", isPresented: $showModelCustom) {
             TextField("model id", text: $modelCustomText)
                 .autocorrectionDisabled()
@@ -363,6 +371,9 @@ struct ChatView: View {
                         Text(vm.model).tag(vm.model)
                     }
                 }
+                Button {
+                    showModelSearch = true
+                } label: { Label("Browse all models…", systemImage: "magnifyingglass") }
                 Button {
                     modelCustomText = vm.model
                     showModelCustom = true
