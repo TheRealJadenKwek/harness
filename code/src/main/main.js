@@ -319,6 +319,17 @@ function foldEvent(rec, e) {
   else if (e.type === 'aborted') { flushAssistant(rec); rec.transcript.push({ t: 'note', text: 'stopped.' }); saveSession(rec); }
 }
 const turnListeners = new Map();   // sessionId -> Set<fn> — remote API subscribers
+const apiEventSubs = new Set();    // global /api/events NDJSON responses (harness server live mirror)
+function apiBroadcast(sessionId, e) {
+  if (!apiEventSubs.size) return;
+  if (!API_FORWARD.includes(e.type) && e.type !== 'user_message') return;
+  let out = { ...e, sessionId };
+  if (out.type === 'tool_result' && out.result) out.result = { error: out.result.error, ok: !out.result.error };
+  const line = JSON.stringify(out) + '\n';
+  for (const res of apiEventSubs) {
+    try { res.write(line); } catch { apiEventSubs.delete(res); }
+  }
+}
 function onAgentEvent(rec, e) {
   foldEvent(rec, e);
   // the takeover overlay comes down the moment the controlling turn ends
@@ -327,6 +338,7 @@ function onAgentEvent(rec, e) {
   sendToUI('agent-event', Object.assign({ sessionId: rec.id }, e));
   const subs = turnListeners.get(rec.id);
   if (subs) for (const fn of subs) { try { fn(e); } catch {} }
+  apiBroadcast(rec.id, e);
 }
 
 function ensureAgent(rec) {
@@ -1574,6 +1586,16 @@ function startApiServer() {
       const json = (obj, code) => { res.writeHead(code || 200, { 'Content-Type': 'application/json' }); res.end(JSON.stringify(obj)); };
       const u = new URL(req.url, 'http://localhost');
       const sendMatch = u.pathname.match(/^\/api\/sessions\/([^/]+)\/send$/);
+      if (req.method === 'GET' && u.pathname === '/api/events') {
+        res.writeHead(200, { 'Content-Type': 'application/x-ndjson', 'Cache-Control': 'no-cache' });
+        res.write(JSON.stringify({ type: 'hello' }) + '\n');
+        apiEventSubs.add(res);
+        const ka = setInterval(() => { try { res.write(JSON.stringify({ type: 'ka' }) + '\n'); } catch { clearInterval(ka); apiEventSubs.delete(res); } }, 15000);
+        // req 'close' fires when the GET message COMPLETES (i.e. immediately) — the
+        // connection-lifetime event is on the response
+        res.on('close', () => { clearInterval(ka); apiEventSubs.delete(res); });
+        return;
+      }
       if (req.method === 'GET' && u.pathname === '/api/sessions') {
         return json([...sessions.values()].sort((a, b) => b.updatedAt - a.updatedAt).map(metaOf));
       }
@@ -2299,6 +2321,7 @@ function beginTurn(rec, { text, images, modelText, remote, goalAuto }) {
     try { return nativeImage.createFromDataURL(u).resize({ width: 240 }).toDataURL(); } catch { return null; }
   }).filter(Boolean);
   rec.transcript.push({ t: 'user', text, ts: Date.now(), images: images && images.length ? images.length : 0, ...(thumbs.length ? { thumbs } : {}), remote: !!remote, auto: !!goalAuto });
+  if (!remote) apiBroadcast(rec.id, { type: 'user_message', text: String(text || '').slice(0, 4000) });
   if (remote) sendToUI('agent-event', { sessionId: rec.id, type: 'remote_user', text, thumbs });
   if (goalAuto) sendToUI('agent-event', { sessionId: rec.id, type: 'auto_user', text, n: rec.goalAuto, max: GOAL_MAX_AUTO });
   rec.updatedAt = Date.now();

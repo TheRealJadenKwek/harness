@@ -1505,7 +1505,7 @@ def run_gemini_stream(thread, provider, text, images=None):
 # phone streams live in the desktop app too — one chat, two screens.
 _HC_PORT_CACHE = {'port': None, 'at': 0.0}
 
-def _hc_url():
+def _hc_url(launch=True):
     u = CFG.get('HARNESS_CODE_URL', '').strip()
     if u:
         return u
@@ -1537,6 +1537,8 @@ def _hc_url():
     u = probe()
     if u:
         return u
+    if not launch:
+        raise RuntimeError('harness-code app not running')
     # app not running — launch it and give it a few seconds to bring the API up
     try:
         log('harness-code app not reachable, auto-launching')
@@ -1639,6 +1641,127 @@ def run_harnesscode_stream(thread, provider, text, images=None):
         yield {'type': 'error', 'message': 'harness-code HTTP %s: %s' % (ex.code, ex.read()[:150])}
     except Exception as ex:
         yield {'type': 'error', 'message': 'harness-code: %s — is the Harness Code app open on the Mac?' % ex}
+
+def _hc_thread_for_session(sid):
+    """Find the harness-code thread mirroring desktop session `sid` (fresh scan — cheap)."""
+    for pth in glob.glob(os.path.join(THREADS_DIR, '*.json')):
+        try:
+            with open(pth) as f:
+                t = json.load(f)
+        except Exception:
+            continue
+        if t.get('provider') == 'harness-code' and t.get('session_id') == sid:
+            return t
+    return None
+
+def hc_watch_loop():
+    """Live mirror for turns started ON the desktop app: subscribe to its global
+    /api/events feed and expose each desktop-initiated turn as a normal Job, so
+    the phone attaches and streams it exactly like a phone-initiated turn."""
+    import urllib.request
+    active = {}   # sid -> {'job','tid','lock','final':[], 'buf_kind','buf':[], 'flush_at'}
+    def flush(st):
+        if st['buf_kind'] and st['buf']:
+            st['job'].publish({'type': st['buf_kind'], 'delta': ''.join(st['buf'])})
+        st['buf_kind'], st['buf'] = None, []
+    def close(sid, ok, text=None, err=None):
+        st = active.pop(sid, None)
+        if not st:
+            return
+        flush(st)
+        tid = st['tid']
+        final_text = text or ''.join(st['final']) or None
+        push_arg = None
+        try:
+            with _persist_lock:
+                cur = load_thread(tid)
+                if cur is not None:
+                    cur = _hc_mirror_messages(cur)     # pulls the desktop transcript (incl. this turn)
+                    cur['updated'] = time.time()
+                    save_thread(cur)
+                    if ok and final_text:
+                        push_arg = (dict(cur), final_text, None)
+        except Exception as e:
+            log('hc-watch persist failed: %s' % e)
+        st['job'].publish({'type': 'done', 'text': final_text or '(no output)', 'session_id': sid}
+                          if ok else {'type': 'error', 'message': err or 'desktop turn failed'})
+        st['job'].finish()
+        with _jobs_lock:
+            if JOBS.get(tid) is st['job']:
+                del JOBS[tid]
+        try:
+            st['lock'].release()
+        except Exception:
+            pass
+        if push_arg:
+            try:
+                notify_push(*push_arg)
+            except Exception as e:
+                log('hc-watch push failed: %s' % e)
+    while True:
+        try:
+            base = _hc_url(launch=False)
+            rq = urllib.request.Request(base + '/api/events', headers={'X-HC-Token': _hc_token()})
+            resp = urllib.request.urlopen(rq, timeout=60)
+            log('hc-watch: connected to desktop event feed')
+            for line in resp:
+                try:
+                    e = json.loads(line.decode('utf-8', 'replace'))
+                except Exception:
+                    continue
+                typ = e.get('type')
+                if typ in ('hello', 'ka'):
+                    continue
+                sid = e.get('sessionId')
+                if not sid:
+                    continue
+                st = active.get(sid)
+                if typ == 'user_message':
+                    if st:
+                        continue
+                    t = _hc_thread_for_session(sid)
+                    if not t or job_for(t['id']):        # unmapped session, or the phone started this turn
+                        continue
+                    lock = _lock_for(t['id'])
+                    if not lock.acquire(blocking=False):
+                        continue
+                    job = Job(t['id'])
+                    with _jobs_lock:
+                        JOBS[t['id']] = job
+                    job.publish({'type': 'session', 'id': sid})
+                    active[sid] = {'job': job, 'tid': t['id'], 'lock': lock,
+                                   'final': [], 'buf_kind': None, 'buf': [], 'flush_at': 0.0}
+                    continue
+                if not st:
+                    continue
+                if typ in ('text', 'reasoning'):
+                    kind = 'text' if typ == 'text' else 'thinking'
+                    if typ == 'text':
+                        st['final'].append(e.get('delta', ''))
+                    if st['buf_kind'] and st['buf_kind'] != kind:
+                        flush(st)
+                    st['buf_kind'] = kind
+                    st['buf'].append(e.get('delta', ''))
+                    now = time.time()
+                    if now >= st['flush_at']:
+                        flush(st)
+                        st['flush_at'] = now + 0.08
+                elif typ == 'tool_call':
+                    flush(st)
+                    st['job'].publish({'type': 'tool', 'name': e.get('name', ''),
+                                       'summary': json.dumps(e.get('args') or {})[:140], 'detail': None})
+                elif typ == 'done':
+                    close(sid, True, text=e.get('text'))
+                elif typ == 'aborted':
+                    close(sid, True)
+                elif typ == 'error':
+                    close(sid, False, err=e.get('message'))
+            for sid in list(active):
+                close(sid, False, err='desktop connection lost')
+        except Exception:
+            for sid in list(active):
+                close(sid, False, err='desktop connection lost')
+        time.sleep(5)
 
 def run_thread(thread, provider, text, images=None):
     eng = provider.get('engine')
@@ -3162,6 +3285,7 @@ def main():
         sys.exit(0)
     signal.signal(signal.SIGTERM, _cleanup)   # launchd stop / kill -> don't orphan CLIs
     signal.signal(signal.SIGINT, _cleanup)
+    threading.Thread(target=hc_watch_loop, daemon=True).start()
     log('claude-harness %s on :%d  claude=%s codex=%s' % (VERSION, PORT, CLAUDE_BIN, CODEX_BIN))
     srv = ThreadingHTTPServer(('0.0.0.0', PORT), Handler)
     srv.daemon_threads = True

@@ -242,6 +242,13 @@ struct ChatView: View {
             if vm.detail?.running == true { vm.reconnectIfRunning() }
             app.markSeen(threadID, count: vm.messages.count)
             coerceEffort()
+            // idle poll: catch turns started on the DESKTOP while this thread is open —
+            // resync attaches to the live mirror job when one appears (never clobbers
+            // an in-flight phone turn; cancelled automatically when the view closes)
+            while !Task.isCancelled {
+                try? await Task.sleep(nanoseconds: 4_000_000_000)
+                if !vm.isStreaming && !Demo.active { await vm.resync() }
+            }
         }
         .onChange(of: input) { _, v in
             // Debounced: a per-keystroke write copies the whole draft, which drags on long prompts.
