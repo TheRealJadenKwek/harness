@@ -2279,6 +2279,17 @@ def _session_files(cap=60):
     files.sort(key=lambda ep: os.path.getmtime(ep[1]) if os.path.exists(ep[1]) else 0, reverse=True)
     return files[:cap]
 
+DESKTOP_PINS_FILE = os.path.join(BASE, 'desktop-pins.json')
+def _desktop_pins():
+    try:
+        with open(DESKTOP_PINS_FILE) as f:
+            return set(json.load(f))
+    except Exception:
+        return set()
+def _save_desktop_pins(pins):
+    with open(DESKTOP_PINS_FILE, 'w') as f:
+        json.dump(sorted(pins), f)
+
 _SESS_PARSE_CACHE = {}   # path -> (mtime, parsed) — the light parse is expensive across ~800 files
 _TITLE_MAP_CACHE = {'at': 0.0, 'c': {}, 'x': {}}
 def _cached_parse(engine, path):
@@ -2320,7 +2331,30 @@ def list_desktop_sessions(query=None):
         out.append(s)
         if q and len(out) >= 60:
             break
-    return out[:40] if not q else out
+    pins = _desktop_pins()
+    if pins and not q:
+        # pinned sessions always appear, even when older than the recent-60 window
+        have = {x['id'] for x in out}
+        for sid in pins:
+            if sid in have:
+                continue
+            for eng in ('claude', 'codex'):
+                pth = _find_session_path(sid, eng)
+                if pth:
+                    ps = _cached_parse(eng, pth)
+                    if ps:
+                        ps = dict(ps)
+                        dt = (_TITLE_MAP_CACHE['c'] if eng == 'claude' else _TITLE_MAP_CACHE['x']).get(sid)
+                        if dt:
+                            ps['title'] = dt
+                        out.append(ps)
+                    break
+    for x in out:
+        x['pinned'] = x['id'] in pins
+    if not q:
+        out.sort(key=lambda x: (not x['pinned'], -(x.get('updated') or 0)))
+        return out[:60]
+    return out
 
 def _find_session_path(sid, engine):
     if engine == 'claude':
@@ -3046,6 +3080,17 @@ class Handler(BaseHTTPRequestHandler):
                      'left off, and continue from there.' % (hpath, 'Claude' if engine == 'claude' else 'Codex'))
             log('handoff %s(%s) -> %s thread %s' % (engine, sid[:8], target, t['id'][:8]))
             return self._json(200, {'thread': thread_summary(t), 'draft': draft})
+        if path == '/desktop/pin':                       # pin/unpin a desktop session in the import list
+            sid = (body.get('id') or '').strip()
+            if not sid:
+                return self._json(400, {'error': 'id required'})
+            pins = _desktop_pins()
+            if body.get('on'):
+                pins.add(sid)
+            else:
+                pins.discard(sid)
+            _save_desktop_pins(pins)
+            return self._json(200, {'ok': True, 'pins': len(pins)})
         if path == '/desktop/fav':                       # star/unstar a model (syncs to desktop)
             import urllib.request as _ur
             try:

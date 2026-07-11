@@ -115,6 +115,7 @@ struct DesktopSession: Codable, Identifiable, Hashable {
     let title: String
     let updated: Double
     let turns: Int
+    var pinned: Bool? = nil
 }
 
 // A dev server (vite/next/flask…) listening on the Mac, browsable via the proxy.

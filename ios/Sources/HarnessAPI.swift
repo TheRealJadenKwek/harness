@@ -190,6 +190,9 @@ struct HarnessAPI {
         _ = try await URLSession.shared.data(for: try makeRequest("/threads/\(id)/stop", method: "POST"))
     }
 
+    func togglePin(_ id: String, on: Bool) async throws {
+        _ = try await URLSession.shared.data(for: try makeRequest("/desktop/pin", method: "POST", json: ["id": id, "on": on]))
+    }
     func toggleFav(_ model: String, on: Bool) async throws {
         _ = try await URLSession.shared.data(for: try makeRequest("/desktop/fav", method: "POST", json: ["model": model, "on": on]))
     }

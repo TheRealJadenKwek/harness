@@ -22,46 +22,31 @@ struct DesktopImportView: View {
         }
     }
 
+    private var pinnedSessions: [DesktopSession] { sessions.filter { $0.pinned == true } }
+    private var otherSessions: [DesktopSession] { sessions.filter { $0.pinned != true } }
+
+    private func togglePin(_ s: DesktopSession) {
+        Task {
+            try? await app.api.togglePin(s.id, on: s.pinned != true)
+            await load()
+        }
+    }
+
     private var content: some View {
         List {
-                ForEach(sessions) { s in
-                    Button { importSession(s) } label: {
-                        VStack(alignment: .leading, spacing: 4) {
-                            HStack(spacing: 8) {
-                                Image(systemName: engineIcon(s.engine))
-                                    .font(.system(size: 11))
-                                    .foregroundStyle(s.engine == "codex" ? Color.appText : .orange)
-                                Text(s.title)
-                                    .font(.body).lineLimit(1).foregroundStyle(Color.appText)
-                                Spacer(minLength: 6)
-                                if importing == s.id {
-                                    ProgressView().controlSize(.small)
-                                } else {
-                                    Text(relativeTime(s.updated))
-                                        .font(.caption2).foregroundStyle(Color.appSecondary)
-                                }
-                            }
-                            HStack(spacing: 6) {
-                                Text("\(s.turns) message\(s.turns == 1 ? "" : "s")")
-                                    .font(.caption2).foregroundStyle(Color.appSecondary)
-                                Text(shortPath(s.cwd))
-                                    .font(.system(.caption2, design: .monospaced))
-                                    .foregroundStyle(Color.appSecondary).lineLimit(1)
-                            }
-                        }
-                        .padding(.vertical, 3)
-                    }
-                    .disabled(importing != nil)
-                    .swipeActions(edge: .trailing, allowsFullSwipe: false) {
-                        Button { handoff(s) } label: {
-                            Label(s.engine == "codex" ? "→ Claude" : "→ Codex",
-                                  systemImage: "arrow.left.arrow.right")
-                        }.tint(.purple)
-                    }
-                    .listRowBackground(Color.appBG)
-                    .listRowSeparatorTint(Color.appBorder)
+            if !pinnedSessions.isEmpty && query.isEmpty {
+                Section(header: Text("Pinned").font(.caption).foregroundStyle(Color.appSecondary)) {
+                    ForEach(pinnedSessions) { s in sessionRow(s) }
                 }
             }
+            Section {
+                ForEach(query.isEmpty ? otherSessions : sessions) { s in sessionRow(s) }
+            } header: {
+                if !pinnedSessions.isEmpty && query.isEmpty {
+                    Text("Recent").font(.caption).foregroundStyle(Color.appSecondary)
+                }
+            }
+        }
             .listStyle(.plain)
             .scrollContentBackground(.hidden)
             .background(Color.appBG)
@@ -96,6 +81,54 @@ struct DesktopImportView: View {
             } message: { Text(errorText ?? "") }
             .task { await load() }
             .refreshable { await load() }
+    }
+
+    @ViewBuilder private func sessionRow(_ s: DesktopSession) -> some View {
+                    Button { importSession(s) } label: {
+                        VStack(alignment: .leading, spacing: 4) {
+                            HStack(spacing: 8) {
+                                Image(systemName: engineIcon(s.engine))
+                                    .font(.system(size: 11))
+                                    .foregroundStyle(s.engine == "codex" ? Color.appText : .orange)
+                                Text(s.title)
+                                    .font(.body).lineLimit(1).foregroundStyle(Color.appText)
+                                Spacer(minLength: 6)
+                                if importing == s.id {
+                                    ProgressView().controlSize(.small)
+                                } else {
+                                    Text(relativeTime(s.updated))
+                                        .font(.caption2).foregroundStyle(Color.appSecondary)
+                                }
+                            }
+                            HStack(spacing: 6) {
+                                Text("\(s.turns) message\(s.turns == 1 ? "" : "s")")
+                                    .font(.caption2).foregroundStyle(Color.appSecondary)
+                                Text(shortPath(s.cwd))
+                                    .font(.system(.caption2, design: .monospaced))
+                                    .foregroundStyle(Color.appSecondary).lineLimit(1)
+                            }
+                        }
+                        .padding(.vertical, 3)
+                    }
+                    .disabled(importing != nil)
+                    .swipeActions(edge: .trailing, allowsFullSwipe: false) {
+                        Button { togglePin(s) } label: {
+                            Label(s.pinned == true ? "Unpin" : "Pin",
+                                  systemImage: s.pinned == true ? "pin.slash" : "pin")
+                        }.tint(.orange)
+                        Button { handoff(s) } label: {
+                            Label(s.engine == "codex" ? "→ Claude" : "→ Codex",
+                                  systemImage: "arrow.left.arrow.right")
+                        }.tint(.purple)
+                    }
+                    .contextMenu {
+                        Button { togglePin(s) } label: {
+                            Label(s.pinned == true ? "Unpin" : "Pin",
+                                  systemImage: s.pinned == true ? "pin.slash" : "pin")
+                        }
+                    }
+                    .listRowBackground(Color.appBG)
+                    .listRowSeparatorTint(Color.appBorder)
     }
 
     private func load() async {
