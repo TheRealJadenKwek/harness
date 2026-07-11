@@ -2185,7 +2185,20 @@ function toggleFavModel(v) {
   const i = f.indexOf(v);
   if (i >= 0) f.splice(i, 1); else f.push(v);
   localStorage.setItem('favModels', JSON.stringify(f));
+  if (H.favsSet) H.favsSet(f);              // mirror to config — the phone's preset list
 }
+// favourites sync with main config (and live updates when starred from the phone)
+if (H.favsGet) H.favsGet().then((f) => {
+  if (Array.isArray(f) && f.length && !localStorage.getItem('favModels')) {
+    localStorage.setItem('favModels', JSON.stringify(f));
+  } else if ((!f || !f.length) && favModels().length) {
+    H.favsSet(favModels());                 // first run after upgrade: seed config from localStorage
+  }
+});
+if (H.onFavsUpdated) H.onFavsUpdated((favs) => {
+  localStorage.setItem('favModels', JSON.stringify(favs || []));
+  try { if ($('modelSheet').style.display === 'flex') openModelSheet(false); } catch {}
+});
 
 // ---------------------------------------------------------------- model sheet
 async function openModelSheet(forceRefresh) {

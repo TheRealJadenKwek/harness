@@ -190,6 +190,9 @@ struct HarnessAPI {
         _ = try await URLSession.shared.data(for: try makeRequest("/threads/\(id)/stop", method: "POST"))
     }
 
+    func toggleFav(_ model: String, on: Bool) async throws {
+        _ = try await URLSession.shared.data(for: try makeRequest("/desktop/fav", method: "POST", json: ["model": model, "on": on]))
+    }
     func desktopSessions(query: String = "") async throws -> [DesktopSession] {
         let q = query.addingPercentEncoding(withAllowedCharacters: .urlQueryAllowed) ?? ""
         return try await decode(try makeRequest(q.isEmpty ? "/desktop/sessions" : "/desktop/sessions?q=\(q)"), as: [DesktopSession].self)

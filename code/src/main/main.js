@@ -44,6 +44,7 @@ function loadConfig() {
   cfg.modeByModel = cfg.modeByModel || {};     // remembered trust level per model
   cfg.effortByModel = cfg.effortByModel || {}; // remembered reasoning effort per model
   cfg.mcpServers = cfg.mcpServers || [];       // [{name, command, enabled}]
+  cfg.favModels = cfg.favModels || [];         // starred models — also the phone's preset list
   cfg.pluginsDisabled = cfg.pluginsDisabled || [];   // plugin dir names the user switched off
   cfg.allowRules = cfg.allowRules || [];             // [{kind, prefix, cwd}] — "always allow" rules
   if (cfg.sandboxBash === undefined) cfg.sandboxBash = true;
@@ -659,6 +660,14 @@ function mcpStatuses() {
   }
   return out;
 }
+ipcMain.handle('favs-get', () => loadConfig().favModels || []);
+ipcMain.handle('favs-set', (_e, list) => {
+  const cfg = loadConfig();
+  cfg.favModels = Array.isArray(list) ? list.filter((x) => typeof x === 'string').slice(0, 60) : [];
+  saveConfig(cfg);
+  return { ok: true };
+});
+
 ipcMain.handle('mcp-list', () => mcpStatuses());
 ipcMain.handle('mcp-add', async (_e, { name, command }) => {
   name = sanitizeToolName(name || '');
@@ -1599,6 +1608,20 @@ function startApiServer() {
       const json = (obj, code) => { res.writeHead(code || 200, { 'Content-Type': 'application/json' }); res.end(JSON.stringify(obj)); };
       const u = new URL(req.url, 'http://localhost');
       const sendMatch = u.pathname.match(/^\/api\/sessions\/([^/]+)\/send$/);
+      if (u.pathname === '/api/favs') {
+        const cfg = loadConfig();
+        if (req.method === 'POST') {
+          const m = String(data.model || '');
+          let favs = cfg.favModels || [];
+          if (data.on) { if (m && !favs.includes(m)) favs.push(m); }
+          else favs = favs.filter((x) => x !== m);
+          cfg.favModels = favs.slice(0, 60);
+          saveConfig(cfg);
+          sendToUI('favs-updated', { favs: cfg.favModels });
+        }
+        const byId = new Map((modelsMem || []).map((m) => [m.value, m.label || m.value]));
+        return json({ favs: (loadConfig().favModels || []).map((v) => ({ value: v, label: byId.get(v) || v })) });
+      }
       if (req.method === 'GET' && u.pathname === '/api/events') {
         res.writeHead(200, { 'Content-Type': 'application/x-ndjson', 'Cache-Control': 'no-cache' });
         res.write(JSON.stringify({ type: 'hello' }) + '\n');

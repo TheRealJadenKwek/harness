@@ -33,6 +33,7 @@ struct ModelSearchView: View {
     let defaultLabel: String
     @Binding var model: String
 
+    @State private var favs: Set<String> = []
     @State private var all: [ModelOption] = []
     @State private var query = ""
     @State private var loading = true
@@ -84,6 +85,20 @@ struct ModelSearchView: View {
                             }
                             Spacer()
                             if model == m.value { Image(systemName: "checkmark").foregroundStyle(.tint) }
+                            if providerId == "harness-code" {
+                                Button {
+                                    let on = !favs.contains(m.value)
+                                    if on { favs.insert(m.value) } else { favs.remove(m.value) }
+                                    Task {
+                                        try? await app.api.toggleFav(m.value, on: on)
+                                        await app.refresh()   // preset menu updates everywhere
+                                    }
+                                } label: {
+                                    Image(systemName: favs.contains(m.value) ? "star.fill" : "star")
+                                        .foregroundStyle(favs.contains(m.value) ? .yellow : .secondary)
+                                }
+                                .buttonStyle(.borderless)
+                            }
                         }
                     }
                 }
@@ -101,6 +116,7 @@ struct ModelSearchView: View {
     }
 
     private func load() async {
+        favs = Set(app.providers.first(where: { $0.id == providerId })?.models?.map(\.value) ?? [])
         loading = true
         all = (try? await app.api.providerModels(providerId)) ?? []
         loading = false
