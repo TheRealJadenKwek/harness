@@ -14,6 +14,7 @@ struct ChatView: View {
     @State private var photoItems: [PhotosPickerItem] = []
     @State private var showCamera = false
     @State private var showDocPicker = false
+    @State private var showAIConsent = false
     @State private var pendingDocs: [(name: String, text: String)] = []
     @FocusState private var inputFocused: Bool
     @AppStorage("ondeviceThink") private var ondeviceThink = true
@@ -192,6 +193,14 @@ struct ChatView: View {
                 if !text.isEmpty { pendingDocs.append((name: name, text: String(text.prefix(60000)))) }
             }
         }
+        .sheet(isPresented: $showAIConsent) {
+            AIConsentSheet {
+                UserDefaults.standard.set(true, forKey: "aiConsentV1")
+                showAIConsent = false
+                send()
+            }
+            .interactiveDismissDisabled(false)
+        }
         .fullScreenCover(isPresented: $showCamera) {
             CameraPicker { img in addImage(img) }.ignoresSafeArea()
         }
@@ -245,6 +254,11 @@ struct ChatView: View {
         if streaming { return }
         let text = input.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !text.isEmpty || !pendingImages.isEmpty || !pendingDocs.isEmpty else { return }
+        // 5.1.2(i): explicit consent before any content is sent to a third-party AI service
+        if !LocalModels.isLocal(chat.model) && !UserDefaults.standard.bool(forKey: "aiConsentV1") {
+            showAIConsent = true
+            return
+        }
         input = ""
         var docBlock = ""
         for d in pendingDocs { docBlock += "[Attached document: " + d.name + "]\n-----BEGIN DOCUMENT-----\n" + d.text.prefix(40000) + "\n-----END DOCUMENT-----\n\n" }
@@ -609,5 +623,54 @@ struct EmptyHomeView: View {
         }
         .frame(maxWidth: 420)
         .frame(maxWidth: .infinity)
+    }
+}
+
+
+// One-time disclosure + consent before any content goes to a third-party AI service.
+struct AIConsentSheet: View {
+    let onAgree: () -> Void
+    @Environment(\.dismiss) private var dismiss
+    var body: some View {
+        VStack(alignment: .leading, spacing: 18) {
+            Text("Before your first message")
+                .font(.title2.weight(.bold))
+                .padding(.top, 26)
+            Text("Harness Chat is a bring-your-own-key AI client. To generate replies, the content you send is shared with the AI service you chose:")
+                .font(.subheadline)
+            VStack(alignment: .leading, spacing: 12) {
+                Label {
+                    Text("**What is sent:** your messages, any images or documents you attach, relevant conversation history, and saved memories.")
+                } icon: { Image(systemName: "arrow.up.doc").foregroundStyle(Color(red: 0.30, green: 0.49, blue: 1.0)) }
+                Label {
+                    Text("**Who it goes to:** OpenRouter, Inc. (US), which routes it to the model provider you selected — e.g. OpenAI, Anthropic, Google, or xAI — under your own key.")
+                } icon: { Image(systemName: "building.2").foregroundStyle(Color(red: 0.30, green: 0.49, blue: 1.0)) }
+                Label {
+                    Text("**What is not:** no ads, no trackers, no selling data, no training on your content. On-device models send nothing at all.")
+                } icon: { Image(systemName: "hand.raised").foregroundStyle(Color(red: 0.30, green: 0.49, blue: 1.0)) }
+            }
+            .font(.footnote)
+            Link("Read the full privacy policy",
+                 destination: URL(string: "https://harness-chat-web.vercel.app/privacy.html")!)
+                .font(.footnote)
+            Spacer()
+            Button {
+                onAgree()
+            } label: {
+                Text("Agree & continue")
+                    .font(.headline)
+                    .frame(maxWidth: .infinity)
+                    .padding(.vertical, 14)
+                    .background(Color(red: 0.30, green: 0.49, blue: 1.0), in: RoundedRectangle(cornerRadius: 14))
+                    .foregroundStyle(.white)
+            }
+            Button("Not now") { dismiss() }
+                .font(.subheadline)
+                .foregroundStyle(.secondary)
+                .frame(maxWidth: .infinity)
+                .padding(.bottom, 12)
+        }
+        .padding(.horizontal, 24)
+        .presentationDetents([.large])
     }
 }

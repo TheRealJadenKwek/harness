@@ -1,26 +1,76 @@
-<!doctype html><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><title>Harness Chat — Privacy Policy</title>
-<body style="max-width:680px;margin:40px auto;padding:0 20px;font:16px/1.65 -apple-system,system-ui,sans-serif;color:#1c1c1e">
-<h1>Harness Chat — Privacy Policy</h1>
-<p><i>Last updated: July 8, 2026</i></p>
-<p>Harness Chat is a bring-your-own-key AI chat app. We built it to hold as little of your data as possible.</p>
-<h3>What we store</h3>
-<ul>
-<li><b>Account:</b> when you sign in with Google or Apple, we store your account identifier and email address (via Supabase authentication).</li>
-<li><b>Chats and memories:</b> your conversations and the assistant's memory notes are stored in our database so they sync between your devices. They are visible only to your account.</li>
-<li><b>Your OpenRouter API key:</b> stored server-side and used solely to send your messages to the AI models you choose. Model usage is billed to your own OpenRouter account.</li>
-</ul>
-<h3>What we don't do</h3>
-<ul>
-<li>No ads, no analytics SDKs, no trackers.</li>
-<li>We never sell or share your data with third parties.</li>
-<li>Your messages go only to OpenRouter (and the model provider you select) to generate replies, and to DuckDuckGo when you ask for a web search. On-device models run entirely on your phone and send nothing anywhere.</li>
-</ul>
-<h3>Training and ownership</h3>
-<p>Your conversations are sent to model providers through their APIs, which — unlike free consumer chatbots — are governed by API data policies that do not use your content to train models. We never use your data for anything except serving your own chats back to you. In guest mode (mobile) or with on-device models, your data never reaches our servers at all.</p>
-<h3>Exporting your data</h3>
-<p>Settings → "Export my data" downloads everything we hold for your account (all chats and memories) as a single JSON file, anytime.</p>
-<h3>Deleting your data</h3>
-<p>Deleting a chat removes it from our database. To delete your account and all associated data, email <a href="mailto:jaden.kwek@gmail.com">jaden.kwek@gmail.com</a> and we'll remove everything within 30 days.</p>
-<h3>Contact</h3>
-<p>Questions: <a href="mailto:jaden.kwek@gmail.com">jaden.kwek@gmail.com</a></p>
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Harness Chat — Privacy Policy</title>
+<link rel="icon" type="image/png" href="/favicon.png">
+<style>
+  :root { --bg:#faf9f5; --fg:#1c1c1e; --muted:#6b6b76; --line:#e4e2dc; --star:#2f63e8; }
+  @media (prefers-color-scheme: dark) { :root { --bg:#161619; --fg:#e6e6ea; --muted:#9a9aa6; --line:#33333c; --star:#5b8aff; } }
+  body { margin:0; background:var(--bg); color:var(--fg); font:16px/1.65 -apple-system, system-ui, sans-serif; }
+  main { max-width:720px; margin:0 auto; padding:48px 22px 80px; }
+  h1 { font-size:26px; letter-spacing:-.3px; }
+  h2 { font-size:18px; margin-top:34px; }
+  .muted { color:var(--muted); font-size:14px; }
+  a { color:var(--star); }
+  table { border-collapse:collapse; width:100%; font-size:14px; margin:12px 0; }
+  th, td { text-align:left; padding:8px 10px; border-bottom:1px solid var(--line); vertical-align:top; }
+</style>
+</head>
+<body>
+<main>
+  <h1>Harness Chat — Privacy Policy</h1>
+  <p class="muted">Effective July 14, 2026 · Applies to the Harness Chat iOS app, desktop app, and harness-chat-web.vercel.app</p>
+
+  <p>Harness Chat is a bring-your-own-key AI chat client. We run no ads, sell no data, and collect
+  nothing beyond what the features below need to work.</p>
+
+  <h2>What we collect, how, and why</h2>
+  <table>
+    <tr><th>Data</th><th>How it's collected</th><th>Why / where it lives</th></tr>
+    <tr><td>Email address</td><td>When you sign in with Google or Apple (optional — the app works signed-out)</td><td>Identifies your account. Stored in our database (Supabase).</td></tr>
+    <tr><td>Chats and titles</td><td>Created as you use the app while signed in</td><td>Syncing your conversations across your devices. Stored in Supabase.</td></tr>
+    <tr><td>Memory facts</td><td>Distilled from your chats when the memory feature is on</td><td>Letting the assistant remember context you've shared. Stored in Supabase; viewable and deletable in Settings.</td></tr>
+    <tr><td>Your OpenRouter API key</td><td>You paste it in Settings</td><td>Paying for your own AI usage. Stored in Supabase (signed-in) or only on your device (guest mode).</td></tr>
+    <tr><td>Voice recordings</td><td>Only while you hold the dictation button</td><td>Transcribed to text, then discarded. Never stored.</td></tr>
+  </table>
+
+  <h2>Third-party AI services — what is sent, and to whom</h2>
+  <p>When you send a message, the content you provide — your message text, any images or documents
+  you attach, relevant conversation history, and saved memory facts — is transmitted to
+  <strong>OpenRouter, Inc.</strong> (openrouter.ai, United States), which routes it to the
+  <strong>AI model provider you selected</strong> for that chat (for example OpenAI, Anthropic,
+  Google, xAI, DeepSeek, or Meta, depending on the model you chose). This happens under your own
+  OpenRouter account and API key. The app discloses this and asks for your consent before your
+  first message, and the active model is always shown in the chat toolbar.</p>
+  <p>OpenRouter's handling of this data is governed by the
+  <a href="https://openrouter.ai/privacy">OpenRouter privacy policy</a>; downstream model providers
+  apply their API data policies, which do not use your content to train models by default. We never
+  use your data for anything except serving your own chats back to you.</p>
+  <p>If you use web search, the search query the assistant forms is sent to DuckDuckGo. On-device
+  models run entirely on your phone and send nothing anywhere.</p>
+
+  <h2>What we never do</h2>
+  <ul>
+    <li>No advertising, analytics SDKs, or trackers of any kind.</li>
+    <li>We never sell your data, and we never share it beyond the AI routing described above.</li>
+    <li>We never train models on your data.</li>
+    <li>Guest mode sends messages directly from your device to OpenRouter — our servers never see them.</li>
+  </ul>
+
+  <h2>Exporting your data</h2>
+  <p>Settings → "Export my data" downloads everything we hold for your account (all chats and
+  memories) as a single JSON file, anytime.</p>
+
+  <h2>Deleting your account and data</h2>
+  <p><strong>Delete your account any time, in the app: Settings → Delete account.</strong>
+  This permanently and immediately removes your account record, email, all synced chats, all
+  memory facts, and your stored OpenRouter key from our database. It cannot be undone.
+  Deleting an individual chat removes it from our database as well.</p>
+
+  <h2>Contact</h2>
+  <p>Questions or requests: <a href="mailto:jaden.kwek@gmail.com">jaden.kwek@gmail.com</a></p>
+</main>
 </body>
+</html>

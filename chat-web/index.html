@@ -349,6 +349,7 @@
   <div class="opt" style="cursor:default"><span>Image model</span><select id="setImgModel" style="max-width:210px;font:inherit;font-size:12px;background:var(--bg);color:var(--text);border:1px solid var(--border);border-radius:8px;padding:4px 6px"></select></div>
   <div class="opt" style="cursor:default"><span>Video model</span><select id="setVidModel" style="max-width:210px;font:inherit;font-size:12px;background:var(--bg);color:var(--text);border:1px solid var(--border);border-radius:8px;padding:4px 6px"></select></div>
   <div class="opt" id="setExport"><span>Export my data</span><span class="d">chats + memories → JSON</span></div>
+  <div class="opt" id="setDelete" style="color:#c33"><span>Delete account</span><span class="d">permanently erases your account, chats, memories, and stored key</span></div>
   <div class="opt" id="setApps"><span>Get the apps</span><span class="d">Mac · Windows · iPhone</span></div>
   <div class="opt" id="setOut"><span>Sign out</span><span class="d" id="setEmail"></span></div>
 </div>
@@ -1346,6 +1347,21 @@ async function fillMediaModelSelects() {
 }
 $('setKey').onclick = () => { closeSheets(); openSheet('keySheet'); };
 $('setApps').onclick = () => window.open('https://github.com/TheRealJadenKwek/harness/releases/latest', '_blank');
+$('setDelete').onclick = async () => {
+  if (isGuest()) { alert('Guest mode has no account — your data lives only on this device. Clear it from your browser settings.'); return; }
+  if (!confirm('Delete your account?\n\nThis permanently erases your account, all synced chats, all memories, and your stored OpenRouter key. It cannot be undone.')) return;
+  if (!confirm('Last check — really delete everything?')) return;
+  const el = $('setDelete').querySelector('.d');
+  el.textContent = 'deleting…';
+  try {
+    const r = await fetch('/api/delete-account', { method: 'POST', headers: await H() });
+    if (!r.ok) throw new Error((await r.json().catch(() => ({}))).error || 'HTTP ' + r.status);
+    alert('Your account and all data have been deleted.');
+    signOut();
+  } catch (e) {
+    el.textContent = 'failed: ' + e.message;
+  }
+};
 $('setExport').onclick = async () => {
   const el = $('setExport').querySelector('.d');
   el.textContent = 'gathering…';

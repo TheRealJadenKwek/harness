@@ -1,6 +1,9 @@
 import SwiftUI
 
 struct SettingsView: View {
+    @State private var showDeleteConfirm = false
+    @State private var showDeleteFinal = false
+    @State private var deleteError: String?
     @AppStorage("imageModel") private var imageModel = "google/gemini-3.1-flash-image"
     @AppStorage("videoModel") private var videoModel = ""
     @State private var imageModels: [Backend.MediaModel] = []
@@ -46,6 +49,31 @@ struct SettingsView: View {
                                        value: String(format: "$%.2f", u) + (s.limit.map { String(format: " of $%.0f", $0) } ?? ""))
                     }
                     Button("Sign out", role: .destructive) { store.signOut(); dismiss() }
+                    Button("Delete account…", role: .destructive) { showDeleteConfirm = true }
+                        .confirmationDialog("Delete your account?",
+                                            isPresented: $showDeleteConfirm, titleVisibility: .visible) {
+                            Button("Delete everything permanently", role: .destructive) { showDeleteFinal = true }
+                            Button("Cancel", role: .cancel) {}
+                        } message: {
+                            Text("This permanently erases your account, all synced chats, all memories, and your stored OpenRouter key. It cannot be undone.")
+                        }
+                        .alert("Last check", isPresented: $showDeleteFinal) {
+                            Button("Delete my account", role: .destructive) {
+                                Task {
+                                    do {
+                                        try await Backend.deleteAccount()
+                                        store.signOut()
+                                        dismiss()
+                                    } catch { deleteError = error.localizedDescription }
+                                }
+                            }
+                            Button("Cancel", role: .cancel) {}
+                        } message: {
+                            Text("Really delete your account and all data? This is immediate and irreversible.")
+                        }
+                        .alert("Couldn't delete account", isPresented: .init(get: { deleteError != nil }, set: { if !$0 { deleteError = nil } })) {
+                            Button("OK", role: .cancel) {}
+                        } message: { Text(deleteError ?? "") }
                 }
                 Section("OpenRouter key") {
                     if store.profile?.hasKey == true {

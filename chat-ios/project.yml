@@ -22,7 +22,7 @@ targets:
         PRODUCT_BUNDLE_IDENTIFIER: com.jadenkwek.harnesschat
         DEVELOPMENT_TEAM: RLC58VS9R6
         MARKETING_VERSION: "1.0"
-        CURRENT_PROJECT_VERSION: "3"
+        CURRENT_PROJECT_VERSION: "4"
         CODE_SIGN_STYLE: Automatic
         CODE_SIGN_ENTITLEMENTS: Sources/HarnessChat.entitlements
         INFOPLIST_KEY_UILaunchScreen_Generation: YES
@@ -34,6 +34,8 @@ targets:
     info:
       path: Info.plist
       properties:
+        CFBundleShortVersionString: $(MARKETING_VERSION)
+        CFBundleVersion: $(CURRENT_PROJECT_VERSION)
         UILaunchScreen: {}
         CFBundleDisplayName: Harness Chat
         ITSAppUsesNonExemptEncryption: false

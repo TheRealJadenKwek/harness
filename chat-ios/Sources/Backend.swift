@@ -183,6 +183,19 @@ enum Backend {
         var bridged: [(Int, String)]?
     }
 
+    // App Store 5.1.1(v): full in-app account deletion (wipes chats, memories, profile, auth user)
+    static func deleteAccount() async throws {
+        guard let t = await token() else { throw NSError(domain: "auth", code: 401, userInfo: [NSLocalizedDescriptionKey: "signed out"]) }
+        var req = URLRequest(url: URL(string: api + "/delete-account")!)
+        req.httpMethod = "POST"
+        req.setValue("Bearer " + t, forHTTPHeaderField: "Authorization")
+        let (data, resp) = try await URLSession.shared.data(for: req)
+        guard (resp as? HTTPURLResponse)?.statusCode == 200 else {
+            let msg = (try? JSONSerialization.jsonObject(with: data) as? [String: Any])?["error"] as? String
+            throw NSError(domain: "del", code: 1, userInfo: [NSLocalizedDescriptionKey: msg ?? "deletion failed — try again"])
+        }
+    }
+
     static func chatStream(model: String, messages: [[String: Any]], effort: String?) async throws -> AsyncThrowingStream<StreamEvent, Error> {
         guard let t = await token() else { throw NSError(domain: "auth", code: 401, userInfo: [NSLocalizedDescriptionKey: "signed out"]) }
         var req = URLRequest(url: URL(string: api + "/chat")!)
